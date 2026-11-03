@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 SDK="$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
 export RUSTUP_TOOLCHAIN=1.98.1 SDKROOT="$SDK"
-export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=ios-clang CC_aarch64_apple_ios=ios-clang
+export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=ios-clang CC_aarch64_apple_ios=ios-clang AR_aarch64_apple_ios=llvm-ar
 
 cargo build --target aarch64-apple-ios --release
 

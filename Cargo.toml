@@ -8,8 +8,8 @@ license = "MIT"
 
 [workspace.dependencies]
 # Same GPUI fork and revision as jcode-desktop so components can be shared.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7" }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "345b4b6375284a72c379e4b78e96d28ae7b86b33" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "345b4b6375284a72c379e4b78e96d28ae7b86b33" }
 jcode-mobile-core = { path = "crates/jcode-mobile-core" }
 
 [package]
@@ -32,3 +32,6 @@ gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 gpui_platform.workspace = true
+
+[patch.crates-io]
+cgl = { git = "https://github.com/1jehuang/gpui", rev = "345b4b6375284a72c379e4b78e96d28ae7b86b33" }
