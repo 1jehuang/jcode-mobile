@@ -28,7 +28,9 @@ fn load_fonts(cx: &App) {
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
+        log::info!("jcode-mobile: launched");
         load_fonts(cx);
+        log::info!("jcode-mobile: fonts loaded");
         app::init(cx);
         // JCODE_MOBILE_SIZE=WxH overrides the device (e.g. 375x667 for an SE).
         let (w, h) = std::env::var("JCODE_MOBILE_SIZE")
@@ -48,11 +50,14 @@ fn main() {
             },
             |window, cx| cx.new(|cx| {
                 let mut app = MobileApp::new(safe, window, cx);
-                app.device = Some((w, h));
+                if !cfg!(target_os = "ios") {
+                    app.device = Some((w, h));
+                }
                 app
             }),
         )
         .expect("open window");
+        log::info!("jcode-mobile: window opened");
         cx.activate(true);
     });
 }

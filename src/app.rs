@@ -582,7 +582,9 @@ impl MobileApp {
                 d.child(label("Enter the 6-digit code we emailed you.", t.text_secondary, 13.).text_center())
             })
             .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
-            .when(!code_step, |d| {
+            // No third-party login on iOS: offering Google would oblige
+            // Sign in with Apple (App Review 4.8). Email codes only there.
+            .when(!code_step && !cfg!(target_os = "ios"), |d| {
                 let waiting = self.browser_login.is_some();
                 d.child(
                     div()
@@ -1213,6 +1215,13 @@ fn activity_label(text: &'static str, step: usize, t: &Theme) -> impl IntoElemen
 
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Real phone: UIKit safe-area insets. Preview: the faked device insets.
+        let (top, bottom) = if self.device.is_none() {
+            let e = window.safe_area_insets();
+            (f32::from(e.top), f32::from(e.bottom))
+        } else {
+            (self.safe.top, self.safe.bottom)
+        };
         let t = Theme::get(cx);
         let body = match self.screen {
             Screen::SignIn => self.render_sign_in(&t, cx),
@@ -1225,8 +1234,8 @@ impl Render for MobileApp {
             .bg(t.background)
             .text_color(t.text)
             .font_family(FONT)
-            .pt(px(self.safe.top))
-            .pb(px(self.safe.bottom))
+            .pt(px(top))
+            .pb(px(bottom))
             .overflow_hidden()
             .child(body);
         match self.device {

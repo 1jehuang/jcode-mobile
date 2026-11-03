@@ -8,7 +8,15 @@ SDK="$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms/iPhoneO
 export RUSTUP_TOOLCHAIN=1.98.1 SDKROOT="$SDK"
 export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=ios-clang CC_aarch64_apple_ios=ios-clang AR_aarch64_apple_ios=llvm-ar
 
-cargo build --target aarch64-apple-ios --release
+# GPUI_LOCAL=1 builds against the ~/gpui checkout instead of the pinned rev.
+PATCH=()
+if [ -n "${GPUI_LOCAL:-}" ]; then
+  G="$HOME/gpui/crates"
+  for c in gpui gpui_platform gpui_ios gpui_apple gpui_macros; do
+    [ -d "$G/$c" ] && PATCH+=(--config "patch.'https://github.com/1jehuang/gpui'.$c.path='$G/$c'")
+  done
+fi
+cargo build --target aarch64-apple-ios --release "${PATCH[@]}"
 
 OUT=target/ios
 APP="$OUT/Payload/JcodeMobile.app"
