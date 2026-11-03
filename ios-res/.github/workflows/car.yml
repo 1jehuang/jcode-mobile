@@ -1,0 +1,9 @@
+on: push
+jobs:
+  car:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir out && xcrun actool Icons.xcassets --compile out --platform iphoneos --minimum-deployment-target 15.0 --app-icon AppIcon --output-partial-info-plist out/partial.plist --target-device iphone && ls -la out
+      - uses: actions/upload-artifact@v4
+        with: {name: car, path: out}

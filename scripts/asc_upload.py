@@ -62,9 +62,11 @@ def main(ipa):
     for _ in range(120):
         s, d = asc.call("GET", f"/v1/buildUploads/{upload['id']}")
         state = d.get("data", {}).get("attributes", {}).get("state", {})
-        print("  state:", json.dumps(state)[:400])
         st = state.get("state") if isinstance(state, dict) else state
+        print("  state:", st)
         if st in ("COMPLETE", "FAILED"):
+            for e in state.get("errors", []):
+                print("ERROR", e.get("code"), e.get("description"))
             return 0 if st == "COMPLETE" else 1
         time.sleep(15)
     return 1

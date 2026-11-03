@@ -15,11 +15,7 @@ APP="$OUT/Payload/JcodeMobile.app"
 rm -rf "$OUT" && mkdir -p "$APP"
 cp target/aarch64-apple-ios/release/jcode-mobile "$APP/jcode-mobile"
 [ -d assets ] && cp -r assets "$APP/" || true
-ICON="$HOME/jcode/ios/Sources/JCodeMobile/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
-if [ -f "$ICON" ]; then
-  magick "$ICON" -background black -alpha remove -resize 120x120 "$APP/AppIcon60x60@2x.png"
-  magick "$ICON" -background black -alpha remove -resize 180x180 "$APP/AppIcon60x60@3x.png"
-fi
+cp ios-res/Assets.car ios-res/AppIcon60x60@2x.png "$APP/"
 
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%s)}"
 cat > "$APP/Info.plist" <<PLIST
@@ -38,8 +34,18 @@ cat > "$APP/Info.plist" <<PLIST
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string><string>metal</string></array>
   <key>UILaunchScreen</key><dict/>
+  <key>DTPlatformName</key><string>iphoneos</string>
+  <key>DTPlatformVersion</key><string>27.1</string>
+  <key>DTPlatformBuild</key><string>24A94232</string>
+  <key>DTSDKName</key><string>iphoneos27.1</string>
+  <key>DTSDKBuild</key><string>24A94232</string>
+  <key>DTXcode</key><string>2710</string>
+  <key>DTXcodeBuild</key><string>27A9275</string>
+  <key>DTCompiler</key><string>com.apple.compilers.llvm.clang.1_0</string>
+  <key>BuildMachineOSBuild</key><string>25A354</string>
   <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict>
     <key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array>
+    <key>CFBundleIconName</key><string>AppIcon</string>
   </dict></dict>
   <key>UIStatusBarStyle</key><string>UIStatusBarStyleLightContent</string>
   <key>UIViewControllerBasedStatusBarAppearance</key><true/>
