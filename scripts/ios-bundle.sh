@@ -34,6 +34,7 @@ cat > "$APP/Info.plist" <<PLIST
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string><string>metal</string></array>
   <key>UILaunchScreen</key><dict/>
+  <key>ITSAppUsesNonExemptEncryption</key><false/>
   <key>DTPlatformName</key><string>iphoneos</string>
   <key>DTPlatformVersion</key><string>27.1</string>
   <key>DTPlatformBuild</key><string>24A94232</string>
