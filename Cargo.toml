@@ -1,0 +1,31 @@
+[workspace]
+members = [".", "crates/jcode-mobile-core"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Same GPUI fork and revision as jcode-desktop so components can be shared.
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7" }
+jcode-mobile-core = { path = "crates/jcode-mobile-core" }
+
+[package]
+name = "jcode-mobile"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Jcode for iPhone, written in Rust on GPUI. Runs as a phone-sized window on Linux."
+
+[dependencies]
+gpui.workspace = true
+jcode-mobile-core.workspace = true
+anyhow = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+gpui_platform.workspace = true
