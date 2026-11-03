@@ -15,11 +15,10 @@ use app::{MobileApp, SafeArea};
 
 fn load_fonts(cx: &App) {
     let fonts: Vec<Cow<'static, [u8]>> = vec![
-        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/IBMPlexSans-Italic.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Lilex-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/Lilex-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf")),
     ];
     cx.text_system().add_fonts(fonts).expect("load bundled fonts");
 }

@@ -1,18 +1,32 @@
-//! Design tokens mirrored from the Swift app's Theme.swift, itself mirrored
-//! from Jcode Desktop's "Warm neutral" theme, so all three clients match.
+//! Design tokens from Jcode Desktop's default "Pure black" palette
+//! (jcode-desktop-ui-core/src/theme/palettes.rs), so the phone app and the
+//! desktop app read as one product. Desktop uses one monospace face for UI,
+//! assistant text and code; we bundle JetBrains Mono for the same look.
 
-use gpui::{App, Global, Hsla, Rgba, rgb};
+use gpui::{App, Global, Hsla, rgb, rgba};
+
+pub const FONT: &str = "JetBrains Mono";
 
 #[derive(Clone, Copy)]
 pub struct Theme {
+    /// Canvas and pane paper (`BG`, `PANEL_BG`).
     pub background: Hsla,
+    /// Recessed chrome: header bar, inactive tabs (`HEADER_BG`).
+    pub raised: Hsla,
+    /// Prompt cards and pills (`USER_BG`).
     pub surface: Hsla,
+    /// Hover/pressed fill and machine chip (`ACCENT_DIM`).
     pub surface_elevated: Hsla,
     pub code_bg: Hsla,
+    pub inline_code_bg: Hsla,
     pub border: Hsla,
+    /// Composer and focused-tab outline (`PANEL_BORDER_FOCUS`).
+    pub border_focus: Hsla,
+    pub input_border: Hsla,
     pub accent: Hsla,
-    pub on_accent: Hsla,
     pub text: Hsla,
+    /// User prompt and heading ink (`TEXT_USER`, `HEADING`).
+    pub text_strong: Hsla,
     pub text_secondary: Hsla,
     pub text_muted: Hsla,
     pub ok: Hsla,
@@ -29,25 +43,27 @@ fn c(hex: u32) -> Hsla {
 }
 
 impl Theme {
-    pub fn warm_neutral() -> Self {
-        let mut selection: Hsla = c(0xB6A08A);
-        selection.a = 0.3;
+    pub fn pure_black() -> Self {
         Self {
-            background: c(0x1C1A18),
-            surface: c(0x25221F),
-            surface_elevated: c(0x302B27),
-            code_bg: c(0x1C1A18),
-            border: c(0x403A34),
-            accent: c(0xB6A08A),
-            on_accent: c(0x1C1A18),
-            text: c(0xE4DDD3),
-            text_secondary: c(0xA79D91),
-            text_muted: c(0x9B9084),
-            ok: c(0xA6B68E),
-            warning: c(0xD0B17D),
-            error: c(0xE18C85),
-            field: c(0x302B27),
-            selection,
+            background: c(0x000000),
+            raised: c(0x0a0a0a),
+            surface: c(0x121212),
+            surface_elevated: c(0x141414),
+            code_bg: c(0x050505),
+            inline_code_bg: c(0x161616),
+            border: c(0x1c1c1c),
+            border_focus: c(0x7a7a7a),
+            input_border: c(0x262626),
+            accent: c(0xd9d9d9),
+            text: c(0xd9d9d9),
+            text_strong: c(0xf5f5f5),
+            text_secondary: c(0xa0a0a0),
+            text_muted: c(0x6e6e6e),
+            ok: c(0x8ccf9e),
+            warning: c(0xe3b96f),
+            error: c(0xf28b8b),
+            field: c(0x000000),
+            selection: rgba(0x3a83f75c).into(),
         }
     }
 
@@ -55,16 +71,9 @@ impl Theme {
         *cx.global::<Theme>()
     }
 
-    /// Desktop's prompt wash: newest prompt violet, older ones step toward red
-    /// while the tint fades back into card paper.
-    pub fn prompt_background(distance: usize) -> Hsla {
-        const RAINBOW: [u32; 7] = [0xFF5050, 0xFFA050, 0xFFE650, 0x50DC64, 0x50C8DC, 0x648CFF, 0xB464FF];
-        let tint = RAINBOW[RAINBOW.len() - 1 - distance.min(RAINBOW.len() - 1)];
-        let amount = 0.05 * (-0.4 * distance as f32).exp();
-        let ch = |v: u32, s: u32| ((v >> s) & 0xFF) as f32 / 255.0;
-        let base = 0x302B27;
-        let mix = |s| ch(base, s) * (1.0 - amount) + ch(tint, s) * amount;
-        Rgba { r: mix(16), g: mix(8), b: mix(0), a: 1.0 }.into()
+    /// Pure black sets PROMPT_TINT_STRENGTH to 0: prompts are plain USER_BG.
+    pub fn prompt_background(_distance: usize) -> Hsla {
+        c(0x121212)
     }
 }
 

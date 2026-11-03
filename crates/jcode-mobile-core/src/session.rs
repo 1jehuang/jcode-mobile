@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 pub enum ConnectionPhase {
     Disconnected,
     Connecting,
+    /// Cloud host is waking or provisioning.
+    Provisioning { message: String },
     Connected,
     Reconnecting { attempt: u32 },
     Failed { reason: String },
@@ -226,7 +228,7 @@ impl SessionState {
                 self.server_phase = None;
                 self.finish_streaming();
             }
-            ConnectionPhase::Connecting => {}
+            ConnectionPhase::Connecting | ConnectionPhase::Provisioning { .. } => {}
         }
     }
 

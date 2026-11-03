@@ -1,22 +1,21 @@
-//! Root view: owns credentials, the live connection, and session state, and
-//! switches between the pairing, chat and settings screens.
+//! Root view: owns the Jcode account, the live Cloud connection, and session
+//! state, and switches between the sign-in, chat and settings screens.
 
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Hsla, ScrollHandle, SharedString, Window, div,
-    point, prelude::*, px,
+    AnyElement, App, Context, Entity, Hsla, ScrollHandle, SharedString, Window, div, prelude::*,
+    px,
 };
 use jcode_mobile_core::{
-    Config, Connection, ConnectionOutput, ConnectionPhase, CredentialStore, FileCredentialStore,
-    Gateway, LocalIntent, Request, Role, ServerCredential, SessionState, ToolStatus,
-    TranscriptEntry, credentials::device_id, gateway, parse_pair_uri,
+    Account, AccountStore, Config, Connection, ConnectionOutput, ConnectionPhase, LocalIntent,
+    Request, Role, SessionState, ToolStatus, TranscriptEntry, cloud,
 };
 
 use crate::text_input::{TextInput, TextInputEvent};
-use crate::theme::{Theme, with_alpha};
+use crate::theme::{FONT, Theme, with_alpha};
 
 /// Insets the shell reserves for the notch / home indicator. On iOS these come
 /// from UIKit; the desktop preview fakes an iPhone 15-class device.
@@ -28,7 +27,7 @@ pub struct SafeArea {
 
 #[derive(PartialEq)]
 enum Screen {
-    Pairing,
+    SignIn,
     Chat,
     Settings,
 }
@@ -38,17 +37,16 @@ pub struct MobileApp {
     safe: SafeArea,
     /// Fixed device size for the desktop preview; None on a real phone.
     pub device: Option<(f32, f32)>,
-    store: FileCredentialStore,
-    servers: Vec<ServerCredential>,
-    active: Option<ServerCredential>,
+    store: AccountStore,
+    account: Option<Account>,
     connection: Option<Connection>,
     session: SessionState,
-    // Pairing form
-    host: Entity<TextInput>,
-    port: Entity<TextInput>,
+    // Sign-in form: email, then the 6-digit code.
+    email: Entity<TextInput>,
     code: Entity<TextInput>,
-    pairing: bool,
-    pair_error: Option<String>,
+    login_token: Option<String>,
+    signing_in: bool,
+    sign_in_error: Option<String>,
     // Chat
     composer: Entity<TextInput>,
     transcript_scroll: ScrollHandle,
@@ -61,17 +59,16 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let host = cx.new(|cx| TextInput::new("devbox.tailnet.ts.net", cx));
-        let port = cx.new(|cx| {
-            let mut t = TextInput::new("7643", cx);
-            t.set_text(gateway::DEFAULT_PORT.to_string(), cx);
+        let email = cx.new(|cx| TextInput::new("you@example.com", cx));
+        let code = cx.new(|cx| TextInput::new("6-digit code", cx));
+        let composer = cx.new(|cx| {
+            let mut t = TextInput::new("Message jcode…", cx);
+            t.bare = true;
             t
         });
-        let code = cx.new(|cx| TextInput::new("123456", cx));
-        let composer = cx.new(|cx| TextInput::new("Message jcode", cx));
-        for input in [&host, &port, &code] {
+        for input in [&email, &code] {
             cx.subscribe(input, |this, _, ev, cx| match ev {
-                TextInputEvent::Submit => this.pair(cx),
+                TextInputEvent::Submit => this.sign_in_step(cx),
                 TextInputEvent::Changed => cx.notify(),
             })
             .detach();
@@ -82,13 +79,17 @@ impl MobileApp {
         })
         .detach();
 
-        // Spinner tick while processing.
+        // Spinner tick while processing or provisioning.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(125)).await;
                 let alive = this
                     .update(cx, |this, cx| {
-                        if this.session.is_processing || this.session.is_reasoning {
+                        if this.session.is_processing
+                            || this.session.is_reasoning
+                            || this.signing_in
+                            || !matches!(this.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. })
+                        {
                             this.spinner_step = (this.spinner_step + 1) % 8;
                             cx.notify();
                         }
@@ -101,22 +102,24 @@ impl MobileApp {
         })
         .detach();
 
-        let store = FileCredentialStore::default_location();
-        let servers = store.load_all();
+        let store = AccountStore::default_location();
+        // Dev convenience: JCODE_MOBILE_USE_CLI_ACCOUNT=1 reuses the jcode CLI login.
+        let account = store.load().or_else(|| {
+            std::env::var_os("JCODE_MOBILE_USE_CLI_ACCOUNT").and_then(|_| cloud::account_from_jcode_config())
+        });
         let mut app = Self {
-            screen: Screen::Pairing,
+            screen: Screen::SignIn,
             safe,
             device: None,
             store,
-            servers,
-            active: None,
+            account: None,
             connection: None,
             session: SessionState::default(),
-            host,
-            port,
+            email,
             code,
-            pairing: false,
-            pair_error: None,
+            login_token: None,
+            signing_in: false,
+            sign_in_error: None,
             composer,
             transcript_scroll: ScrollHandle::new(),
             expanded_tools: Default::default(),
@@ -124,14 +127,8 @@ impl MobileApp {
             spinner_step: 0,
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
         };
-        // Dev convenience: JCODE_MOBILE_PAIR=jcode://pair?... pre-fills and pairs.
-        if let Some(p) = std::env::var("JCODE_MOBILE_PAIR").ok().and_then(|s| parse_pair_uri(&s)) {
-            app.host.update(cx, |t, cx| t.set_text(p.gateway.host.clone(), cx));
-            app.port.update(cx, |t, cx| t.set_text(p.gateway.port.to_string(), cx));
-            app.code.update(cx, |t, cx| t.set_text(p.code.clone(), cx));
-            app.pair(cx);
-        } else if let Some(first) = app.servers.first().cloned() {
-            app.connect(first, cx);
+        if let Some(account) = account {
+            app.connect(account, cx);
         }
         let _ = window;
         app
@@ -139,54 +136,48 @@ impl MobileApp {
 
     // MARK: actions
 
-    fn pair(&mut self, cx: &mut Context<Self>) {
-        if self.pairing {
+    /// Email step mails a code; code step exchanges it for an account key.
+    fn sign_in_step(&mut self, cx: &mut Context<Self>) {
+        if self.signing_in {
             return;
         }
-        let host = self.host.read(cx).text().trim().to_string();
+        let email = self.email.read(cx).text().trim().to_string();
         let code = self.code.read(cx).text().trim().to_string();
-        let Ok(port) = self.port.read(cx).text().trim().parse::<u16>() else {
-            self.pair_error = Some("Port must be a number".into());
-            cx.notify();
-            return;
-        };
-        if host.is_empty() || code.is_empty() {
+        let token = self.login_token.clone();
+        if token.is_none() && !email.contains('@') {
             return;
         }
-        self.pairing = true;
-        self.pair_error = None;
+        if token.is_some() && code.len() < 6 {
+            return;
+        }
+        self.signing_in = true;
+        self.sign_in_error = None;
         cx.notify();
-        let gw = Gateway::new(host, port);
-        let task = cx.background_spawn({
-            let gw = gw.clone();
-            async move {
-                let name = hostname();
-                gateway::pair(&gw, &code, &device_id(), &name)
+        enum Step {
+            Sent(String),
+            Done(Account),
+        }
+        let task = cx.background_spawn(async move {
+            match token {
+                None => cloud::start_login(&email).map(Step::Sent),
+                Some(t) => cloud::verify_login(&t, &code).map(Step::Done),
             }
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                this.pairing = false;
+                this.signing_in = false;
                 match result {
-                    Ok(resp) => {
-                        let cred = ServerCredential {
-                            host: gw.host.clone(),
-                            port: gw.port,
-                            token: resp.token,
-                            server_name: resp.server_name,
-                            server_version: resp.server_version,
-                            paired_at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0),
-                            working_dir: resp.working_dir,
-                        };
-                        this.store.save(cred.clone());
-                        this.servers = this.store.load_all();
-                        this.connect(cred, cx);
+                    Ok(Step::Sent(t)) => this.login_token = Some(t),
+                    Ok(Step::Done(account)) => {
+                        if let Err(e) = this.store.save(&account) {
+                            this.sign_in_error = Some(format!("Could not save sign-in: {e}"));
+                        }
+                        this.login_token = None;
+                        this.code.update(cx, |t, cx| t.set_text("", cx));
+                        this.connect(account, cx);
                     }
-                    Err(e) => this.pair_error = Some(e.to_string()),
+                    Err(e) => this.sign_in_error = Some(e),
                 }
                 cx.notify();
             })
@@ -195,23 +186,29 @@ impl MobileApp {
         .detach();
     }
 
-    fn connect(&mut self, cred: ServerCredential, cx: &mut Context<Self>) {
+    fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
         if let Some(c) = self.connection.take() {
             c.stop();
         }
         self.session = SessionState::default();
-        let mut config = Config::new(cred.gateway(), cred.token.clone());
-        config.working_dir = cred.working_dir.clone();
+        let mut config = Config::cloud(account.clone());
+        config.max_reconnect_attempts = Some(6);
         let (tx, rx) = unbounded();
         let conn = Connection::start(config, None, move |o| {
             let _ = tx.unbounded_send(o);
         });
         self.connection = Some(conn);
-        self.active = Some(cred);
+        self.account = Some(account);
         self.screen = Screen::Chat;
         self.follow = true;
         self.pump(rx, cx);
         cx.notify();
+    }
+
+    fn reconnect(&mut self, cx: &mut Context<Self>) {
+        if let Some(a) = self.account.clone() {
+            self.connect(a, cx);
+        }
     }
 
     fn pump(&mut self, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
@@ -228,6 +225,7 @@ impl MobileApp {
                             this.session.apply(o);
                         }
                         if this.session.phase == ConnectionPhase::Connected
+                            && this.session.session_id.is_some()
                             && let Some(msg) = this.auto_send.take()
                         {
                             this.composer.update(cx, |t, cx| t.set_text(msg, cx));
@@ -255,7 +253,7 @@ impl MobileApp {
 
     fn send_draft(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() || self.session.phase != ConnectionPhase::Connected {
             return;
         }
         if self.session.is_processing {
@@ -276,27 +274,17 @@ impl MobileApp {
         cx.notify();
     }
 
-    fn forget(&mut self, id: String, cx: &mut Context<Self>) {
-        self.store.remove(&id);
-        self.servers = self.store.load_all();
-        if self.active.as_ref().map(|a| a.id()) == Some(id) {
-            if let Some(c) = self.connection.take() {
-                c.stop();
-            }
-            self.active = None;
-            self.session = SessionState::default();
-            self.screen = Screen::Pairing;
+    fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self.connection.take() {
+            c.stop();
         }
+        self.store.clear();
+        self.account = None;
+        self.session = SessionState::default();
+        self.login_token = None;
+        self.screen = Screen::SignIn;
         cx.notify();
     }
-}
-
-fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "jcode-mobile".into())
 }
 
 // MARK: rendering helpers
@@ -305,165 +293,163 @@ fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
     div().text_size(px(size)).text_color(color).child(text.into())
 }
 
-fn button(
-    id: &'static str,
-    text: impl Into<SharedString>,
-    primary: bool,
-    enabled: bool,
-    t: &Theme,
-) -> gpui::Stateful<gpui::Div> {
-    let (bg, fg) = match (primary, enabled) {
-        (true, true) => (t.accent, t.on_accent),
-        (true, false) => (t.surface_elevated, t.text_muted),
-        (false, _) => (t.surface, t.text),
-    };
+/// Desktop's composer pill: 22px rounded-full chip on prompt paper.
+fn pill(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
     div()
-        .id(id)
-        .w_full()
-        .py(px(15.))
+        .flex_none()
+        .h(px(22.))
+        .px(px(10.))
         .flex()
-        .justify_center()
-        .rounded(px(12.))
-        .bg(bg)
-        .when(!primary, |d| d.border_1().border_color(t.border))
-        .text_color(fg)
-        .text_size(px(17.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .when(enabled, |d| d.cursor_pointer().active(|s| s.opacity(0.85)))
+        .items_center()
+        .rounded_full()
+        .bg(t.surface)
+        .text_size(px(11.))
+        .text_color(t.text_secondary)
+        .whitespace_nowrap()
         .child(text.into())
 }
 
-fn card(t: &Theme) -> gpui::Div {
+/// Outlined, fully rounded action (desktop's composer/tab outline language).
+fn outline_button(
+    id: &'static str,
+    text: impl Into<SharedString>,
+    enabled: bool,
+    t: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(id)
         .w_full()
-        .p(px(16.))
-        .rounded(px(14.))
-        .bg(t.surface)
+        .h(px(44.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
         .border_1()
-        .border_color(t.border)
+        .border_color(if enabled { t.border_focus } else { t.input_border })
+        .text_color(if enabled { t.text_strong } else { t.text_muted })
+        .text_size(px(14.))
+        .when(enabled, |d| d.cursor_pointer().active(|s| s.bg(t.surface)))
+        .child(text.into())
+}
+
+fn spinner_glyph(step: usize) -> &'static str {
+    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][step % 8]
 }
 
 impl MobileApp {
-    fn field(&self, name: &str, input: &Entity<TextInput>, t: &Theme) -> impl IntoElement {
+    fn render_sign_in(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let code_step = self.login_token.is_some();
+        let ready = if code_step {
+            self.code.read(cx).text().trim().len() >= 6
+        } else {
+            self.email.read(cx).text().contains('@')
+        };
+        let action = match (code_step, self.signing_in) {
+            (false, false) => "Email me a code",
+            (false, true) => "Sending…",
+            (true, false) => "Sign in",
+            (true, true) => "Signing in…",
+        };
         div()
+            .id("sign-in")
+            .size_full()
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .child(label(name.to_uppercase(), t.text_muted, 12.).font_weight(FontWeight::MEDIUM))
-            .child(input.clone())
-    }
-
-    fn render_pairing(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let can_pair = !self.host.read(cx).text().trim().is_empty()
-            && !self.code.read(cx).text().is_empty()
-            && self.port.read(cx).text().parse::<u16>().is_ok();
-        div()
-            .id("pairing")
-            .size_full()
-            .overflow_y_scroll()
+            .justify_center()
+            .px(px(20.))
+            .gap(px(18.))
+            .child(label("jcode", t.text_muted, 13.))
+            .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(px(30.)))
+            .child(label(
+                if code_step {
+                    "Enter the 6-digit code we emailed you."
+                } else {
+                    "Your sessions run on your Jcode Cloud machine. No pairing needed."
+                },
+                t.text_secondary,
+                13.,
+            ))
+            .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
+            .child(if code_step { self.code.clone() } else { self.email.clone() })
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(20.))
-                    .p(px(16.))
-                    .pt(px(16. + 28.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .child(
-                                div().flex().items_center().gap(px(10.)).child(brand_mark(t)).child(
-                                    label("jcode", t.text, 34.).font_weight(FontWeight::SEMIBOLD),
-                                ),
-                            )
-                            .child(label("Pair with a server on your tailnet", t.text_secondary, 15.)),
-                    )
-                    .when_some(self.pair_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
-                    .child(
-                        card(t)
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.))
-                            .child(self.field("Host", &self.host, t))
-                            .child(self.field("Port", &self.port, t))
-                            .child(self.field("Pairing code", &self.code, t)),
-                    )
-                    .child(
-                        button(
-                            "pair",
-                            if self.pairing { "Pairing..." } else { "Pair" },
-                            true,
-                            can_pair && !self.pairing,
-                            t,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
-                    )
-                    .when(!self.servers.is_empty(), |d| {
-                        d.child(label("PAIRED SERVERS", t.text_muted, 12.)).children(
-                            self.servers.iter().enumerate().map(|(i, s)| {
-                                let s2 = s.clone();
-                                server_row(i, s, t).on_click(cx.listener(move |this, _, _, cx| {
-                                    this.connect(s2.clone(), cx)
-                                }))
-                            }),
-                        )
-                    })
-                    .child(label(
-                        "Run `jcode pair` on your machine, then enter the code. Traffic stays on your tailnet.",
-                        t.text_muted,
-                        13.,
-                    )),
+                outline_button("sign-in-go", action, ready && !self.signing_in, t)
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_in_step(cx))),
             )
+            .when(code_step, |d| {
+                d.child(
+                    div()
+                        .id("use-other-email")
+                        .cursor_pointer()
+                        .child(label("Use a different email", t.text_muted, 12.))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.login_token = None;
+                            this.sign_in_error = None;
+                            cx.notify()
+                        })),
+                )
+            })
             .into_any_element()
     }
 
+    /// Desktop's top bar: dark strip, session "tab" outlined in the middle.
     fn render_header(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self
-            .session
-            .session_title
-            .clone()
-            .or_else(|| self.active.as_ref().map(|a| a.server_name.clone()))
-            .unwrap_or_else(|| "jcode".into());
-        let (dot, status) = match &self.session.phase {
-            ConnectionPhase::Connected => (t.ok, self.session.model_name.clone().unwrap_or_else(|| "Connected".into())),
-            ConnectionPhase::Connecting => (t.warning, "Connecting".into()),
-            ConnectionPhase::Reconnecting { attempt } => (t.warning, format!("Reconnecting ({attempt})")),
-            ConnectionPhase::Failed { reason } => (t.error, reason.clone()),
-            ConnectionPhase::Disconnected => (t.text_muted, "Disconnected".into()),
+        let title = self.session.session_title.clone().unwrap_or_else(|| "New session".into());
+        let (dot, connected) = match &self.session.phase {
+            ConnectionPhase::Connected => (t.ok, true),
+            ConnectionPhase::Failed { .. } => (t.error, false),
+            ConnectionPhase::Disconnected => (t.text_muted, false),
+            _ => (t.warning, false),
         };
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(16.))
-            .py(px(10.))
-            .border_b_1()
-            .border_color(t.border)
-            .child(brand_mark(t))
+            .gap(px(8.))
+            .px(px(10.))
+            .h(px(48.))
+            .bg(t.raised)
             .child(
                 div()
+                    .id("menu")
+                    .size(px(32.))
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(label(title, t.text, 17.).font_weight(FontWeight::SEMIBOLD).truncate())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(div().size(px(7.)).rounded_full().bg(dot))
-                            .child(label(status, t.text_secondary, 12.).truncate()),
-                    ),
-            )
-            .child(
-                icon_button("settings", "⚙", t)
+                    .items_center()
+                    .justify_center()
+                    .text_color(t.text_secondary)
+                    .text_size(px(16.))
+                    .cursor_pointer()
+                    .child("≡")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.screen = Screen::Settings;
                         cx.notify()
                     })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(34.))
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(t.border_focus)
+                    .child(div().flex_none().size(px(7.)).rounded_full().bg(dot))
+                    .child(label(title, t.text_strong, 13.).min_w_0().truncate()),
+            )
+            .child(
+                div()
+                    .id("new-session")
+                    .size(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(if connected { t.text_strong } else { t.text_muted })
+                    .text_size(px(20.))
+                    .cursor_pointer()
+                    .child("+")
+                    .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
             )
     }
 
@@ -473,17 +459,13 @@ impl MobileApp {
         let off = -self.transcript_scroll.offset().y;
         let at_bottom = max - off < px(56.);
         let entries = &self.session.transcript;
-        let prompt_count = entries.iter().filter(|e| e.role == Role::User).count();
         let mut prompt_n = 0;
         let mut rows: Vec<AnyElement> = Vec::new();
         for e in entries {
-            let distance = if e.role == Role::User {
+            if e.role == Role::User {
                 prompt_n += 1;
-                prompt_count - prompt_n
-            } else {
-                0
-            };
-            rows.push(self.render_entry(e, prompt_n, distance, t, cx));
+            }
+            rows.push(self.render_entry(e, prompt_n, t, cx));
         }
         if let Some(a) = self.activity() {
             rows.push(activity_label(a, self.spinner_step, t).into_any_element());
@@ -494,6 +476,9 @@ impl MobileApp {
                     .id("err")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session.apply_intent(LocalIntent::DismissError);
+                        if matches!(this.session.phase, ConnectionPhase::Failed { .. }) {
+                            this.reconnect(cx);
+                        }
                         cx.notify()
                     }))
                     .into_any_element(),
@@ -501,139 +486,158 @@ impl MobileApp {
         }
         let empty = entries.is_empty() && !self.session.is_reasoning;
         let _ = window;
+        let body = if empty {
+            // Desktop's fresh session: the question sits just above the composer.
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .px(px(16.))
+                .pb(px(14.))
+                .gap(px(12.))
+                .child(self.connection_status(t))
+                .when_some(self.session.error_banner.clone(), |d, e| {
+                    d.child(banner(&e, t.error, t).id("err-empty").on_click(cx.listener(|this, _, _, cx| {
+                        this.session.apply_intent(LocalIntent::DismissError);
+                        this.reconnect(cx);
+                    })))
+                })
+                .child(label("What would you like to work on?", t.text_strong, 20.).line_height(px(28.)))
+                .into_any_element()
+        } else {
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .id("transcript")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.transcript_scroll)
+                        .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                            let max = this.transcript_scroll.max_offset().y;
+                            let off = -this.transcript_scroll.offset().y;
+                            this.follow = max - off < px(56.);
+                            cx.notify();
+                        }))
+                        .child(div().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows)),
+                )
+                .when(!at_bottom && max > px(0.), |d| {
+                    d.child(
+                        div()
+                            .id("jump")
+                            .absolute()
+                            .right(px(14.))
+                            .bottom(px(8.))
+                            .size(px(36.))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(t.background)
+                            .border_1()
+                            .border_color(t.border_focus)
+                            .text_color(t.text_strong)
+                            .cursor_pointer()
+                            .child("↓")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.follow = true;
+                                this.transcript_scroll.scroll_to_bottom();
+                                cx.notify()
+                            })),
+                    )
+                })
+                .into_any_element()
+        };
         div()
             .flex()
             .flex_col()
             .size_full()
             .child(self.render_header(t, cx))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(if empty {
-                        empty_transcript(t).into_any_element()
-                    } else {
-                        div()
-                            .id("transcript")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.transcript_scroll)
-                            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
-                                let max = this.transcript_scroll.max_offset().y;
-                                let off = -this.transcript_scroll.offset().y;
-                                this.follow = max - off < px(56.);
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(16.))
-                                    .px(px(16.))
-                                    .py(px(8.))
-                                    .children(rows),
-                            )
-                            .into_any_element()
-                    })
-                    .when(!empty && !at_bottom && max > px(0.), |d| {
-                        d.child(
-                            div()
-                                .id("jump")
-                                .absolute()
-                                .right(px(16.))
-                                .bottom(px(8.))
-                                .size(px(40.))
-                                .rounded_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .bg(t.surface_elevated)
-                                .border_1()
-                                .border_color(t.border)
-                                .text_color(t.text)
-                                .cursor_pointer()
-                                .child("↓")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.follow = true;
-                                    this.transcript_scroll.scroll_to_bottom();
-                                    cx.notify()
-                                })),
-                        )
-                    }),
-            )
+            .child(body)
             .child(self.render_composer(t, cx))
+            .into_any_element()
+    }
+
+    /// Provisioning/connecting line shown on an empty session.
+    fn connection_status(&self, t: &Theme) -> AnyElement {
+        let text = match &self.session.phase {
+            ConnectionPhase::Connected | ConnectionPhase::Failed { .. } => return div().into_any_element(),
+            ConnectionPhase::Connecting => "Connecting to Jcode Cloud…".to_string(),
+            ConnectionPhase::Provisioning { message } => message.clone(),
+            ConnectionPhase::Reconnecting { attempt } => format!("Reconnecting ({attempt})…"),
+            ConnectionPhase::Disconnected => "Disconnected".into(),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(label(spinner_glyph(self.spinner_step), t.text_secondary, 13.))
+            .child(label(text, t.text_muted, 12.))
             .into_any_element()
     }
 
     fn activity(&self) -> Option<&'static str> {
         if self.session.is_reasoning {
-            return Some("Thinking");
+            return Some("thinking");
         }
         if !self.session.is_processing {
             return None;
         }
         let Some(last) = self.session.transcript.last().filter(|e| e.role == Role::Assistant) else {
-            return Some("Working");
+            return Some("working");
         };
         if last
             .tool_calls
             .iter()
             .any(|c| matches!(c.status, ToolStatus::StreamingInput | ToolStatus::Running))
         {
-            return Some("Running tools");
+            return Some("running tools");
         }
-        Some(if last.text.is_empty() { "Working" } else { "Responding" })
+        Some(if last.text.is_empty() { "working" } else { "responding" })
     }
 
-    fn render_entry(
-        &self,
-        e: &TranscriptEntry,
-        prompt_n: usize,
-        distance: usize,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         match e.role {
+            // Desktop prompt: "N›" prefix, strong ink on USER_BG paper.
             Role::User => div()
                 .flex()
-                .gap(px(10.))
-                .p(px(12.))
-                .rounded(px(12.))
-                .bg(Theme::prompt_background(distance))
+                .gap(px(6.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(6.))
+                .bg(Theme::prompt_background(0))
                 .when(e.is_queued, |d| d.opacity(0.6))
-                .child(label(prompt_n.to_string(), t.text_muted, 13.).font_family("Lilex"))
-                .child(div().flex_1().min_w_0().text_size(px(16.)).text_color(t.text).child(e.text.clone()))
+                .child(label(format!("{prompt_n}›"), t.text_muted, 13.).flex_none())
+                .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(t.text_strong).child(e.text.clone()))
                 .into_any_element(),
-            Role::System => label(e.text.clone(), t.text_muted, 13.).into_any_element(),
+            Role::System => label(e.text.clone(), t.text_muted, 12.).into_any_element(),
             Role::Assistant => {
-                let mut col = div().flex().flex_col().gap(px(10.));
+                let mut col = div().flex().flex_col().gap(px(6.));
                 if !e.reasoning.is_empty() {
-                    col = col.child(
-                        div()
-                            .pl(px(10.))
-                            .border_l_2()
-                            .border_color(t.border)
-                            .child(label(e.reasoning.clone(), t.text_muted, 13.)),
-                    );
+                    col = col.child(label(e.reasoning.clone(), t.text_muted, 12.).italic());
                 }
                 for call in &e.tool_calls {
-                    col = col.child(self.tool_card(call, t, cx));
+                    col = col.child(self.tool_line(call, t, cx));
                 }
                 if !e.text.is_empty() {
-                    col = col.child(crate::markdown::render(&e.text, t));
+                    col = col.child(div().pt(px(4.)).child(crate::markdown::render(&e.text, t)));
                 }
                 col.into_any_element()
             }
         }
     }
 
-    fn tool_card(&self, call: &jcode_mobile_core::ToolCall, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// Desktop/TUI tool row: `✓ name · headline`, tap to expand output.
+    fn tool_line(&self, call: &jcode_mobile_core::ToolCall, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let expanded = self.expanded_tools.contains(&call.id);
         let (glyph, color) = match &call.status {
-            ToolStatus::StreamingInput | ToolStatus::Running => ("◌", t.warning),
+            ToolStatus::StreamingInput | ToolStatus::Running => (spinner_glyph(self.spinner_step), t.warning),
             ToolStatus::Succeeded => ("✓", t.ok),
-            ToolStatus::Failed(_) => ("✕", t.error),
+            ToolStatus::Failed(_) => ("✗", t.error),
         };
         let headline = crate::tool_summary::headline(&call.input).unwrap_or_default();
         let id = call.id.clone();
@@ -641,11 +645,6 @@ impl MobileApp {
             .id(SharedString::from(format!("tool-{}", call.id)))
             .flex()
             .flex_col()
-            .rounded(px(10.))
-            .border_1()
-            .border_color(t.border)
-            .bg(t.surface)
-            .overflow_hidden()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.expanded_tools.remove(&id) {
@@ -657,12 +656,14 @@ impl MobileApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(10.))
-                    .child(label(glyph, color, 14.))
-                    .child(label(call.name.clone(), t.text, 14.).font_family("Lilex").font_weight(FontWeight::SEMIBOLD))
-                    .child(label(headline, t.text_secondary, 13.).flex_1().min_w_0().truncate()),
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .child(div().flex_none().text_color(color).child(glyph))
+                    .child(div().flex_none().text_color(t.text).child(call.name.clone()))
+                    .when(!headline.is_empty(), |d| {
+                        d.child(div().flex_none().text_color(t.text_muted).child("·"))
+                            .child(div().flex_1().min_w_0().truncate().text_color(t.text_secondary).child(headline))
+                    }),
             )
             .when(expanded, |d| {
                 let mut body = call.output.clone();
@@ -681,13 +682,13 @@ impl MobileApp {
                 }
                 d.child(
                     div()
-                        .px(px(12.))
-                        .py(px(10.))
-                        .bg(t.code_bg)
-                        .border_t_1()
-                        .border_color(t.border)
-                        .text_size(px(12.))
-                        .font_family("Lilex")
+                        .mt(px(4.))
+                        .ml(px(6.))
+                        .pl(px(10.))
+                        .py(px(4.))
+                        .border_l_1()
+                        .border_color(t.border_focus)
+                        .text_size(px(11.))
                         .text_color(t.text_secondary)
                         .child(if body.is_empty() { call.input.clone() } else { body }),
                 )
@@ -695,38 +696,76 @@ impl MobileApp {
             .into_any_element()
     }
 
+    /// Desktop composer: fully rounded outline, round action at the right,
+    /// identity pills (model, provider, machine) underneath.
     fn render_composer(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let processing = self.session.is_processing;
         let has_text = !self.composer.read(cx).text().trim().is_empty();
+        let model = self.session.model_name.clone();
+        let provider = self.session.provider_name.clone();
         div()
             .flex()
-            .items_end()
-            .gap(px(8.))
+            .flex_col()
+            .gap(px(6.))
             .px(px(12.))
-            .pt(px(8.))
+            .pt(px(6.))
             .pb(px(8.))
-            .border_t_1()
-            .border_color(t.border)
             .bg(t.background)
-            .child(div().flex_1().min_w_0().child(self.composer.clone()))
-            .child(if processing && !has_text {
-                circle_button("stop", "■", t.error, t.background, t)
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
-            } else {
-                circle_button("send", "↑", if has_text { t.accent } else { t.surface_elevated }, t.on_accent, t)
-                    .on_click(cx.listener(|this, _, _, cx| this.send_draft(cx)))
-            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(16.))
+                    .pr(px(5.))
+                    .min_h(px(46.))
+                    .rounded(px(23.))
+                    .border_1()
+                    .border_color(t.border_focus)
+                    .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    .child(if processing && !has_text {
+                        round_button("stop", "■", t.error, t)
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
+                    } else {
+                        round_button("send", "↑", if has_text { t.text_strong } else { t.text_muted }, t)
+                            .on_click(cx.listener(|this, _, _, cx| this.send_draft(cx)))
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .px(px(4.))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(px(22.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .bg(t.surface_elevated)
+                            .text_size(px(11.))
+                            .text_color(t.accent)
+                            .child("☁ jcode-cloud"),
+                    )
+                    .when_some(model, |d, m| d.child(pill(m, t)))
+                    .when_some(provider, |d, p| d.child(pill(p, t))),
+            )
     }
 
     fn render_settings(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let s = &self.session;
         let info = [
-            ("Server", self.active.as_ref().map(|a| a.server_name.clone())),
-            ("Version", s.server_version.clone().or_else(|| self.active.as_ref().map(|a| a.server_version.clone()))),
+            ("Account", self.account.as_ref().and_then(|a| a.email.clone())),
+            ("Machine", Some("jcode-cloud".to_string())),
+            ("Version", s.server_version.clone()),
             ("Model", s.model_name.clone()),
             ("Provider", s.provider_name.clone()),
             ("Session", s.session_id.clone()),
-            ("Tokens", Some(format!("{} in · {} out", s.token_input, s.token_output))),
+            ("Tokens", Some(format!("↑{} ↓{}", s.token_input, s.token_output))),
         ];
         div()
             .flex()
@@ -736,195 +775,119 @@ impl MobileApp {
                 div()
                     .flex()
                     .items_center()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .border_b_1()
-                    .border_color(t.border)
+                    .h(px(48.))
+                    .px(px(14.))
+                    .bg(t.raised)
                     .child(
                         div()
                             .id("back")
                             .cursor_pointer()
-                            .text_color(t.accent)
-                            .text_size(px(17.))
-                            .child("‹ Back")
+                            .text_color(t.text_strong)
+                            .text_size(px(13.))
+                            .child("‹ back")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.screen = if this.active.is_some() { Screen::Chat } else { Screen::Pairing };
+                                this.screen = if this.account.is_some() { Screen::Chat } else { Screen::SignIn };
                                 cx.notify()
                             })),
                     )
-                    .child(div().flex_1().flex().justify_center().child(label("Settings", t.text, 17.).font_weight(FontWeight::SEMIBOLD)))
-                    .child(div().w(px(56.))),
+                    .child(div().flex_1().flex().justify_center().child(label("settings", t.text_strong, 13.)))
+                    .child(div().w(px(48.))),
             )
             .child(
-                div()
-                    .id("settings")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.))
-                            .p(px(16.))
-                            .child(card(t).flex().flex_col().gap(px(10.)).children(info.into_iter().map(|(k, v)| {
-                                div()
-                                    .flex()
-                                    .justify_between()
-                                    .gap(px(12.))
-                                    .child(label(k, t.text_secondary, 15.))
-                                    .child(label(v.unwrap_or_else(|| "—".into()), t.text, 15.).truncate())
-                            })))
-                            .child(label("PAIRED SERVERS", t.text_muted, 12.))
-                            .children(self.servers.iter().enumerate().map(|(i, s)| {
-                                let id = s.id();
-                                server_row(i, s, t).child(
+                div().id("settings").flex_1().overflow_y_scroll().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .p(px(16.))
+                        .child(div().flex().flex_col().gap(px(8.)).children(info.into_iter().map(|(k, v)| {
+                            div()
+                                .flex()
+                                .justify_between()
+                                .gap(px(12.))
+                                .text_size(px(12.))
+                                .child(div().flex_none().text_color(t.text_muted).child(k))
+                                .child(
                                     div()
-                                        .id(SharedString::from(format!("forget-{i}")))
-                                        .text_color(t.error)
-                                        .text_size(px(14.))
-                                        .cursor_pointer()
-                                        .child("Forget")
-                                        .on_click(cx.listener(move |this, _, _, cx| this.forget(id.clone(), cx))),
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(t.text)
+                                        .child(v.unwrap_or_else(|| "—".into())),
                                 )
-                            }))
-                            .child(
-                                button("pair-new", "Pair another server", false, true, t).on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.screen = Screen::Pairing;
-                                        cx.notify()
-                                    },
-                                )),
-                            )
-                            .child(
-                                button("clear", "Clear conversation", false, true, t).on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.session.apply_intent(LocalIntent::ClearedConversation);
-                                        this.send(|id| Request::Clear { id });
-                                        this.screen = Screen::Chat;
-                                        cx.notify()
-                                    },
-                                )),
-                            ),
-                    ),
+                        })))
+                        .child(div().h(px(1.)).bg(t.border))
+                        .child(outline_button("new", "New session", true, t).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.reconnect(cx);
+                            },
+                        )))
+                        .child(outline_button("clear", "Clear conversation", true, t).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.session.apply_intent(LocalIntent::ClearedConversation);
+                                this.send(|id| Request::Clear { id });
+                                this.screen = Screen::Chat;
+                                cx.notify()
+                            },
+                        )))
+                        .child(
+                            outline_button("sign-out", "Sign out", true, t)
+                                .text_color(t.error)
+                                .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
+                        ),
+                ),
             )
             .into_any_element()
     }
 }
 
-fn brand_mark(t: &Theme) -> impl IntoElement {
-    div()
-        .size(px(32.))
-        .rounded_full()
-        .border(px(7.))
-        .border_color(t.accent)
-}
-
-fn icon_button(id: &'static str, glyph: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
+fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .size(px(44.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .text_size(px(20.))
-        .text_color(t.text_secondary)
-        .cursor_pointer()
-        .active(|s| s.bg(t.surface_elevated))
-        .child(glyph)
-}
-
-fn circle_button(id: &'static str, glyph: &'static str, bg: Hsla, fg: Hsla, _t: &Theme) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .size(px(44.))
+        .size(px(36.))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(bg)
+        .bg(t.surface_elevated)
         .text_color(fg)
-        .text_size(px(20.))
-        .font_weight(FontWeight::BOLD)
+        .text_size(px(15.))
         .cursor_pointer()
-        .active(|s| s.opacity(0.85))
+        .active(|s| s.bg(t.surface))
         .child(glyph)
-}
-
-fn server_row(i: usize, s: &ServerCredential, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    card(t)
-        .id(SharedString::from(format!("server-{i}")))
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .cursor_pointer()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .child(label(s.server_name.clone(), t.text, 16.).font_weight(FontWeight::MEDIUM))
-                .child(label(format!("{}:{}", s.host, s.port), t.text_muted, 13.).font_family("Lilex").truncate()),
-        )
 }
 
 fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
     div()
         .w_full()
         .flex()
-        .items_center()
-        .gap(px(10.))
-        .px(px(12.))
-        .py(px(12.))
-        .rounded(px(12.))
-        .bg(with_alpha(tint, 0.12))
+        .items_start()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(8.))
+        .rounded(px(6.))
+        .bg(with_alpha(tint, 0.06))
         .border_1()
-        .border_color(with_alpha(tint, 0.32))
-        .child(label("!", tint, 14.).font_weight(FontWeight::BOLD))
-        .child(label(msg.to_string(), t.text, 13.).flex_1())
+        .border_color(with_alpha(tint, 0.3))
+        .child(label("✗", tint, 12.))
+        .child(label(msg.to_string(), t.text, 12.).flex_1())
 }
 
 fn activity_label(text: &'static str, step: usize, t: &Theme) -> impl IntoElement {
-    // Eight dots on a ring; the highlight rotates one dot per tick.
-    let mut ring = div().relative().size(px(14.));
-    for i in 0..8 {
-        let age = (step + 8 - i) % 8;
-        let a = i as f32 * std::f32::consts::FRAC_PI_4;
-        let p = point(7. + 5.5 * a.sin() - 1.5, 7. - 5.5 * a.cos() - 1.5);
-        ring = ring.child(
-            div()
-                .absolute()
-                .left(px(p.x))
-                .top(px(p.y))
-                .size(px(3.))
-                .rounded_full()
-                .bg(t.accent)
-                .opacity((1. - age as f32 * 0.14).max(0.18)),
-        );
-    }
-    div().flex().items_center().gap(px(8.)).child(ring).child(label(text, t.text_secondary, 13.))
-}
-
-fn empty_transcript(t: &Theme) -> impl IntoElement {
     div()
-        .size_full()
         .flex()
-        .flex_col()
         .items_center()
-        .justify_center()
-        .gap(px(8.))
-        .child(brand_mark(t))
-        .child(label("What should we work on?", t.text, 17.).font_weight(FontWeight::MEDIUM))
-        .child(label("Messages run on your paired machine.", t.text_muted, 13.))
+        .gap(px(6.))
+        .text_size(px(12.))
+        .child(div().text_color(t.text_secondary).child(spinner_glyph(step)))
+        .child(div().text_color(t.text_muted).child(text))
 }
 
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::get(cx);
         let body = match self.screen {
-            Screen::Pairing => self.render_pairing(&t, cx),
+            Screen::SignIn => self.render_sign_in(&t, cx),
             Screen::Chat => self.render_chat(&t, window, cx),
             Screen::Settings => self.render_settings(&t, cx),
         };
@@ -933,7 +896,7 @@ impl Render for MobileApp {
             .flex_col()
             .bg(t.background)
             .text_color(t.text)
-            .font_family("IBM Plex Sans")
+            .font_family(FONT)
             .pt(px(self.safe.top))
             .pb(px(self.safe.bottom))
             .overflow_hidden()
@@ -946,7 +909,7 @@ impl Render for MobileApp {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::rgb(0x0E0D0C))
+                .bg(gpui::rgb(0x161616))
                 .child(
                     screen
                         .relative()
@@ -955,7 +918,7 @@ impl Render for MobileApp {
                         .flex_none()
                         .rounded(px(48.))
                         .border_1()
-                        .border_color(t.border)
+                        .border_color(t.input_border)
                         .child(
                             // Dynamic Island and home indicator, for honest inset checks.
                             div()
@@ -965,7 +928,9 @@ impl Render for MobileApp {
                                 .w(px(126.))
                                 .h(px(37.))
                                 .rounded_full()
-                                .bg(gpui::black()),
+                                .bg(gpui::black())
+                                .border_1()
+                                .border_color(t.border),
                         )
                         .child(
                             div()
@@ -984,6 +949,6 @@ impl Render for MobileApp {
 }
 
 pub fn init(cx: &mut App) {
-    cx.set_global(Theme::warm_neutral());
+    cx.set_global(Theme::pure_black());
     crate::text_input::bind_keys(cx);
 }

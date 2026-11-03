@@ -17,10 +17,17 @@ use std::time::Duration;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{Message, WebSocket};
 
+/// Where a connection goes: a paired gateway over WebSocket, or the user's
+/// Jcode Cloud host over SSH (`jcode server stdio`).
+#[derive(Debug, Clone)]
+pub enum Endpoint {
+    Gateway { gateway: Gateway, auth_token: String },
+    Cloud(crate::cloud::Account),
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub gateway: Gateway,
-    pub auth_token: String,
+    pub endpoint: Endpoint,
     pub max_reconnect_attempts: Option<u32>,
     pub base_backoff: Duration,
     pub working_dir: Option<String>,
@@ -28,9 +35,14 @@ pub struct Config {
 
 impl Config {
     pub fn new(gateway: Gateway, auth_token: impl Into<String>) -> Self {
+        Self::with_endpoint(Endpoint::Gateway { gateway, auth_token: auth_token.into() })
+    }
+    pub fn cloud(account: crate::cloud::Account) -> Self {
+        Self::with_endpoint(Endpoint::Cloud(account))
+    }
+    fn with_endpoint(endpoint: Endpoint) -> Self {
         Self {
-            gateway,
-            auth_token: auth_token.into(),
+            endpoint,
             max_reconnect_attempts: None,
             base_backoff: Duration::from_secs(1),
             working_dir: None,
@@ -100,42 +112,124 @@ fn alloc_id(ids: &Mutex<u64>) -> u64 {
 }
 
 enum ConnectError {
-    Unauthorized,
-    Other,
+    Unauthorized(String),
+    Fatal(String),
+    Other(String),
 }
 
-fn connect(config: &Config) -> Result<WebSocket<TcpStream>, ConnectError> {
-    let gw = &config.gateway;
+enum Incoming {
+    Text(String),
+    Idle,
+    Closed,
+}
+
+/// One live transport carrying NDJSON frames.
+trait Link {
+    fn send_line(&mut self, line: &str) -> bool;
+    fn recv(&mut self) -> Incoming;
+    fn close(&mut self);
+}
+
+struct WsLink(WebSocket<TcpStream>);
+
+impl Link for WsLink {
+    fn send_line(&mut self, line: &str) -> bool {
+        self.0.send(Message::text(line)).is_ok()
+    }
+    fn recv(&mut self) -> Incoming {
+        match self.0.read() {
+            Ok(Message::Text(t)) => Incoming::Text(t.to_string()),
+            Ok(Message::Binary(b)) => Incoming::Text(String::from_utf8_lossy(&b).into_owned()),
+            Ok(Message::Close(_)) => Incoming::Closed,
+            Ok(_) => Incoming::Idle,
+            Err(tungstenite::Error::Io(e))
+                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
+                Incoming::Idle
+            }
+            Err(_) => Incoming::Closed,
+        }
+    }
+    fn close(&mut self) {
+        let _ = self.0.close(None);
+        let _ = self.0.flush();
+    }
+}
+
+struct CloudLink(crate::cloud::CloudStream);
+
+impl Link for CloudLink {
+    fn send_line(&mut self, line: &str) -> bool {
+        self.0.send_line(line).is_ok()
+    }
+    fn recv(&mut self) -> Incoming {
+        match self.0.read_line(Duration::from_millis(50)) {
+            crate::cloud::Read::Line(l) => Incoming::Text(l),
+            crate::cloud::Read::Idle => Incoming::Idle,
+            crate::cloud::Read::Closed => Incoming::Closed,
+        }
+    }
+    fn close(&mut self) {
+        self.0.close();
+    }
+}
+
+fn connect_ws(gw: &Gateway, token: &str) -> Result<WsLink, ConnectError> {
+    let other = |e: &dyn std::fmt::Display| ConnectError::Other(e.to_string());
     let addr = (gw.host.as_str(), gw.port)
         .to_socket_addrs()
-        .map_err(|_| ConnectError::Other)?
+        .map_err(|e| other(&e))?
         .next()
-        .ok_or(ConnectError::Other)?;
-    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|_| ConnectError::Other)?;
+        .ok_or(ConnectError::Other("no address".into()))?;
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| other(&e))?;
     stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    let mut req = gw
-        .web_socket_url()
-        .into_client_request()
-        .map_err(|_| ConnectError::Other)?;
-    req.headers_mut().insert(
-        "Authorization",
-        format!("Bearer {}", config.auth_token).parse().unwrap(),
-    );
+    let mut req = gw.web_socket_url().into_client_request().map_err(|e| other(&e))?;
+    req.headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse().unwrap());
     match tungstenite::client(req, stream) {
         Ok((ws, _)) => {
             // Short read timeout so the loop can interleave outgoing sends.
             ws.get_ref().set_read_timeout(Some(Duration::from_millis(50))).ok();
             ws.get_ref().set_nodelay(true).ok();
-            Ok(ws)
+            Ok(WsLink(ws))
         }
         Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp)))
             if resp.status() == 401 =>
         {
-            Err(ConnectError::Unauthorized)
+            Err(ConnectError::Unauthorized(
+                "This device is no longer paired with the server. Re-pair to reconnect.".into(),
+            ))
         }
-        Err(_) => Err(ConnectError::Other),
+        Err(e) => Err(other(&e)),
     }
+}
+
+fn connect_cloud(
+    account: &crate::cloud::Account,
+    commands: &Receiver<Command>,
+    stopped: &std::cell::Cell<bool>,
+    emit: &dyn Fn(ConnectionOutput),
+) -> Result<(CloudLink, Option<String>), ConnectError> {
+    let key = crate::cloud::EphemeralKey::generate().map_err(ConnectError::Fatal)?;
+    let progress = |m: &str| emit(ConnectionOutput::Phase(ConnectionPhase::Provisioning { message: m.into() }));
+    let cancelled = || {
+        if matches!(commands.try_recv(), Ok(Command::Stop) | Err(TryRecvError::Disconnected)) {
+            stopped.set(true);
+        }
+        stopped.get()
+    };
+    let target = crate::cloud::wait_for_host(account, &key, &progress, &cancelled).map_err(|e| {
+        if e.contains("sign-in") {
+            ConnectError::Unauthorized(e)
+        } else if e.contains("subscription") {
+            ConnectError::Fatal(e)
+        } else {
+            ConnectError::Other(e)
+        }
+    })?;
+    let stream = crate::cloud::CloudStream::open(&target, &key).map_err(ConnectError::Other)?;
+    let cwd = stream.working_dir();
+    Ok((CloudLink(stream), cwd))
 }
 
 enum SessionEnd {
@@ -153,7 +247,9 @@ fn run(
     emit: impl Fn(ConnectionOutput),
 ) {
     let phase = |p| emit(ConnectionOutput::Phase(p));
+    let stopped = std::cell::Cell::new(false);
     let mut attempt: u32 = 0;
+    let mut last_error = String::new();
     loop {
         phase(if attempt == 0 {
             ConnectionPhase::Connecting
@@ -161,25 +257,33 @@ fn run(
             ConnectionPhase::Reconnecting { attempt }
         });
         let mut expect_reload = false;
-        match connect(&config) {
-            Ok(mut ws) => {
+        let link: Result<(Box<dyn Link>, Option<String>), ConnectError> = match &config.endpoint {
+            Endpoint::Gateway { gateway, auth_token } => connect_ws(gateway, auth_token)
+                .map(|l| (Box::new(l) as Box<dyn Link>, config.working_dir.clone())),
+            Endpoint::Cloud(account) => connect_cloud(account, &commands, &stopped, &emit)
+                .map(|(l, cwd)| (Box::new(l) as Box<dyn Link>, config.working_dir.clone().or(cwd))),
+        };
+        if stopped.get() {
+            break;
+        }
+        match link {
+            Ok((mut link, working_dir)) => {
                 phase(ConnectionPhase::Connected);
                 attempt = 0;
                 let subscribe = Request::Subscribe {
                     id: alloc_id(&ids),
                     target_session_id: target_session.clone(),
-                    working_dir: config.working_dir.clone(),
+                    working_dir,
                 };
                 let history = Request::GetHistory { id: alloc_id(&ids) };
-                let ok = ws.send(Message::text(subscribe.encoded_line())).is_ok()
-                    && ws.send(Message::text(history.encoded_line())).is_ok();
+                let ok = link.send_line(&subscribe.encoded_line())
+                    && link.send_line(&history.encoded_line());
                 let end = if ok {
-                    session_loop(&mut ws, &commands, &mut target_session, &emit)
+                    session_loop(link.as_mut(), &commands, &mut target_session, &emit)
                 } else {
                     SessionEnd::Closed
                 };
-                let _ = ws.close(None);
-                let _ = ws.flush();
+                link.close();
                 match end {
                     SessionEnd::Stopped => break,
                     SessionEnd::CloseRequested(reason) => {
@@ -190,22 +294,21 @@ fn run(
                     SessionEnd::Closed => {}
                 }
             }
-            Err(ConnectError::Unauthorized) => {
-                phase(ConnectionPhase::Failed {
-                    reason: "This device is no longer paired with the server. Re-pair to reconnect."
-                        .into(),
-                });
+            Err(ConnectError::Unauthorized(reason)) | Err(ConnectError::Fatal(reason)) => {
+                phase(ConnectionPhase::Failed { reason });
                 return;
             }
-            Err(ConnectError::Other) => {}
+            Err(ConnectError::Other(e)) => last_error = e,
         }
         attempt += 1;
         if let Some(max) = config.max_reconnect_attempts
             && attempt > max
         {
-            phase(ConnectionPhase::Failed {
-                reason: format!("Could not reach server after {max} attempts"),
-            });
+            let mut reason = format!("Could not reach server after {max} attempts");
+            if !last_error.is_empty() {
+                reason = format!("{reason}: {last_error}");
+            }
+            phase(ConnectionPhase::Failed { reason });
             return;
         }
         let delay = if expect_reload {
@@ -223,7 +326,7 @@ fn run(
 }
 
 fn session_loop(
-    ws: &mut WebSocket<TcpStream>,
+    link: &mut dyn Link,
     commands: &Receiver<Command>,
     target_session: &mut Option<String>,
     emit: &impl Fn(ConnectionOutput),
@@ -233,7 +336,7 @@ fn session_loop(
         loop {
             match commands.try_recv() {
                 Ok(Command::Send(r)) => {
-                    if ws.send(Message::text(r.encoded_line())).is_err() {
+                    if !link.send_line(&r.encoded_line()) {
                         return SessionEnd::Closed;
                     }
                 }
@@ -241,19 +344,10 @@ fn session_loop(
                 Err(TryRecvError::Empty) => break,
             }
         }
-        let text = match ws.read() {
-            Ok(Message::Text(t)) => t.to_string(),
-            Ok(Message::Binary(b)) => String::from_utf8_lossy(&b).into_owned(),
-            Ok(Message::Close(_)) => {
-                return if reload { SessionEnd::Reload } else { SessionEnd::Closed };
-            }
-            Ok(_) => continue,
-            Err(tungstenite::Error::Io(e))
-                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                continue;
-            }
-            Err(_) => return if reload { SessionEnd::Reload } else { SessionEnd::Closed },
+        let text = match link.recv() {
+            Incoming::Text(t) => t,
+            Incoming::Idle => continue,
+            Incoming::Closed => return if reload { SessionEnd::Reload } else { SessionEnd::Closed },
         };
         for line in text.split('\n').filter(|l| !l.trim().is_empty()) {
             let Ok(event) = ServerEvent::decode(line) else { continue };

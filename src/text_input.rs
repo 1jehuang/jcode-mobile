@@ -49,6 +49,8 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     pub secure: bool,
+    /// No own chrome: the parent draws the outline (desktop composer).
+    pub bare: bool,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -64,6 +66,7 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             secure: false,
+            bare: false,
         }
     }
 
@@ -487,14 +490,17 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::submit))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .w_full()
-            .px_3()
-            .py(px(11.))
-            .rounded(px(12.))
-            .bg(theme.field)
-            .border_1()
-            .border_color(if focused { theme.accent } else { theme.border })
-            .text_size(px(17.))
-            .line_height(px(22.))
+            .when(!self.bare, |d| {
+                d.px(px(16.))
+                    .py(px(11.))
+                    .rounded(px(22.))
+                    .bg(theme.field)
+                    .border_1()
+                    .border_color(if focused { theme.border_focus } else { theme.input_border })
+            })
+            .py(px(if self.bare { 10. } else { 11. }))
+            .text_size(px(14.))
+            .line_height(px(20.))
             .text_color(theme.text)
             .overflow_hidden()
             .child(TextElement { input: cx.entity() })

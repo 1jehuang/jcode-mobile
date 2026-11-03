@@ -6,7 +6,7 @@ use gpui::{AnyElement, FontWeight, HighlightStyle, StyledText, div, prelude::*, 
 use crate::theme::Theme;
 
 pub fn render(src: &str, t: &Theme) -> AnyElement {
-    let mut col = div().flex().flex_col().gap(px(8.)).text_size(px(16.)).line_height(px(23.));
+    let mut col = div().flex().flex_col().gap(px(8.)).text_size(px(13.)).line_height(px(20.));
     let mut lines = src.lines().peekable();
     let mut para: Vec<&str> = vec![];
     let flush = |para: &mut Vec<&str>, col: gpui::Div| -> gpui::Div {
@@ -35,9 +35,9 @@ pub fn render(src: &str, t: &Theme) -> AnyElement {
                     .bg(t.code_bg)
                     .border_1()
                     .border_color(t.border)
-                    .font_family("Lilex")
-                    .text_size(px(13.))
-                    .line_height(px(19.))
+                    .font_family(crate::theme::FONT)
+                    .text_size(px(12.))
+                    .line_height(px(18.))
                     .text_color(t.text)
                     .child(code.join("\n")),
             );
@@ -46,7 +46,7 @@ pub fn render(src: &str, t: &Theme) -> AnyElement {
         } else if let Some(h) = trimmed.strip_prefix('#') {
             col = flush(&mut para, col);
             let h = h.trim_start_matches('#').trim();
-            col = col.child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(18.)).child(inline(h, t)));
+            col = col.child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(inline(h, t)));
         } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             col = flush(&mut para, col);
             col = col.child(
@@ -78,7 +78,7 @@ fn inline(src: &str, t: &Theme) -> AnyElement {
             out.push_str(&r[..end]);
             highlights.push((
                 s..out.len(),
-                HighlightStyle { color: Some(t.accent), ..Default::default() },
+                HighlightStyle { color: Some(t.text_strong), background_color: Some(t.inline_code_bg), ..Default::default() },
             ));
             rest = &r[end + 1..];
         } else if let Some(r) = rest.strip_prefix("**")
