@@ -2,6 +2,8 @@
 //! (390x844 points, iPhone 15-class safe areas) that talks to a real server.
 
 mod app;
+mod donut;
+mod donut_field;
 mod markdown;
 mod text_input;
 mod theme;

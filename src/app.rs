@@ -49,6 +49,8 @@ pub struct MobileApp {
     sign_in_error: Option<String>,
     /// Browser (Google) sign-in in flight; set to true to cancel polling.
     browser_login: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Animation clock for the spinning mark.
+    started: std::time::Instant,
     composer: Entity<TextInput>,
     transcript_scroll: ScrollHandle,
     expanded_tools: std::collections::HashSet<String>,
@@ -123,6 +125,7 @@ impl MobileApp {
             signing_in: false,
             sign_in_error: None,
             browser_login: None,
+            started: std::time::Instant::now(),
             composer,
             transcript_scroll: ScrollHandle::new(),
             expanded_tools: Default::default(),
@@ -390,17 +393,6 @@ fn outline_button(
         .child(text.into())
 }
 
-fn brand_mark() -> std::sync::Arc<gpui::Image> {
-    static MARK: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
-    MARK.get_or_init(|| {
-        std::sync::Arc::new(gpui::Image::from_bytes(
-            gpui::ImageFormat::Png,
-            include_bytes!("../assets/brand/jcode-mark.png").to_vec(),
-        ))
-    })
-    .clone()
-}
-
 fn google_mark() -> std::sync::Arc<gpui::Image> {
     static MARK: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
     MARK.get_or_init(|| {
@@ -440,12 +432,9 @@ impl MobileApp {
             .gap(px(18.))
             .child(
                 div().w_full().flex().justify_center().pb(px(8.)).child(
-                    gpui::img(brand_mark())
-                        .size(px(140.))
-                        .flex_none(),
+                    crate::donut::spinning_donut(140., t.text_strong, self.started),
                 ),
             )
-            .child(label("jcode", t.text_muted, 13.).w_full().flex().justify_center())
             .child(
                 label("Sign in to Jcode Cloud", t.text_strong, 22.)
                     .line_height(px(30.))
@@ -453,15 +442,9 @@ impl MobileApp {
                     .flex()
                     .justify_center(),
             )
-            .child(label(
-                if code_step {
-                    "Enter the 6-digit code we emailed you."
-                } else {
-                    "Your sessions run on your Jcode Cloud machine. No pairing needed."
-                },
-                t.text_secondary,
-                13.,
-            ).text_center())
+            .when(code_step, |d| {
+                d.child(label("Enter the 6-digit code we emailed you.", t.text_secondary, 13.).text_center())
+            })
             .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
             .when(!code_step, |d| {
                 let waiting = self.browser_login.is_some();
