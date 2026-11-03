@@ -158,7 +158,7 @@ pub fn start_login(email: &str) -> Result<String, String> {
     let r: LoginStart = post_json(
         &format!("{DEFAULT_API_BASE}/auth/email/start"),
         None,
-        serde_json::json!({"email": email, "client_name": "jcode-mobile"}),
+        serde_json::json!({"email": email, "client_name": "jcode-ios"}),
     )?;
     Ok(r.login_token)
 }

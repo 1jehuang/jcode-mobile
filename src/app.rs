@@ -332,6 +332,17 @@ fn outline_button(
         .child(text.into())
 }
 
+fn brand_mark() -> std::sync::Arc<gpui::Image> {
+    static MARK: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            include_bytes!("../assets/brand/jcode-mark.png").to_vec(),
+        ))
+    })
+    .clone()
+}
+
 fn spinner_glyph(step: usize) -> &'static str {
     ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][step % 8]
 }
@@ -358,6 +369,11 @@ impl MobileApp {
             .justify_center()
             .px(px(20.))
             .gap(px(18.))
+            .child(
+                gpui::img(brand_mark())
+                    .size(px(72.))
+                    .flex_none(),
+            )
             .child(label("jcode", t.text_muted, 13.))
             .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(px(30.)))
             .child(label(
