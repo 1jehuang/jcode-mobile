@@ -105,6 +105,33 @@ pub fn finish_browser_login(start: &DeviceStart, cancel: impl Fn() -> bool) -> R
     client().wait_for_device_login(start, &cancel).map_err(|e| e.message)
 }
 
+/// Permanently deletes the jcode.sh account (App Store in-app deletion):
+/// cancels any subscription, revokes every key and session, erases personal
+/// data. Callers must sign out locally afterwards.
+pub fn delete_account(account: &Account) -> Result<(), String> {
+    let url = format!("{}/account", account.api_base.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .user_agent(CLIENT_NAME)
+        .build()
+        .into();
+    let mut resp = agent
+        .delete(&url)
+        .header("Authorization", &format!("Bearer {}", account.api_key))
+        .force_send_body()
+        .send_json(serde_json::json!({ "confirm": "DELETE" }))
+        .map_err(|e| format!("Could not reach jcode.sh: {e}"))?;
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    Err(if message.is_empty() { format!("Account deletion failed (HTTP {status})") } else { message.to_string() })
+}
+
 /// Wake the account's host and open an SDK client over in-process SSH.
 pub fn connect(
     account: &Account,

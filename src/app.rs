@@ -47,6 +47,9 @@ pub struct MobileApp {
     login_token: Option<String>,
     signing_in: bool,
     sign_in_error: Option<String>,
+    /// Account deletion: 0 idle, 1 armed (second tap confirms), 2 in flight.
+    delete_step: u8,
+    delete_error: Option<String>,
     /// Browser (Google) sign-in in flight; set to true to cancel polling.
     browser_login: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Animation clock for the spinning mark.
@@ -135,6 +138,8 @@ impl MobileApp {
             login_token: None,
             signing_in: false,
             sign_in_error: None,
+            delete_step: 0,
+            delete_error: None,
             browser_login: None,
             started: std::time::Instant::now(),
             composer,
@@ -451,6 +456,34 @@ impl MobileApp {
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.send(|id| Request::Cancel { id });
+        cx.notify();
+    }
+
+    /// First tap arms, second tap deletes the account server-side, then signs out.
+    fn delete_account_tap(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = self.account.clone() else { return };
+        match self.delete_step {
+            0 => self.delete_step = 1,
+            1 => {
+                self.delete_step = 2;
+                self.delete_error = None;
+                let task = cx.background_spawn(async move { cloud::delete_account(&account) });
+                cx.spawn(async move |this, cx| {
+                    let result = task.await;
+                    this.update(cx, |this, cx| {
+                        this.delete_step = 0;
+                        match result {
+                            Ok(()) => this.sign_out(cx),
+                            Err(e) => this.delete_error = Some(e),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            _ => {}
+        }
         cx.notify();
     }
 
@@ -1163,7 +1196,29 @@ impl MobileApp {
                             outline_button("sign-out", "Sign out", true, t)
                                 .text_color(t.error)
                                 .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
-                        ),
+                        )
+                        .child(
+                            outline_button(
+                                "delete-account",
+                                match self.delete_step {
+                                    0 => "Delete account",
+                                    1 => "Tap again to permanently delete",
+                                    _ => "Deleting account…",
+                                },
+                                self.account.is_some() && self.delete_step < 2,
+                                t,
+                            )
+                            .text_color(t.error)
+                            .on_click(cx.listener(|this, _, _, cx| this.delete_account_tap(cx))),
+                        )
+                        .when(self.delete_step == 1, |d| {
+                            d.child(label(
+                                "Cancels your subscription and erases your jcode.sh account. This cannot be undone.",
+                                t.text_muted,
+                                11.,
+                            ))
+                        })
+                        .when_some(self.delete_error.clone(), |d, e| d.child(label(e, t.error, 11.))),
                 ),
             )
             .into_any_element()

@@ -10,6 +10,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
+# Direct HTTP for account deletion (same ureq the SDK already links).
+ureq = { version = "3", features = ["json"] }
 # Harness API client, Jcode Cloud control plane and pure-Rust SSH (iOS-safe).
 jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "71a57691a4b93c9054dbf27a7730e7bb522fa22a", features = ["ssh-native"] }
 

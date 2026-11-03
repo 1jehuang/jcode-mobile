@@ -3330,6 +3330,7 @@ dependencies = [
  "jcode-sdk",
  "serde",
  "serde_json",
+ "ureq",
  "uuid",
 ]
 
