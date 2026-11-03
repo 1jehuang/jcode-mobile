@@ -15,7 +15,7 @@ APP="$OUT/Payload/JcodeMobile.app"
 rm -rf "$OUT" && mkdir -p "$APP"
 cp target/aarch64-apple-ios/release/jcode-mobile "$APP/jcode-mobile"
 [ -d assets ] && cp -r assets "$APP/" || true
-cp ios-res/Assets.car ios-res/AppIcon60x60@2x.png "$APP/"
+cp ios-res/Assets.car ios-res/AppIcon60x60@2x.png ios-res/PrivacyInfo.xcprivacy "$APP/"
 
 BUILD_NUMBER="${BUILD_NUMBER:-$(date +%s)}"
 cat > "$APP/Info.plist" <<PLIST
