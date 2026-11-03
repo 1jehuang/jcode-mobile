@@ -370,12 +370,20 @@ impl MobileApp {
             .px(px(20.))
             .gap(px(18.))
             .child(
-                gpui::img(brand_mark())
-                    .size(px(72.))
-                    .flex_none(),
+                div().w_full().flex().justify_center().pb(px(8.)).child(
+                    gpui::img(brand_mark())
+                        .size(px(140.))
+                        .flex_none(),
+                ),
             )
-            .child(label("jcode", t.text_muted, 13.))
-            .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(px(30.)))
+            .child(label("jcode", t.text_muted, 13.).w_full().flex().justify_center())
+            .child(
+                label("Sign in to Jcode Cloud", t.text_strong, 22.)
+                    .line_height(px(30.))
+                    .w_full()
+                    .flex()
+                    .justify_center(),
+            )
             .child(label(
                 if code_step {
                     "Enter the 6-digit code we emailed you."
@@ -384,7 +392,7 @@ impl MobileApp {
                 },
                 t.text_secondary,
                 13.,
-            ))
+            ).text_center())
             .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
             .child(if code_step { self.code.clone() } else { self.email.clone() })
             .child(
