@@ -163,6 +163,75 @@ pub fn start_login(email: &str) -> Result<String, String> {
     Ok(r.login_token)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceStart {
+    pub device_code: String,
+    pub verification_uri_complete: String,
+    #[serde(default = "default_interval")]
+    pub interval: u64,
+    #[serde(default)]
+    pub expires_in: u64,
+}
+fn default_interval() -> u64 {
+    5
+}
+
+/// Browser sign-in: jcode.sh/account offers "Continue with Google" (and
+/// email). The server only issues device flows to `jcode-cli`.
+pub fn start_browser_login() -> Result<DeviceStart, String> {
+    post_json(
+        &format!("{DEFAULT_API_BASE}/auth/device"),
+        None,
+        serde_json::json!({"client_name": "jcode-cli"}),
+    )
+}
+
+/// Polls until the browser approves. `cancel` returning true stops early.
+pub fn finish_browser_login(start: &DeviceStart, cancel: impl Fn() -> bool) -> Result<Account, String> {
+    let mut interval = start.interval.max(2);
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(if start.expires_in > 0 { start.expires_in } else { 900 });
+    loop {
+        for _ in 0..interval * 4 {
+            if cancel() {
+                return Err("Sign-in cancelled".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if std::time::Instant::now() > deadline {
+            return Err("Sign-in expired. Try again.".into());
+        }
+        let resp = ureq::post(&format!("{DEFAULT_API_BASE}/auth/token"))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .send_json(serde_json::json!({"device_code": start.device_code}))
+            .map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.into_body().read_json().unwrap_or_default();
+        if status == 200 {
+            let r: LoginResult = serde_json::from_value(body).map_err(|e| e.to_string())?;
+            return Ok(Account { api_key: r.api_key, email: r.email, api_base: default_base() });
+        }
+        let err = &body["error"];
+        match err["code"].as_str().unwrap_or_default() {
+            "authorization_pending" => {}
+            "slow_down" => {
+                interval = err["interval"]
+                    .as_u64()
+                    .or(body["interval"].as_u64())
+                    .unwrap_or(interval + 2)
+            }
+            _ => {
+                return Err(err["message"]
+                    .as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("Sign-in failed (HTTP {status})")));
+            }
+        }
+    }
+}
+
 pub fn verify_login(token: &str, code: &str) -> Result<Account, String> {
     let r: LoginResult = post_json(
         &format!("{DEFAULT_API_BASE}/auth/email/verify"),

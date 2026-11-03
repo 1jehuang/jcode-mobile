@@ -47,7 +47,8 @@ pub struct MobileApp {
     login_token: Option<String>,
     signing_in: bool,
     sign_in_error: Option<String>,
-    // Chat
+    /// Browser (Google) sign-in in flight; set to true to cancel polling.
+    browser_login: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     composer: Entity<TextInput>,
     transcript_scroll: ScrollHandle,
     expanded_tools: std::collections::HashSet<String>,
@@ -88,6 +89,7 @@ impl MobileApp {
                         if this.session.is_processing
                             || this.session.is_reasoning
                             || this.signing_in
+                            || this.browser_login.is_some()
                             || !matches!(this.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. })
                         {
                             this.spinner_step = (this.spinner_step + 1) % 8;
@@ -120,6 +122,7 @@ impl MobileApp {
             login_token: None,
             signing_in: false,
             sign_in_error: None,
+            browser_login: None,
             composer,
             transcript_scroll: ScrollHandle::new(),
             expanded_tools: Default::default(),
@@ -175,6 +178,61 @@ impl MobileApp {
                         }
                         this.login_token = None;
                         this.code.update(cx, |t, cx| t.set_text("", cx));
+                        this.connect(account, cx);
+                    }
+                    Err(e) => this.sign_in_error = Some(e),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// "Continue with Google": opens jcode.sh/account (Google sign-in) in the
+    /// system browser and polls the device flow until it is approved.
+    fn google_sign_in(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self.browser_login.take() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+            cx.notify();
+            return;
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.browser_login = Some(cancel.clone());
+        self.sign_in_error = None;
+        cx.notify();
+        let start = cx.background_spawn(async move { cloud::start_browser_login() });
+        cx.spawn(async move |this, cx| {
+            let start = match start.await {
+                Ok(s) => s,
+                Err(e) => {
+                    this.update(cx, |this, cx| {
+                        this.browser_login = None;
+                        this.sign_in_error = Some(e);
+                        cx.notify()
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let url = start.verification_uri_complete.clone();
+            this.update(cx, |_, cx| cx.open_url(&url)).ok();
+            let flag = cancel.clone();
+            let result = cx
+                .background_spawn(async move {
+                    cloud::finish_browser_login(&start, || flag.load(std::sync::atomic::Ordering::Relaxed))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                this.browser_login = None;
+                match result {
+                    Ok(account) => {
+                        if let Err(e) = this.store.save(&account) {
+                            this.sign_in_error = Some(format!("Could not save sign-in: {e}"));
+                        }
                         this.connect(account, cx);
                     }
                     Err(e) => this.sign_in_error = Some(e),
@@ -343,6 +401,17 @@ fn brand_mark() -> std::sync::Arc<gpui::Image> {
     .clone()
 }
 
+fn google_mark() -> std::sync::Arc<gpui::Image> {
+    static MARK: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            include_bytes!("../assets/brand/google-g.png").to_vec(),
+        ))
+    })
+    .clone()
+}
+
 fn spinner_glyph(step: usize) -> &'static str {
     ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][step % 8]
 }
@@ -394,6 +463,42 @@ impl MobileApp {
                 13.,
             ).text_center())
             .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
+            .when(!code_step, |d| {
+                let waiting = self.browser_login.is_some();
+                d.child(
+                    div()
+                        .id("google")
+                        .w_full()
+                        .h(px(44.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(10.))
+                        .rounded_full()
+                        .bg(gpui::white())
+                        .text_color(gpui::black())
+                        .text_size(px(14.))
+                        .cursor_pointer()
+                        .active(|s| s.opacity(0.85))
+                        .when(!waiting, |d| d.child(gpui::img(google_mark()).size(px(18.)).flex_none()))
+                        .child(if waiting {
+                            format!("{} Waiting for browser… (tap to cancel)", spinner_glyph(self.spinner_step))
+                        } else {
+                            "Continue with Google".into()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.google_sign_in(cx))),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(div().flex_1().h(px(1.)).bg(t.border))
+                        .child(label("or", t.text_muted, 12.))
+                        .child(div().flex_1().h(px(1.)).bg(t.border)),
+                )
+            })
             .child(if code_step { self.code.clone() } else { self.email.clone() })
             .child(
                 outline_button("sign-in-go", action, ready && !self.signing_in, t)
