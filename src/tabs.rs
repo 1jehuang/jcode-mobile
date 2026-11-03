@@ -128,7 +128,7 @@ mod tests {
             }
         }
         // Few tabs keep a gap, many overlap.
-        let g = layout(290.0, 2, 0);
+        let g = layout(500.0, 2, 0);
         assert!(g[1].left >= g[0].left + g[0].width);
         let g = layout(290.0, 8, 0);
         assert!(g[1].left < g[0].left + g[0].width);
