@@ -7,14 +7,16 @@ pub mod connection;
 pub mod credentials;
 pub mod gateway;
 pub mod session;
-pub mod wire;
+
+/// The harness API client this core is built on.
+pub use jcode_sdk;
 
 pub use cloud::{Account, AccountStore};
-pub use connection::{Config, Connection, Endpoint};
+pub use connection::{Config, Connection, Endpoint, Request, TransportFactory};
 pub use credentials::{CredentialStore, FileCredentialStore, ServerCredential};
 pub use gateway::{Gateway, PairPayload, PairResponse, parse_pair_uri};
 pub use session::{
     ConnectionOutput, ConnectionPhase, LocalIntent, Role, SessionState, ToolCall, ToolStatus,
     TranscriptEntry,
 };
-pub use wire::{Request, ServerEvent};
+pub use jcode_sdk::ApiEvent;

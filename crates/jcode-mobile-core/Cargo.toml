@@ -8,10 +8,10 @@ description = "GPUI-free core of jcode mobile: wire protocol, session reducer, p
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
-ureq = { version = "3", features = ["json"] }
-russh = { version = "0.54", default-features = false, features = ["ring"] }
-tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+# Harness API client, Jcode Cloud control plane and pure-Rust SSH (iOS-safe).
+jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "71a57691a4b93c9054dbf27a7730e7bb522fa22a", features = ["ssh-native"] }
+
+[dev-dependencies]
+jcode-harness-api = { git = "https://github.com/1jehuang/jcode", rev = "71a57691a4b93c9054dbf27a7730e7bb522fa22a" }

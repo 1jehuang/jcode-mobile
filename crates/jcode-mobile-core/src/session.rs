@@ -1,8 +1,8 @@
 //! Pure state machine turning connection output into session state.
-//! Line-for-line port of `ios/Sources/JCodeKit/SessionReducer.swift` so both
-//! apps behave identically.
+//! Driven by the harness API's `ApiEvent` (via jcode-sdk), so the app shares
+//! one protocol with every other jcode client.
 
-use crate::wire::{HistoryPayload, ServerEvent};
+use jcode_sdk::{ApiEvent, HistoryMessage, TurnStopReason};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,7 +19,7 @@ pub enum ConnectionPhase {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionOutput {
     Phase(ConnectionPhase),
-    Event(ServerEvent),
+    Event(ApiEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,186 +236,171 @@ impl SessionState {
         self.is_processing = false;
         self.is_reasoning = false;
         self.server_phase = None;
+        self.status_detail = None;
         self.finish_streaming();
     }
 
-    fn apply_event(&mut self, event: ServerEvent) {
-        use ServerEvent::*;
+    fn apply_event(&mut self, event: ApiEvent) {
+        use ApiEvent::*;
         match event {
-            TextDelta { text } => self.with_streaming_assistant(|e| e.text.push_str(&text)),
-            ReasoningDelta { text } => {
+            HelloOk { server, .. } => self.server_version = Some(server),
+            Attached { session } => {
+                if let Some(t) = session.title.clone() {
+                    self.session_title = Some(t.clone());
+                    self.session_titles.insert(session.session_id.clone(), t);
+                }
+                self.is_processing = session.status == "running";
+                self.session_id = Some(session.session_id);
+            }
+            Sessions { sessions } => {
+                self.all_sessions = sessions.iter().map(|s| s.session_id.clone()).collect();
+                for s in sessions {
+                    if let Some(t) = s.title {
+                        self.session_titles.insert(s.session_id, t);
+                    }
+                }
+            }
+            History { session_id, messages, .. } => self.apply_history(session_id, messages),
+            TextDelta { text, .. } => {
+                self.is_processing = true;
+                self.with_streaming_assistant(|e| e.text.push_str(&text))
+            }
+            TextReplace { text, .. } => self.with_streaming_assistant(|e| e.text = text),
+            // The text of this response ended; tools may still run, and they
+            // update their cards in place.
+            TextDone { .. } => self.finish_streaming(),
+            ReasoningDelta { text, .. } => {
                 self.is_reasoning = true;
                 self.with_streaming_assistant(|e| e.reasoning.push_str(&text));
             }
             ReasoningDone { .. } => self.is_reasoning = false,
-            TextReplace { text } => self.with_streaming_assistant(|e| e.text = text),
-            ToolStart { id, name } => self.with_streaming_assistant(|e| {
-                e.tool_calls.push(ToolCall::new(id, name, ToolStatus::StreamingInput))
-            }),
-            ToolInput { delta } => self.with_streaming_assistant(|e| {
-                if let Some(t) = e.tool_calls.last_mut() {
-                    t.input.push_str(&delta);
+            ToolStart { call_id, name, .. } => {
+                if self.find_tool(&call_id).is_none() {
+                    self.with_streaming_assistant(|e| {
+                        e.tool_calls.push(self::ToolCall::new(call_id, name, ToolStatus::StreamingInput))
+                    })
                 }
-            }),
-            // The server can send MessageEnd before ToolDone (the turn's text
-            // ends while the tool still runs), so update a known call in place
-            // instead of opening a fresh assistant entry for it.
-            ToolExec { id, .. } if self.find_tool(&id).is_some() => {
-                self.find_tool(&id).unwrap().status = ToolStatus::Running;
             }
-            ToolDone { id, output, error, .. } if self.find_tool(&id).is_some() => {
-                let t = self.find_tool(&id).unwrap();
-                t.output = output;
-                t.status = error.map(ToolStatus::Failed).unwrap_or(ToolStatus::Succeeded);
-            }
-            ToolExec { id, name } => self.with_streaming_assistant(|e| {
-                match e.tool_calls.iter_mut().find(|t| t.id == id) {
-                    Some(t) => t.status = ToolStatus::Running,
-                    None => e.tool_calls.push(ToolCall::new(id, name, ToolStatus::Running)),
+            ToolInputDelta { call_id, delta, .. } => match self.find_tool(&call_id) {
+                Some(t) => t.input.push_str(&delta),
+                None => self.with_streaming_assistant(|e| {
+                    let mut t = self::ToolCall::new(call_id, "", ToolStatus::StreamingInput);
+                    t.input = delta;
+                    e.tool_calls.push(t);
+                }),
+            },
+            ToolCall { call_id, name, input, .. } => {
+                let input = match input {
+                    serde_json::Value::String(s) => s,
+                    v => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                };
+                match self.find_tool(&call_id) {
+                    Some(t) => t.input = input,
+                    None => self.with_streaming_assistant(|e| {
+                        let mut t = self::ToolCall::new(call_id, name, ToolStatus::Running);
+                        t.input = input;
+                        e.tool_calls.push(t);
+                    }),
                 }
-            }),
-            ToolDone { id, name, output, error } => self.with_streaming_assistant(|e| {
+            }
+            ToolExec { call_id, name, .. } => match self.find_tool(&call_id) {
+                Some(t) => t.status = ToolStatus::Running,
+                None => self.with_streaming_assistant(|e| {
+                    e.tool_calls.push(self::ToolCall::new(call_id, name, ToolStatus::Running))
+                }),
+            },
+            ToolDone { call_id, name, output, error, .. } => {
                 let status = error.map(ToolStatus::Failed).unwrap_or(ToolStatus::Succeeded);
-                match e.tool_calls.iter_mut().find(|t| t.id == id) {
+                match self.find_tool(&call_id) {
                     Some(t) => {
                         t.output = output;
                         t.status = status;
                     }
-                    None => {
-                        let mut t = ToolCall::new(id, name, status);
+                    None => self.with_streaming_assistant(|e| {
+                        let mut t = self::ToolCall::new(call_id, name, status);
                         t.output = output;
                         e.tool_calls.push(t);
-                    }
+                    }),
                 }
-            }),
-            MessageEnd => self.finish_streaming(),
-            ConnectionPhase { phase } => {
-                self.server_phase = if phase.is_empty() { None } else { Some(phase) }
             }
-            SoftInterruptInjected { content, display_role, .. } => {
-                self.resolve_pending_interrupt(content, display_role)
-            }
-            RetryRollback { attempt, max } => {
-                if self.transcript.last().is_some_and(|e| e.is_streaming) {
-                    self.transcript.pop();
-                }
-                self.is_reasoning = false;
-                self.status_detail = Some(format!("Retrying ({attempt}/{max})"));
-            }
-            Done { .. } => {
-                self.turn_over();
-                self.drain_pending_interrupts();
-            }
-            Interrupted => {
-                self.turn_over();
-                self.drain_pending_interrupts();
-                self.notice(NoticeKind::Info, "Interrupted");
-            }
-            Error { message, retry_after_secs, .. } => {
-                self.turn_over();
-                self.error_banner = Some(match retry_after_secs {
-                    Some(r) => format!("{message} (retry in {r}s)"),
-                    None => message,
-                });
-            }
-            TokenUsage { input, output } => {
+            TokenUsage { input, output, .. } => {
                 self.token_input = input;
                 self.token_output = output;
             }
-            StatusDetail { detail } => self.status_detail = Some(detail),
-            State { session_id, is_processing, .. } => {
-                self.session_id = Some(session_id);
-                self.is_processing = is_processing;
+            ConnectionPhase { phase, .. } => {
+                self.server_phase = if phase.is_empty() { None } else { Some(phase) }
             }
-            SessionId { session_id } => self.session_id = Some(session_id),
-            SessionRenamed { session_id, display_title } => {
+            SessionStatus { status, .. } => match status.as_str() {
+                "running" => self.is_processing = true,
+                "idle" | "cancelled" => self.turn_over(),
+                _ => {}
+            },
+            MessageAccepted { .. } => self.is_processing = true,
+            SoftInterruptInjected { client_ids, display_role, .. } => {
+                for _ in 0..client_ids.len().max(1) {
+                    self.resolve_pending_interrupt(display_role.as_deref());
+                }
+            }
+            SoftInterruptsCancelled { .. } => {
+                self.transcript.retain(|e| !e.is_queued);
+                self.pending_interrupts.clear();
+            }
+            TurnDone { .. } => {
+                self.turn_over();
+                self.drain_pending_interrupts();
+            }
+            TurnStopped { reason, message, .. } => {
+                self.turn_over();
+                self.drain_pending_interrupts();
+                match reason {
+                    TurnStopReason::Interrupted => self.notice(NoticeKind::Info, "Interrupted"),
+                    _ => {
+                        self.error_banner =
+                            Some(if message.is_empty() { "The turn stopped".into() } else { message })
+                    }
+                }
+            }
+            Error { message, .. } => {
+                self.turn_over();
+                self.error_banner = Some(message);
+            }
+            ModelInfo { provider, model, reasoning_effort, .. }
+            | RuntimeInfo { provider, model, reasoning_effort, .. } => {
+                if provider.is_some() {
+                    self.provider_name = provider;
+                }
+                if model.is_some() {
+                    self.model_name = model;
+                }
+                if reasoning_effort.is_some() {
+                    self.reasoning_effort = reasoning_effort;
+                }
+            }
+            Models { models, current, .. } => {
+                self.available_models = models;
+                if current.is_some() {
+                    self.model_name = current;
+                }
+            }
+            Compacted { message, .. } => self.notice(NoticeKind::Compaction, message),
+            SessionRenamed { session_id, display_title, .. } => {
                 if self.session_id.is_none() || self.session_id.as_deref() == Some(&session_id) {
                     self.session_title = Some(display_title.clone());
                 }
                 self.session_titles.insert(session_id, display_title);
             }
-            History(payload) => self.apply_history(payload),
-            ModelChanged { model, error, .. } => match error {
-                Some(e) => self.error_banner = Some(e),
-                None => self.model_name = Some(model),
-            },
-            ReasoningEffortChanged { effort, error, .. } => match error {
-                Some(e) => self.error_banner = Some(e),
-                None => self.reasoning_effort = effort,
-            },
-            CompactResult { message, success, .. } => {
-                if success {
-                    self.notice(NoticeKind::Compaction, message)
-                } else {
-                    self.error_banner = Some(message)
-                }
+            WakeRequested { notification, .. } => self.notice(NoticeKind::Notification, notification),
+            SessionRecovery { reconnect_notice: Some(n), .. } => self.notice(NoticeKind::Info, n),
+            BackgroundProgress { label, summary, done, .. } => {
+                self.status_detail = if done { None } else { Some(format!("{label}: {summary}")) }
             }
-            AvailableModelsUpdated { models, provider_model } => {
-                self.available_models = models;
-                if provider_model.is_some() {
-                    self.model_name = provider_model;
-                }
-            }
-            Compaction { trigger, tokens_saved } => {
-                if let Some(saved) = tokens_saved
-                    && trigger != "background"
-                {
-                    self.notice(
-                        NoticeKind::Compaction,
-                        format!("Context compacted ({saved} tokens saved)"),
-                    );
-                }
-            }
-            Notification { from_name, message } => {
-                let prefix = from_name.map(|n| format!("{n}: ")).unwrap_or_default();
-                self.notice(NoticeKind::Notification, prefix + &message);
-            }
-            Reloading { .. } => {
-                self.notice(NoticeKind::Info, "Server is updating, reconnecting shortly")
-            }
-            SessionCloseRequested { reason } => {
-                self.is_processing = false;
-                self.is_reasoning = false;
-                self.finish_streaming();
-                self.error_banner = Some(if reason.is_empty() {
-                    "Server closed this session".into()
-                } else {
-                    reason
-                });
-            }
-            Ack { .. } | Pong { .. } | Unknown { .. } => {}
+            _ => {}
         }
     }
 
-    fn apply_history(&mut self, p: HistoryPayload) {
-        self.session_id = Some(p.session_id.clone());
-        if p.provider_name.is_some() {
-            self.provider_name = p.provider_name;
-        }
-        if p.provider_model.is_some() {
-            self.model_name = p.provider_model;
-        }
-        if !p.available_models.is_empty() {
-            self.available_models = p.available_models;
-        }
-        if !p.all_sessions.is_empty() {
-            self.all_sessions = p.all_sessions;
-        }
-        if p.server_version.is_some() {
-            self.server_version = p.server_version;
-        }
-        if let Some(t) = &p.display_title {
-            self.session_title = Some(t.clone());
-            self.session_titles.insert(p.session_id.clone(), t.clone());
-        }
-        if p.reasoning_effort.is_some() {
-            self.reasoning_effort = p.reasoning_effort;
-        }
+    fn apply_history(&mut self, session_id: String, messages: Vec<HistoryMessage>) {
+        self.session_id = Some(session_id);
         self.pending_interrupts.clear();
-        if let Some((i, o)) = p.total_tokens {
-            self.token_input = i;
-            self.token_output = o;
-        }
 
         // Keep trailing optimistic user messages the server has not seen yet.
         let tail_len = self
@@ -426,42 +411,22 @@ impl SessionState {
             .count();
         let tail: Vec<_> = self.transcript.split_off(self.transcript.len() - tail_len);
         let history_user: HashSet<&str> =
-            p.messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
+            messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
         let tail: Vec<_> =
             tail.into_iter().filter(|e| !history_user.contains(e.text.as_str())).collect();
 
-        let mut transcript = Vec::with_capacity(p.messages.len() + tail.len());
-        for m in &p.messages {
+        let mut transcript = Vec::with_capacity(messages.len() + tail.len());
+        for m in &messages {
             let role = match m.role.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
                 "system" => Role::System,
                 _ => continue,
             };
-            let tool_calls: Vec<ToolCall> = match &m.tool_data {
-                Some(d) => vec![ToolCall {
-                    id: d.id.clone(),
-                    name: d.name.clone(),
-                    input: d.input.clone(),
-                    output: d.output.clone().unwrap_or_default(),
-                    status: match (&d.error, &d.output) {
-                        (Some(e), _) => ToolStatus::Failed(e.clone()),
-                        (None, Some(_)) => ToolStatus::Succeeded,
-                        (None, None) => ToolStatus::Running,
-                    },
-                }],
-                None => m
-                    .tool_calls
-                    .iter()
-                    .map(|n| ToolCall::new(n.clone(), n.clone(), ToolStatus::Succeeded))
-                    .collect(),
-            };
-            if m.content.is_empty() && tool_calls.is_empty() {
+            if m.content.is_empty() {
                 continue;
             }
-            let mut e = self.entry(role, m.content.clone());
-            e.tool_calls = tool_calls;
-            transcript.push(e);
+            transcript.push(self.entry(role, m.content.clone()));
         }
         transcript.extend(tail);
         self.transcript = transcript;
@@ -476,23 +441,20 @@ impl SessionState {
             .find(|t| t.id == id)
     }
 
-    fn resolve_pending_interrupt(&mut self, content: String, display_role: Option<String>) {
-        if let Some(i) = self.pending_interrupts.iter().position(|p| *p == content) {
-            self.pending_interrupts.remove(i);
+    /// Soft interrupts are injected in the order they were queued.
+    fn resolve_pending_interrupt(&mut self, display_role: Option<&str>) {
+        if !self.pending_interrupts.is_empty() {
+            self.pending_interrupts.remove(0);
         }
-        let idx = self
-            .transcript
-            .iter()
-            .position(|e| e.is_queued && e.text == content)
-            .or_else(|| self.transcript.iter().position(|e| e.is_queued));
-        match idx {
-            Some(i) => self.transcript[i].is_queued = false,
-            None => {
-                let role =
-                    if display_role.as_deref() == Some("system") { Role::System } else { Role::User };
-                let e = self.entry(role, content);
-                self.transcript.push(e);
+        if let Some(i) = self.transcript.iter().position(|e| e.is_queued) {
+            let mut e = self.transcript.remove(i);
+            e.is_queued = false;
+            if display_role == Some("system") {
+                e.role = Role::System;
             }
+            // Injected mid-turn: it belongs before the reply now streaming.
+            self.finish_streaming();
+            self.transcript.push(e);
         }
     }
 
@@ -531,22 +493,25 @@ impl SessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{HistoryMessage, ServerEvent as E};
+    use ApiEvent as E;
 
     fn ev(s: &mut SessionState, e: E) {
         s.apply(ConnectionOutput::Event(e));
+    }
+    fn sid() -> String {
+        "s".into()
     }
 
     #[test]
     fn streams_text_and_tools_into_one_entry() {
         let mut s = SessionState::default();
         s.apply_intent(LocalIntent::UserSentMessage("hi".into()));
-        ev(&mut s, E::TextDelta { text: "Hel".into() });
-        ev(&mut s, E::TextDelta { text: "lo".into() });
-        ev(&mut s, E::ToolStart { id: "t1".into(), name: "bash".into() });
-        ev(&mut s, E::ToolInput { delta: "ls".into() });
-        ev(&mut s, E::ToolDone { id: "t1".into(), name: "bash".into(), output: "ok".into(), error: None });
-        ev(&mut s, E::Done { id: 1 });
+        ev(&mut s, E::TextDelta { session_id: sid(), text: "Hel".into(), message_id: None });
+        ev(&mut s, E::TextDelta { session_id: sid(), text: "lo".into(), message_id: None });
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::ToolInputDelta { session_id: sid(), call_id: "t1".into(), delta: "ls".into() });
+        ev(&mut s, E::ToolDone { session_id: sid(), call_id: "t1".into(), name: "bash".into(), output: "ok".into(), error: None });
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
         assert_eq!(s.transcript.len(), 2);
         let a = &s.transcript[1];
         assert_eq!(a.text, "Hello");
@@ -557,15 +522,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_done_after_message_end_updates_existing_card() {
-        // Real server order: tool_start, tool_exec, message_end, tool_done.
+    fn tool_done_after_text_done_updates_existing_card() {
         let mut s = SessionState::default();
         s.apply_intent(LocalIntent::UserSentMessage("hi".into()));
-        ev(&mut s, E::ToolStart { id: "t1".into(), name: "bash".into() });
-        ev(&mut s, E::ToolExec { id: "t1".into(), name: "bash".into() });
-        ev(&mut s, E::MessageEnd);
-        ev(&mut s, E::ToolDone { id: "t1".into(), name: "bash".into(), output: "hi".into(), error: None });
-        ev(&mut s, E::TextDelta { text: "ok".into() });
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::ToolExec { session_id: sid(), call_id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::TextDone { session_id: sid(), message_id: None });
+        ev(&mut s, E::ToolDone { session_id: sid(), call_id: "t1".into(), name: "bash".into(), output: "hi".into(), error: None });
+        ev(&mut s, E::TextDelta { session_id: sid(), text: "ok".into(), message_id: None });
         let tools: Vec<_> = s.transcript.iter().flat_map(|e| &e.tool_calls).collect();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].status, ToolStatus::Succeeded);
@@ -573,33 +537,14 @@ mod tests {
     }
 
     #[test]
-    fn retry_rollback_discards_partial_output() {
-        let mut s = SessionState::default();
-        ev(&mut s, E::TextDelta { text: "partial".into() });
-        ev(&mut s, E::RetryRollback { attempt: 1, max: 3 });
-        assert!(s.transcript.is_empty());
-        assert_eq!(s.status_detail.as_deref(), Some("Retrying (1/3)"));
-    }
-
-    #[test]
     fn history_keeps_unseen_optimistic_tail() {
         let mut s = SessionState::default();
         s.apply_intent(LocalIntent::UserSentMessage("new one".into()));
-        ev(
-            &mut s,
-            E::History(HistoryPayload {
-                session_id: "s".into(),
-                messages: vec![HistoryMessage {
-                    role: "user".into(),
-                    content: "old".into(),
-                    tool_calls: vec![],
-                    tool_data: None,
-                }],
-                ..Default::default()
-            }),
-        );
+        let old = HistoryMessage { response_stats: None, role: "user".into(), content: "old".into() };
+        ev(&mut s, E::History { session_id: sid(), messages: vec![old], images: vec![] });
         let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, ["old", "new one"]);
+        assert_eq!(s.session_id.as_deref(), Some("s"));
     }
 
     #[test]
@@ -610,10 +555,11 @@ mod tests {
         ev(
             &mut s,
             E::SoftInterruptInjected {
-                content: "stop".into(),
-                display_role: None,
+                session_id: sid(),
+                client_ids: vec!["q1".into()],
                 point: "x".into(),
                 tools_skipped: None,
+                display_role: None,
             },
         );
         assert!(!s.has_pending_interrupts());
@@ -621,9 +567,18 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_turn_leaves_notice_not_error() {
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserSentMessage("hi".into()));
+        ev(&mut s, E::TurnStopped { session_id: sid(), reason: TurnStopReason::Interrupted, message: String::new(), provider_stop_reason: None });
+        assert!(!s.is_processing && s.error_banner.is_none());
+        assert_eq!(s.notices[0].message, "Interrupted");
+    }
+
+    #[test]
     fn disconnect_drops_empty_stub() {
         let mut s = SessionState::default();
-        ev(&mut s, E::TextReplace { text: String::new() });
+        ev(&mut s, E::TextReplace { session_id: sid(), text: String::new(), message_id: None });
         s.apply(ConnectionOutput::Phase(ConnectionPhase::Reconnecting { attempt: 1 }));
         assert!(s.transcript.is_empty());
     }

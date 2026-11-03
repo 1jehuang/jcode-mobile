@@ -1,28 +1,38 @@
-//! One WebSocket connection to a jcode server, run on a background thread.
-//! Port of Connection.swift: connect with Bearer auth, subscribe + get_history,
-//! decode NDJSON frames, reconnect with capped exponential backoff, stop on 401
-//! or a server close request.
+//! One connection to a jcode harness, run on a background thread.
+//!
+//! Speaks the harness API through `jcode_sdk::JcodeClient`: connect (Jcode
+//! Cloud over in-process SSH, or any custom transport), attach or create a
+//! session, load history, stream `ApiEvent`s, and reconnect with capped
+//! exponential backoff. Sign-in and subscription failures stop for good.
 //!
 //! Threads instead of async keep the core runtime-free, which matters for the
 //! iOS target where GPUI owns the main loop.
 
-use crate::gateway::Gateway;
 use crate::session::{ConnectionOutput, ConnectionPhase};
-use crate::wire::{Request, ServerEvent};
-use std::io::ErrorKind;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use jcode_sdk::{ApiEvent, ConnectOptions, ErrorKind, JcodeClient, Transport};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tungstenite::client::IntoClientRequest;
-use tungstenite::{Message, WebSocket};
 
-/// Where a connection goes: a paired gateway over WebSocket, or the user's
-/// Jcode Cloud host over SSH (`jcode server stdio`).
-#[derive(Debug, Clone)]
+/// Opens a fresh transport for each (re)connect attempt.
+pub type TransportFactory = Arc<dyn Fn() -> jcode_sdk::Result<Box<dyn Transport>> + Send + Sync>;
+
+/// Where a connection goes.
+#[derive(Clone)]
 pub enum Endpoint {
-    Gateway { gateway: Gateway, auth_token: String },
+    /// The user's Jcode Cloud host, woken on demand, over in-process SSH.
     Cloud(crate::cloud::Account),
+    /// Any transport carrying harness API frames (tests, future gateways).
+    Custom(TransportFactory),
+}
+
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Endpoint::Cloud(a) => f.debug_tuple("Cloud").field(&a.email).finish(),
+            Endpoint::Custom(_) => f.write_str("Custom"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,11 +44,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new(gateway: Gateway, auth_token: impl Into<String>) -> Self {
-        Self::with_endpoint(Endpoint::Gateway { gateway, auth_token: auth_token.into() })
-    }
     pub fn cloud(account: crate::cloud::Account) -> Self {
         Self::with_endpoint(Endpoint::Cloud(account))
+    }
+    pub fn custom(factory: TransportFactory) -> Self {
+        Self::with_endpoint(Endpoint::Custom(factory))
     }
     fn with_endpoint(endpoint: Endpoint) -> Self {
         Self {
@@ -48,6 +58,23 @@ impl Config {
             working_dir: None,
         }
     }
+}
+
+/// What the UI can ask of the attached session. `id` is a local
+/// correlation id handed out by [`Connection::send`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    Message { id: u64, content: String },
+    Cancel { id: u64 },
+    SoftInterrupt { id: u64, content: String, urgent: bool },
+    CancelSoftInterrupts { id: u64 },
+    Ping { id: u64 },
+    GetHistory { id: u64 },
+    SetModel { id: u64, model: String },
+    SetReasoningEffort { id: u64, effort: String },
+    Compact { id: u64 },
+    RenameSession { id: u64, title: Option<String> },
+    Clear { id: u64 },
 }
 
 enum Command {
@@ -64,20 +91,18 @@ pub struct Connection {
 
 impl Connection {
     /// Starts the connection thread. `on_output` is called from that thread
-    /// for each phase change and decoded event (use it to wake the UI).
+    /// for each phase change and event (use it to wake the UI).
     pub fn start(
         config: Config,
         resume_session_id: Option<String>,
         on_output: impl Fn(ConnectionOutput) + Send + 'static,
     ) -> Connection {
         let (tx, rx) = mpsc::channel();
-        let next_id = Arc::new(Mutex::new(1));
-        let ids = next_id.clone();
         std::thread::Builder::new()
             .name("jcode-connection".into())
-            .spawn(move || run(config, resume_session_id, rx, ids, on_output))
+            .spawn(move || run(config, resume_session_id, rx, on_output))
             .expect("spawn connection thread");
-        Connection { commands: tx, next_id }
+        Connection { commands: tx, next_id: Arc::new(Mutex::new(1)) }
     }
 
     /// Like `start` but returns a channel instead of a callback.
@@ -94,7 +119,11 @@ impl Connection {
 
     /// Queues a request with a fresh id. Returns the id.
     pub fn send(&self, build: impl FnOnce(u64) -> Request) -> u64 {
-        let id = alloc_id(&self.next_id);
+        let id = {
+            let mut g = self.next_id.lock().unwrap();
+            *g += 1;
+            *g - 1
+        };
         let _ = self.commands.send(Command::Send(build(id)));
         id
     }
@@ -104,201 +133,151 @@ impl Connection {
     }
 }
 
-fn alloc_id(ids: &Mutex<u64>) -> u64 {
-    let mut g = ids.lock().unwrap();
-    let id = *g;
-    *g += 1;
-    id
-}
+const CLIENT_NAME: &str = concat!("jcode-ios/", env!("CARGO_PKG_VERSION"));
 
-enum ConnectError {
-    Unauthorized(String),
+enum Failure {
+    /// Retrying cannot help (sign-in expired, no subscription, bad host key).
     Fatal(String),
-    Other(String),
-}
-
-enum Incoming {
-    Text(String),
-    Idle,
-    Closed,
-}
-
-/// One live transport carrying NDJSON frames.
-trait Link {
-    fn send_line(&mut self, line: &str) -> bool;
-    fn recv(&mut self) -> Incoming;
-    fn close(&mut self);
-}
-
-struct WsLink(WebSocket<TcpStream>);
-
-impl Link for WsLink {
-    fn send_line(&mut self, line: &str) -> bool {
-        self.0.send(Message::text(line)).is_ok()
-    }
-    fn recv(&mut self) -> Incoming {
-        match self.0.read() {
-            Ok(Message::Text(t)) => Incoming::Text(t.to_string()),
-            Ok(Message::Binary(b)) => Incoming::Text(String::from_utf8_lossy(&b).into_owned()),
-            Ok(Message::Close(_)) => Incoming::Closed,
-            Ok(_) => Incoming::Idle,
-            Err(tungstenite::Error::Io(e))
-                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                Incoming::Idle
-            }
-            Err(_) => Incoming::Closed,
-        }
-    }
-    fn close(&mut self) {
-        let _ = self.0.close(None);
-        let _ = self.0.flush();
-    }
-}
-
-struct CloudLink(crate::cloud::CloudStream);
-
-impl Link for CloudLink {
-    fn send_line(&mut self, line: &str) -> bool {
-        self.0.send_line(line).is_ok()
-    }
-    fn recv(&mut self) -> Incoming {
-        match self.0.read_line(Duration::from_millis(50)) {
-            crate::cloud::Read::Line(l) => Incoming::Text(l),
-            crate::cloud::Read::Idle => Incoming::Idle,
-            crate::cloud::Read::Closed => Incoming::Closed,
-        }
-    }
-    fn close(&mut self) {
-        self.0.close();
-    }
-}
-
-fn connect_ws(gw: &Gateway, token: &str) -> Result<WsLink, ConnectError> {
-    let other = |e: &dyn std::fmt::Display| ConnectError::Other(e.to_string());
-    let addr = (gw.host.as_str(), gw.port)
-        .to_socket_addrs()
-        .map_err(|e| other(&e))?
-        .next()
-        .ok_or(ConnectError::Other("no address".into()))?;
-    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| other(&e))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    let mut req = gw.web_socket_url().into_client_request().map_err(|e| other(&e))?;
-    req.headers_mut()
-        .insert("Authorization", format!("Bearer {token}").parse().unwrap());
-    match tungstenite::client(req, stream) {
-        Ok((ws, _)) => {
-            // Short read timeout so the loop can interleave outgoing sends.
-            ws.get_ref().set_read_timeout(Some(Duration::from_millis(50))).ok();
-            ws.get_ref().set_nodelay(true).ok();
-            Ok(WsLink(ws))
-        }
-        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(resp)))
-            if resp.status() == 401 =>
-        {
-            Err(ConnectError::Unauthorized(
-                "This device is no longer paired with the server. Re-pair to reconnect.".into(),
-            ))
-        }
-        Err(e) => Err(other(&e)),
-    }
-}
-
-fn connect_cloud(
-    account: &crate::cloud::Account,
-    commands: &Receiver<Command>,
-    stopped: &std::cell::Cell<bool>,
-    emit: &dyn Fn(ConnectionOutput),
-) -> Result<(CloudLink, Option<String>), ConnectError> {
-    let key = crate::cloud::EphemeralKey::generate().map_err(ConnectError::Fatal)?;
-    let progress = |m: &str| emit(ConnectionOutput::Phase(ConnectionPhase::Provisioning { message: m.into() }));
-    let cancelled = || {
-        if matches!(commands.try_recv(), Ok(Command::Stop) | Err(TryRecvError::Disconnected)) {
-            stopped.set(true);
-        }
-        stopped.get()
-    };
-    let target = crate::cloud::wait_for_host(account, &key, &progress, &cancelled).map_err(|e| {
-        if e.contains("sign-in") {
-            ConnectError::Unauthorized(e)
-        } else if e.contains("subscription") {
-            ConnectError::Fatal(e)
-        } else {
-            ConnectError::Other(e)
-        }
-    })?;
-    let stream = crate::cloud::CloudStream::open(&target, &key).map_err(ConnectError::Other)?;
-    let cwd = stream.working_dir();
-    Ok((CloudLink(stream), cwd))
-}
-
-enum SessionEnd {
-    Closed,
+    Retry(String),
     Stopped,
-    CloseRequested(String),
-    Reload,
+}
+
+fn classify(e: jcode_sdk::Error) -> Failure {
+    match e.kind {
+        ErrorKind::Cancelled => Failure::Stopped,
+        ErrorKind::CloudAuth | ErrorKind::CloudNotEntitled | ErrorKind::HostKeyMismatch => {
+            Failure::Fatal(e.message)
+        }
+        _ => Failure::Retry(e.message),
+    }
+}
+
+/// Commands that arrive before the session is live are kept, not dropped.
+struct Inbox {
+    rx: Receiver<Command>,
+    queued: Vec<Request>,
+    stopped: bool,
+}
+
+impl Inbox {
+    fn drain(&mut self) {
+        loop {
+            match self.rx.try_recv() {
+                Ok(Command::Send(r)) => self.queued.push(r),
+                Ok(Command::Stop) | Err(TryRecvError::Disconnected) => {
+                    self.stopped = true;
+                    return;
+                }
+                Err(TryRecvError::Empty) => return,
+            }
+        }
+    }
+    /// Sleep up to `d`, waking early on stop. Returns false when stopped.
+    fn sleep(&mut self, d: Duration) -> bool {
+        let until = std::time::Instant::now() + d;
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match self.rx.recv_timeout(left) {
+                Ok(Command::Send(r)) => self.queued.push(r),
+                Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                    self.stopped = true;
+                    return false;
+                }
+                Err(RecvTimeoutError::Timeout) => break,
+            }
+        }
+        !self.stopped
+    }
+}
+
+fn open(config: &Config, inbox: &Mutex<Inbox>, emit: &dyn Fn(ConnectionOutput)) -> jcode_sdk::Result<JcodeClient> {
+    match &config.endpoint {
+        Endpoint::Cloud(account) => {
+            let progress =
+                |m: &str| emit(ConnectionOutput::Phase(ConnectionPhase::Provisioning { message: m.into() }));
+            let cancelled = || {
+                let mut i = inbox.lock().unwrap();
+                i.drain();
+                i.stopped
+            };
+            crate::cloud::connect(account, &progress, &cancelled)
+        }
+        Endpoint::Custom(factory) => {
+            let options = ConnectOptions {
+                client_name: CLIENT_NAME.into(),
+                ensure_runtime: false,
+                ..Default::default()
+            };
+            JcodeClient::connect_with(factory()?, options)
+        }
+    }
+}
+
+/// Attach the session to resume, or start a fresh one if it is gone.
+fn attach(client: &JcodeClient, resume: Option<&str>, working_dir: Option<String>) -> jcode_sdk::Result<jcode_sdk::SessionInfo> {
+    if let Some(id) = resume {
+        match client.attach_session(id) {
+            Ok(s) => return Ok(s),
+            Err(e) if matches!(e.kind, ErrorKind::Harness(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    client.create_session(working_dir)
 }
 
 fn run(
     config: Config,
     mut target_session: Option<String>,
     commands: Receiver<Command>,
-    ids: Arc<Mutex<u64>>,
     emit: impl Fn(ConnectionOutput),
 ) {
     let phase = |p| emit(ConnectionOutput::Phase(p));
-    let stopped = std::cell::Cell::new(false);
+    let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false });
     let mut attempt: u32 = 0;
-    let mut last_error = String::new();
     loop {
-        phase(if attempt == 0 {
-            ConnectionPhase::Connecting
-        } else {
-            ConnectionPhase::Reconnecting { attempt }
+        phase(if attempt == 0 { ConnectionPhase::Connecting } else { ConnectionPhase::Reconnecting { attempt } });
+        let outcome = open(&config, &inbox, &emit).map_err(classify).and_then(|client| {
+            let session = attach(&client, target_session.as_deref(), config.working_dir.clone())
+                .map_err(classify)?;
+            Ok((client, session))
         });
-        let mut expect_reload = false;
-        let link: Result<(Box<dyn Link>, Option<String>), ConnectError> = match &config.endpoint {
-            Endpoint::Gateway { gateway, auth_token } => connect_ws(gateway, auth_token)
-                .map(|l| (Box::new(l) as Box<dyn Link>, config.working_dir.clone())),
-            Endpoint::Cloud(account) => connect_cloud(account, &commands, &stopped, &emit)
-                .map(|(l, cwd)| (Box::new(l) as Box<dyn Link>, config.working_dir.clone().or(cwd))),
-        };
-        if stopped.get() {
+        if inbox.lock().unwrap().stopped {
             break;
         }
-        match link {
-            Ok((mut link, working_dir)) => {
+        let last_error: String;
+        match outcome {
+            Ok((client, session)) => {
+                let sid = session.session_id.clone();
+                target_session = Some(sid.clone());
                 phase(ConnectionPhase::Connected);
                 attempt = 0;
-                let subscribe = Request::Subscribe {
-                    id: alloc_id(&ids),
-                    target_session_id: target_session.clone(),
-                    working_dir,
-                };
-                let history = Request::GetHistory { id: alloc_id(&ids) };
-                let ok = link.send_line(&subscribe.encoded_line())
-                    && link.send_line(&history.encoded_line());
-                let end = if ok {
-                    session_loop(link.as_mut(), &commands, &mut target_session, &emit)
-                } else {
-                    SessionEnd::Closed
-                };
-                link.close();
-                match end {
-                    SessionEnd::Stopped => break,
-                    SessionEnd::CloseRequested(reason) => {
-                        phase(ConnectionPhase::Failed { reason });
-                        return;
+                emit(ConnectionOutput::Event(ApiEvent::HelloOk {
+                    version: jcode_sdk::api::API_VERSION_MAJOR,
+                    server: client.server.clone(),
+                    capabilities: client.capabilities.clone(),
+                }));
+                emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
+                let stream = client.events(Some(&sid));
+                // Initial snapshot. Failures here surface as a lost connection.
+                for req in [
+                    jcode_sdk::ApiRequest::GetHistory { session_id: sid.clone() },
+                    jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid.clone() },
+                    jcode_sdk::ApiRequest::ListModels { session_id: sid.clone() },
+                ] {
+                    if let Ok(frame) = client.request(req) {
+                        emit(ConnectionOutput::Event(frame.event));
                     }
-                    SessionEnd::Reload => expect_reload = true,
-                    SessionEnd::Closed => {}
                 }
+                if session_loop(&client, &sid, &stream, &inbox, &emit) {
+                    break;
+                }
+                last_error = "Connection lost".into();
             }
-            Err(ConnectError::Unauthorized(reason)) | Err(ConnectError::Fatal(reason)) => {
+            Err(Failure::Stopped) => break,
+            Err(Failure::Fatal(reason)) => {
                 phase(ConnectionPhase::Failed { reason });
                 return;
             }
-            Err(ConnectError::Other(e)) => last_error = e,
+            Err(Failure::Retry(e)) => last_error = e,
         }
         attempt += 1;
         if let Some(max) = config.max_reconnect_attempts
@@ -311,100 +290,151 @@ fn run(
             phase(ConnectionPhase::Failed { reason });
             return;
         }
-        let delay = if expect_reload {
-            config.base_backoff / 2
-        } else {
-            (config.base_backoff * 2u32.saturating_pow(attempt - 1)).min(Duration::from_secs(30))
-        };
-        // Sleep, but stay responsive to stop.
-        match commands.recv_timeout(delay) {
-            Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            _ => {}
+        let delay = (config.base_backoff * 2u32.saturating_pow(attempt - 1)).min(Duration::from_secs(30));
+        if !inbox.lock().unwrap().sleep(delay) {
+            break;
         }
     }
     phase(ConnectionPhase::Disconnected);
 }
 
+/// Pump events and requests until the link drops (false) or stop (true).
+/// Requests run on short-lived threads so a slow reply never stalls the
+/// stream; their outcomes come back over `results`.
 fn session_loop(
-    link: &mut dyn Link,
-    commands: &Receiver<Command>,
-    target_session: &mut Option<String>,
-    emit: &impl Fn(ConnectionOutput),
-) -> SessionEnd {
-    let mut reload = false;
+    client: &JcodeClient,
+    sid: &str,
+    stream: &jcode_sdk::EventStream,
+    inbox: &Mutex<Inbox>,
+    emit: &dyn Fn(ConnectionOutput),
+) -> bool {
+    let (results, outcomes) = mpsc::channel::<ApiEvent>();
     loop {
-        loop {
-            match commands.try_recv() {
-                Ok(Command::Send(r)) => {
-                    if !link.send_line(&r.encoded_line()) {
-                        return SessionEnd::Closed;
-                    }
-                }
-                Ok(Command::Stop) | Err(TryRecvError::Disconnected) => return SessionEnd::Stopped,
-                Err(TryRecvError::Empty) => break,
+        let queued = {
+            let mut i = inbox.lock().unwrap();
+            i.drain();
+            if i.stopped {
+                return true;
             }
-        }
-        let text = match link.recv() {
-            Incoming::Text(t) => t,
-            Incoming::Idle => continue,
-            Incoming::Closed => return if reload { SessionEnd::Reload } else { SessionEnd::Closed },
+            std::mem::take(&mut i.queued)
         };
-        for line in text.split('\n').filter(|l| !l.trim().is_empty()) {
-            let Ok(event) = ServerEvent::decode(line) else { continue };
-            let mut close = None;
-            match &event {
-                ServerEvent::SessionId { session_id } => *target_session = Some(session_id.clone()),
-                ServerEvent::Reloading { .. } => reload = true,
-                ServerEvent::SessionCloseRequested { reason } => {
-                    close = Some(if reason.is_empty() {
-                        "Server closed this session".to_string()
-                    } else {
-                        reason.clone()
-                    })
+        for request in queued {
+            let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
+            std::thread::spawn(move || {
+                if let Some(event) = execute(&client, &sid, request) {
+                    let _ = results.send(event);
                 }
-                _ => {}
-            }
-            emit(ConnectionOutput::Event(event));
-            if let Some(reason) = close {
-                return SessionEnd::CloseRequested(reason);
-            }
+            });
         }
+        while let Ok(event) = outcomes.try_recv() {
+            emit(ConnectionOutput::Event(event));
+        }
+        match stream.next_timeout(Duration::from_millis(50)) {
+            Some(event) => emit(ConnectionOutput::Event(event)),
+            None if client.is_closed() => return false,
+            None => {}
+        }
+    }
+}
+
+/// Run one request. Returns an event for the reducer: the reply worth
+/// showing, or an `Error` when the request failed.
+fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent> {
+    use jcode_sdk::ApiRequest as A;
+    let s = || sid.to_string();
+    let result = match request {
+        Request::Message { content, .. } => client.send_message(sid, &content, vec![], None).map(|_| None),
+        Request::SoftInterrupt { id, content, urgent } => client
+            .soft_interrupt_with_id(sid, &content, vec![], urgent, Some(&format!("ios-{id}")))
+            .map(|_| None),
+        Request::Cancel { .. } => client.cancel(sid).map(|_| None),
+        Request::CancelSoftInterrupts { .. } => client.cancel_soft_interrupts(sid).map(|_| None),
+        Request::Ping { .. } => client.ping().map(|_| None),
+        Request::GetHistory { .. } => client.request(A::GetHistory { session_id: s() }).map(|f| Some(f.event)),
+        Request::SetModel { model, .. } => client
+            .set_model(sid, &model)
+            .and_then(|_| client.request(A::GetRuntimeInfo { session_id: s() }))
+            .map(|f| Some(f.event)),
+        Request::SetReasoningEffort { effort, .. } => client
+            .set_reasoning_effort(sid, &effort)
+            .and_then(|_| client.request(A::GetRuntimeInfo { session_id: s() }))
+            .map(|f| Some(f.event)),
+        Request::Compact { .. } => client
+            .compact(sid)
+            .map(|message| Some(ApiEvent::Compacted { session_id: s(), message })),
+        Request::RenameSession { title, .. } => client.rename_session(sid, title).map(|_| None),
+        Request::Clear { .. } => client.clear(sid).map(|_| None),
+    };
+    match result {
+        Ok(event) => event,
+        Err(e) if e.kind == ErrorKind::Disconnected => None,
+        Err(e) => Some(ApiEvent::Error { code: jcode_sdk::api::ErrorCode::Internal, message: e.message }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use jcode_sdk::api::{API_VERSION_MAJOR, ServerFrame};
+    use serde_json::{Value, json};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
 
-    /// Fake gateway: checks auth + subscribe, streams a reply to one message.
+    struct Tcp(TcpStream);
+    impl Transport for Tcp {
+        fn split(self: Box<Self>) -> jcode_sdk::Result<(Box<dyn BufRead + Send>, Box<dyn Write + Send>)> {
+            let r = self.0.try_clone().map_err(|e| jcode_sdk::Error::new(ErrorKind::Transport, e.to_string()))?;
+            Ok((Box::new(BufReader::new(r)), Box::new(self.0)))
+        }
+    }
+
+    fn reply(w: &mut TcpStream, to: Option<u64>, event: Value) {
+        let mut v = event;
+        v["v"] = json!(API_VERSION_MAJOR);
+        if let Some(id) = to {
+            v["reply_to"] = json!(id);
+        }
+        // Round-trip through the real frame type so the fake stays honest.
+        let frame: ServerFrame = serde_json::from_value(v).unwrap();
+        writeln!(w, "{}", serde_json::to_string(&frame).unwrap()).unwrap();
+    }
+
+    /// Fake harness: hello, create_session, snapshot, then one streamed turn.
     #[test]
-    fn subscribes_and_streams_events() {
+    fn creates_session_and_streams_turn() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
-            let check = |req: &tungstenite::handshake::server::Request,
-                         resp: tungstenite::handshake::server::Response| {
-                assert_eq!(req.headers()["authorization"], "Bearer tok");
-                Ok(resp)
-            };
-            let mut ws = tungstenite::accept_hdr(s, check).unwrap();
-            let sub = ws.read().unwrap().into_text().unwrap();
-            assert!(sub.contains(r#""type":"subscribe""#) && sub.contains(r#""working_dir":"/w""#));
-            let hist = ws.read().unwrap().into_text().unwrap();
-            assert!(hist.contains("get_history"));
-            ws.send(Message::text(r#"{"type":"history","id":2,"session_id":"s1","messages":[]}"#))
-                .unwrap();
-            let msg = ws.read().unwrap().into_text().unwrap();
-            assert!(msg.contains(r#""content":"hi""#));
-            ws.send(Message::text(
-                "{\"type\":\"text_delta\",\"text\":\"yo\"}\n{\"type\":\"done\",\"id\":3}",
-            ))
-            .unwrap();
-            let _ = ws.read();
+            let mut w = s.try_clone().unwrap();
+            let session = json!({"session_id":"s1","status":"idle","title":"Demo"});
+            for line in BufReader::new(s).lines() {
+                let req: Value = serde_json::from_str(&line.unwrap()).unwrap();
+                let id = req["id"].as_u64();
+                match req["req"].as_str().unwrap() {
+                    "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                    "create_session" => {
+                        assert_eq!(req["working_dir"], "/w");
+                        reply(&mut w, id, json!({"ev":"attached","session":session}))
+                    }
+                    "get_history" => reply(&mut w, id, json!({"ev":"history","session_id":"s1","messages":[]})),
+                    "send_message" => {
+                        assert_eq!(req["content"], "hi");
+                        for e in [
+                            json!({"ev":"message_accepted","session_id":"s1"}),
+                            json!({"ev":"text_delta","session_id":"s1","text":"yo"}),
+                            json!({"ev":"turn_done","session_id":"s1"}),
+                        ] {
+                            reply(&mut w, None, e);
+                        }
+                    }
+                    _ => reply(&mut w, id, json!({"ev":"error","code":"unknown_request","message":"no"})),
+                }
+            }
         });
-        let mut cfg = Config::new(Gateway::new("127.0.0.1", port), "tok");
+        let factory: TransportFactory =
+            Arc::new(move || Ok(Box::new(Tcp(TcpStream::connect(addr).unwrap())) as Box<dyn Transport>));
+        let mut cfg = Config::custom(factory);
         cfg.working_dir = Some("/w".into());
         let (conn, rx) = Connection::start_with_channel(cfg, None);
         let mut state = crate::session::SessionState::default();
@@ -422,26 +452,23 @@ mod tests {
         }
         conn.stop();
         assert_eq!(state.session_id.as_deref(), Some("s1"));
+        assert_eq!(state.session_title.as_deref(), Some("Demo"));
+        assert_eq!(state.server_version.as_deref(), Some("fake"));
         assert_eq!(state.transcript[1].text, "yo");
     }
 
     #[test]
-    fn unauthorized_fails_without_retry() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            use std::io::{Read, Write};
-            let (mut s, _) = listener.accept().unwrap();
-            let mut buf = [0; 2048];
-            let _ = s.read(&mut buf);
-            s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").unwrap();
-        });
-        let (_c, rx) =
-            Connection::start_with_channel(Config::new(Gateway::new("127.0.0.1", port), "bad"), None);
-        let phases: Vec<_> = rx.iter().take(2).collect();
-        assert!(matches!(
-            phases[1],
-            ConnectionOutput::Phase(ConnectionPhase::Failed { .. })
-        ));
+    fn gives_up_after_max_attempts() {
+        let factory: TransportFactory =
+            Arc::new(|| Err(jcode_sdk::Error::new(ErrorKind::ConnectFailed, "refused")));
+        let mut cfg = Config::custom(factory);
+        cfg.max_reconnect_attempts = Some(1);
+        cfg.base_backoff = Duration::from_millis(10);
+        let (_c, rx) = Connection::start_with_channel(cfg, None);
+        let last = rx.iter().take_while(|_| true).last().unwrap();
+        assert!(
+            matches!(&last, ConnectionOutput::Phase(ConnectionPhase::Failed { reason }) if reason.contains("refused")),
+            "{last:?}"
+        );
     }
 }
