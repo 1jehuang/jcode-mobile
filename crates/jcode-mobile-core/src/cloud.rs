@@ -177,12 +177,12 @@ fn default_interval() -> u64 {
 }
 
 /// Browser sign-in: jcode.sh/account offers "Continue with Google" (and
-/// email). The server only issues device flows to `jcode-cli`.
+/// email). Identifies as this app, like the email-code flow.
 pub fn start_browser_login() -> Result<DeviceStart, String> {
     post_json(
         &format!("{DEFAULT_API_BASE}/auth/device"),
         None,
-        serde_json::json!({"client_name": "jcode-cli"}),
+        serde_json::json!({"client_name": "jcode-ios"}),
     )
 }
 
