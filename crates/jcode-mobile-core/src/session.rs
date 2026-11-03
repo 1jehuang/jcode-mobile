@@ -255,6 +255,17 @@ impl SessionState {
                     t.input.push_str(&delta);
                 }
             }),
+            // The server can send MessageEnd before ToolDone (the turn's text
+            // ends while the tool still runs), so update a known call in place
+            // instead of opening a fresh assistant entry for it.
+            ToolExec { id, .. } if self.find_tool(&id).is_some() => {
+                self.find_tool(&id).unwrap().status = ToolStatus::Running;
+            }
+            ToolDone { id, output, error, .. } if self.find_tool(&id).is_some() => {
+                let t = self.find_tool(&id).unwrap();
+                t.output = output;
+                t.status = error.map(ToolStatus::Failed).unwrap_or(ToolStatus::Succeeded);
+            }
             ToolExec { id, name } => self.with_streaming_assistant(|e| {
                 match e.tool_calls.iter_mut().find(|t| t.id == id) {
                     Some(t) => t.status = ToolStatus::Running,
@@ -454,6 +465,15 @@ impl SessionState {
         self.transcript = transcript;
     }
 
+    fn find_tool(&mut self, id: &str) -> Option<&mut ToolCall> {
+        self.transcript
+            .iter_mut()
+            .rev()
+            .take(8)
+            .flat_map(|e| e.tool_calls.iter_mut())
+            .find(|t| t.id == id)
+    }
+
     fn resolve_pending_interrupt(&mut self, content: String, display_role: Option<String>) {
         if let Some(i) = self.pending_interrupts.iter().position(|p| *p == content) {
             self.pending_interrupts.remove(i);
@@ -532,6 +552,22 @@ mod tests {
         assert_eq!(a.tool_calls[0].input, "ls");
         assert_eq!(a.tool_calls[0].status, ToolStatus::Succeeded);
         assert!(!s.is_processing);
+    }
+
+    #[test]
+    fn tool_done_after_message_end_updates_existing_card() {
+        // Real server order: tool_start, tool_exec, message_end, tool_done.
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserSentMessage("hi".into()));
+        ev(&mut s, E::ToolStart { id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::ToolExec { id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::MessageEnd);
+        ev(&mut s, E::ToolDone { id: "t1".into(), name: "bash".into(), output: "hi".into(), error: None });
+        ev(&mut s, E::TextDelta { text: "ok".into() });
+        let tools: Vec<_> = s.transcript.iter().flat_map(|e| &e.tool_calls).collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].status, ToolStatus::Succeeded);
+        assert_eq!(tools[0].output, "hi");
     }
 
     #[test]

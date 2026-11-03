@@ -2775,9 +2775,12 @@ name = "jcode-mobile"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "gpui",
  "gpui_platform",
  "jcode-mobile-core",
+ "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]
