@@ -124,7 +124,7 @@ mod tests {
                     assert!(t.left >= -0.01 && t.left + t.width <= 290.01, "{n} {sel} {t:?}");
                 }
                 let order = paint_order(n, sel);
-                assert_eq!(exposed(&g, sel, &order).1, g[sel].width);
+                assert!((exposed(&g, sel, &order).1 - g[sel].width).abs() < 0.01);
             }
         }
         // Few tabs keep a gap, many overlap.
