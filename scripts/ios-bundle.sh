@@ -15,8 +15,14 @@ APP="$OUT/Payload/JcodeMobile.app"
 rm -rf "$OUT" && mkdir -p "$APP"
 cp target/aarch64-apple-ios/release/jcode-mobile "$APP/jcode-mobile"
 [ -d assets ] && cp -r assets "$APP/" || true
+ICON="$HOME/jcode/ios/Sources/JCodeMobile/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+if [ -f "$ICON" ]; then
+  magick "$ICON" -background black -alpha remove -resize 120x120 "$APP/AppIcon60x60@2x.png"
+  magick "$ICON" -background black -alpha remove -resize 180x180 "$APP/AppIcon60x60@3x.png"
+fi
 
-cat > "$APP/Info.plist" <<'PLIST'
+BUILD_NUMBER="${BUILD_NUMBER:-$(date +%s)}"
+cat > "$APP/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -26,18 +32,38 @@ cat > "$APP/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>jcode-mobile</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
   <key>MinimumOSVersion</key><string>15.0</string>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string><string>metal</string></array>
   <key>UILaunchScreen</key><dict/>
+  <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict>
+    <key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array>
+  </dict></dict>
   <key>UIStatusBarStyle</key><string>UIStatusBarStyleLightContent</string>
   <key>UIViewControllerBasedStatusBarAppearance</key><true/>
   <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
   <key>ITSAppUsesNonExemptEncryption</key><false/>
 </dict></plist>
 PLIST
+
+SIGN="$HOME/.appstoreconnect/signing"
+if [ "${1:-}" = "--testflight" ]; then
+  cp "$SIGN/appstore.mobileprovision" "$APP/embedded.mobileprovision"
+  cat > "$OUT/entitlements.plist" <<'ENT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>application-identifier</key><string>TAS6ARKDN7.sh.jcode.mobile.rust</string>
+  <key>com.apple.developer.team-identifier</key><string>TAS6ARKDN7</string>
+  <key>get-task-allow</key><false/>
+  <key>beta-reports-active</key><true/>
+</dict></plist>
+ENT
+  rcodesign sign --p12-file "$SIGN/dist.p12" --p12-password jcode \
+    --entitlements-xml-file "$OUT/entitlements.plist" "$APP"
+fi
 
 (cd "$OUT" && python3 -c 'import shutil; shutil.make_archive("JcodeMobile", "zip", ".", "Payload")' && mv JcodeMobile.zip JcodeMobile.ipa)
 echo "built $OUT/JcodeMobile.ipa"
