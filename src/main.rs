@@ -4,6 +4,7 @@
 mod app;
 mod donut;
 mod donut_field;
+mod tabs;
 mod markdown;
 mod text_input;
 mod theme;

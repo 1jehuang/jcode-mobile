@@ -52,6 +52,17 @@ pub struct MobileApp {
     /// Animation clock for the spinning mark.
     started: std::time::Instant,
     composer: Entity<TextInput>,
+    /// Id of the live tab whose state sits in `connection`/`session`/scroll.
+    active_tab: u64,
+    next_tab: u64,
+    /// Background tabs, in tab order alongside the active one (see `tab_order`).
+    parked: Vec<ParkedTab>,
+    /// Tab ids in display order (includes `active_tab`).
+    tab_order: Vec<u64>,
+    /// Animated tab geometry per id, eased toward the desktop layout.
+    tab_motion: std::collections::HashMap<u64, crate::tabs::TabGeometry>,
+    tab_track_width: f32,
+    last_frame: std::time::Instant,
     transcript_scroll: ScrollHandle,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
@@ -127,6 +138,13 @@ impl MobileApp {
             browser_login: None,
             started: std::time::Instant::now(),
             composer,
+            active_tab: 0,
+            next_tab: 1,
+            parked: Vec::new(),
+            tab_order: vec![0],
+            tab_motion: Default::default(),
+            tab_track_width: 0.0,
+            last_frame: std::time::Instant::now(),
             transcript_scroll: ScrollHandle::new(),
             expanded_tools: Default::default(),
             follow: true,
@@ -135,6 +153,11 @@ impl MobileApp {
         };
         if let Some(account) = account {
             app.connect(account, cx);
+            // Dev hook: JCODE_MOBILE_TABS=N opens N session tabs.
+            let n: usize = std::env::var("JCODE_MOBILE_TABS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            for _ in 1..n {
+                app.new_tab(cx);
+            }
         }
         let _ = window;
         app
@@ -252,27 +275,114 @@ impl MobileApp {
             c.stop();
         }
         self.session = SessionState::default();
-        let mut config = Config::cloud(account.clone());
-        config.max_reconnect_attempts = Some(6);
-        let (tx, rx) = unbounded();
-        let conn = Connection::start(config, None, move |o| {
-            let _ = tx.unbounded_send(o);
-        });
-        self.connection = Some(conn);
         self.account = Some(account);
+        self.start_connection(None, cx);
         self.screen = Screen::Chat;
-        self.follow = true;
-        self.pump(rx, cx);
         cx.notify();
     }
 
+    /// Open a connection for the active tab, resuming `session_id` if given.
+    fn start_connection(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
+        let Some(account) = self.account.clone() else { return };
+        let mut config = Config::cloud(account);
+        config.max_reconnect_attempts = Some(6);
+        let (tx, rx) = unbounded();
+        let conn = Connection::start(config, resume, move |o| {
+            let _ = tx.unbounded_send(o);
+        });
+        self.connection = Some(conn);
+        self.follow = true;
+        self.pump(self.active_tab, rx, cx);
+    }
+
     fn reconnect(&mut self, cx: &mut Context<Self>) {
-        if let Some(a) = self.account.clone() {
-            self.connect(a, cx);
+        if let Some(c) = self.connection.take() {
+            c.stop();
+        }
+        let resume = self.session.session_id.clone();
+        self.start_connection(resume, cx);
+        cx.notify();
+    }
+
+    // MARK: tabs
+
+    /// Desktop's + : a fresh session in a new tab, focused.
+    fn new_tab(&mut self, cx: &mut Context<Self>) {
+        if self.account.is_none() {
+            return;
+        }
+        let id = self.next_tab;
+        self.next_tab += 1;
+        let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
+        self.tab_order.insert(at, id);
+        self.park_active();
+        self.active_tab = id;
+        self.session = SessionState::default();
+        self.start_connection(None, cx);
+        cx.notify();
+    }
+
+    fn park_active(&mut self) {
+        self.parked.push(ParkedTab {
+            id: self.active_tab,
+            connection: self.connection.take(),
+            session: std::mem::take(&mut self.session),
+            scroll: std::mem::replace(&mut self.transcript_scroll, ScrollHandle::new()),
+            expanded_tools: std::mem::take(&mut self.expanded_tools),
+            follow: self.follow,
+        });
+    }
+
+    fn focus_tab(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(i) = self.parked.iter().position(|p| p.id == id) else { return };
+        self.park_active();
+        let p = self.parked.swap_remove(i);
+        self.active_tab = p.id;
+        self.connection = p.connection;
+        self.session = p.session;
+        self.transcript_scroll = p.scroll;
+        self.expanded_tools = p.expanded_tools;
+        self.follow = p.follow;
+        cx.notify();
+    }
+
+    fn close_tab(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.tab_order.len() <= 1 {
+            return;
+        }
+        let pos = self.tab_order.iter().position(|t| *t == id).unwrap_or(0);
+        self.tab_order.remove(pos);
+        self.tab_motion.remove(&id);
+        if id == self.active_tab {
+            if let Some(c) = self.connection.take() {
+                c.stop();
+            }
+            let next = self.tab_order[pos.min(self.tab_order.len() - 1)];
+            let i = self.parked.iter().position(|p| p.id == next).unwrap();
+            let p = self.parked.swap_remove(i);
+            self.active_tab = p.id;
+            self.connection = p.connection;
+            self.session = p.session;
+            self.transcript_scroll = p.scroll;
+            self.expanded_tools = p.expanded_tools;
+            self.follow = p.follow;
+        } else if let Some(i) = self.parked.iter().position(|p| p.id == id) {
+            if let Some(c) = self.parked.swap_remove(i).connection {
+                c.stop();
+            }
+        }
+        cx.notify();
+    }
+
+    fn tab_session(&self, id: u64) -> Option<&SessionState> {
+        if id == self.active_tab {
+            Some(&self.session)
+        } else {
+            self.parked.iter().find(|p| p.id == id).map(|p| &p.session)
         }
     }
 
-    fn pump(&mut self, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
+    fn pump(&mut self, tab: u64, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             while let Some(first) = rx.next().await {
                 // Coalesce bursts of streaming deltas into one frame.
@@ -282,6 +392,15 @@ impl MobileApp {
                 }
                 let ok = this
                     .update(cx, |this, cx| {
+                        if tab != this.active_tab {
+                            if let Some(p) = this.parked.iter_mut().find(|p| p.id == tab) {
+                                for o in batch {
+                                    p.session.apply(o);
+                                }
+                            }
+                            cx.notify();
+                            return;
+                        }
                         for o in batch {
                             this.session.apply(o);
                         }
@@ -339,6 +458,13 @@ impl MobileApp {
         if let Some(c) = self.connection.take() {
             c.stop();
         }
+        for p in self.parked.drain(..) {
+            if let Some(c) = p.connection {
+                c.stop();
+            }
+        }
+        self.tab_order = vec![self.active_tab];
+        self.tab_motion.clear();
         self.store.clear();
         self.account = None;
         self.session = SessionState::default();
@@ -349,6 +475,16 @@ impl MobileApp {
 }
 
 // MARK: rendering helpers
+
+/// A background session tab: its own connection and transcript.
+struct ParkedTab {
+    id: u64,
+    connection: Option<Connection>,
+    session: SessionState,
+    scroll: ScrollHandle,
+    expanded_tools: std::collections::HashSet<String>,
+    follow: bool,
+}
 
 fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
     div().text_size(px(size)).text_color(color).child(text.into())
@@ -503,25 +639,117 @@ impl MobileApp {
             .into_any_element()
     }
 
-    /// Desktop's top bar: dark strip, session "tab" outlined in the middle.
-    fn render_header(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.session.session_title.clone().unwrap_or_else(|| "New session".into());
-        let (dot, connected) = match &self.session.phase {
-            ConnectionPhase::Connected => (t.ok, true),
-            ConnectionPhase::Failed { .. } => (t.error, false),
-            ConnectionPhase::Disconnected => (t.text_muted, false),
-            _ => (t.warning, false),
-        };
+    /// Desktop's live tabs (live_tabs.rs): ≡, a centered strip of session
+    /// tabs that shrink and then overlap like folder tabs to fit, and +.
+    fn render_header(&mut self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::tabs;
+        // Phone width minus side buttons and padding.
+        let width = self.device.map_or(390., |(w, _)| w);
+        let track = (width - 2. * 10. - 2. * 32. - 2. * 6.).max(40.);
+        let count = self.tab_order.len();
+        let selected = self.tab_order.iter().position(|id| *id == self.active_tab).unwrap_or(0);
+        let targets = tabs::layout(track, count, selected);
+        // Ease toward targets; snap on first sight or track change.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
+        self.last_frame = now;
+        let snap = self.tab_track_width != track;
+        self.tab_track_width = track;
+        let mut moving = false;
+        let geometry: Vec<tabs::TabGeometry> = self
+            .tab_order
+            .iter()
+            .zip(&targets)
+            .map(|(id, target)| {
+                let g = self.tab_motion.entry(*id).or_insert(*target);
+                if snap {
+                    *g = *target;
+                } else {
+                    moving |= tabs::step_toward(g, *target, dt);
+                }
+                *g
+            })
+            .collect();
+        if moving {
+            cx.notify();
+        }
+        let order = tabs::paint_order(count, selected);
+        let mut strip = div().relative().flex_none().w(px(track)).h(px(tabs::TAB_HEIGHT));
+        for &pos in &order {
+            let id = self.tab_order[pos];
+            let g = geometry[pos];
+            let focused = pos == selected;
+            let (exp_left, visible) = tabs::exposed(&geometry, pos, &order);
+            let s = self.tab_session(id);
+            let title: SharedString = s
+                .and_then(|s| s.session_title.clone())
+                .unwrap_or_else(|| "New session".into())
+                .into();
+            let dot = match s.map(|s| &s.phase) {
+                Some(ConnectionPhase::Connected) if s.is_some_and(|s| s.is_processing) => t.accent,
+                Some(ConnectionPhase::Connected) => t.ok,
+                Some(ConnectionPhase::Failed { .. }) => t.error,
+                Some(ConnectionPhase::Disconnected) | None => t.text_muted,
+                _ => t.warning,
+            };
+            let pad = (visible / 12.).min(6.);
+            let bg = if focused { t.background } else { t.raised };
+            // Label lives only in the exposed part, so overlaps never hide it.
+            let content = div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(exp_left - g.left))
+                .w(px((visible - 2.).max(0.)))
+                .px(px(pad))
+                .flex()
+                .items_center()
+                .gap(px((visible / 12.).min(6.)))
+                .overflow_hidden()
+                .when(visible > 14., |d| d.child(div().flex_none().size(px(7.)).rounded_full().bg(dot)))
+                .when(visible > 40., |d| {
+                    d.child(
+                        label(title, if focused { t.text_strong } else { t.text_secondary }, 12.)
+                            .min_w_0()
+                            .truncate(),
+                    )
+                });
+            strip = strip.child(
+                div()
+                    .id(("tab", id))
+                    .absolute()
+                    .left(px(g.left))
+                    .bottom_0()
+                    .w(px(g.width))
+                    .h(px(g.height))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(if focused { t.border_focus } else { t.border })
+                    .bg(bg)
+                    .cursor_pointer()
+                    .child(content)
+                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
+                        // Double-tap closes, like the desktop's middle-click.
+                        if ev.click_count() >= 2 {
+                            this.close_tab(id, cx);
+                        } else {
+                            this.focus_tab(id, cx);
+                        }
+                    })),
+            );
+        }
+        let connected = self.account.is_some();
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(6.))
             .px(px(10.))
             .h(px(48.))
             .bg(t.raised)
             .child(
                 div()
                     .id("menu")
+                    .flex_none()
                     .size(px(32.))
                     .flex()
                     .items_center()
@@ -535,24 +763,11 @@ impl MobileApp {
                         cx.notify()
                     })),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h(px(34.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(t.border_focus)
-                    .child(div().flex_none().size(px(7.)).rounded_full().bg(dot))
-                    .child(label(title, t.text_strong, 13.).min_w_0().truncate()),
-            )
+            .child(strip)
             .child(
                 div()
                     .id("new-session")
+                    .flex_none()
                     .size(px(32.))
                     .flex()
                     .items_center()
@@ -561,7 +776,7 @@ impl MobileApp {
                     .text_size(px(20.))
                     .cursor_pointer()
                     .child("+")
-                    .on_click(cx.listener(|this, _, _, cx| this.reconnect(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.new_tab(cx))),
             )
     }
 
@@ -930,7 +1145,8 @@ impl MobileApp {
                         .child(div().h(px(1.)).bg(t.border))
                         .child(outline_button("new", "New session", true, t).on_click(cx.listener(
                             |this, _, _, cx| {
-                                this.reconnect(cx);
+                                this.new_tab(cx);
+                                this.screen = Screen::Chat;
                             },
                         )))
                         .child(outline_button("clear", "Clear conversation", true, t).on_click(cx.listener(
