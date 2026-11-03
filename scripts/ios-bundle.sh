@@ -39,7 +39,7 @@ cat > "$APP/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-(cd "$OUT" && zip -qr JcodeMobile.ipa Payload)
+(cd "$OUT" && python3 -c 'import shutil; shutil.make_archive("JcodeMobile", "zip", ".", "Payload")' && mv JcodeMobile.zip JcodeMobile.ipa)
 echo "built $OUT/JcodeMobile.ipa"
 
 if [ "${1:-}" = "--install" ]; then
