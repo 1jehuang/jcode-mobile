@@ -911,7 +911,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cgl"
 version = "0.3.2"
-source = "git+https://github.com/1jehuang/gpui?rev=627380f49704c5161ea322071e55246b7728d5a1#627380f49704c5161ea322071e55246b7728d5a1"
+source = "git+https://github.com/1jehuang/gpui?rev=3b96a930d28f9d727814ce5880779e4caa40729d#3b96a930d28f9d727814ce5880779e4caa40729d"
 dependencies = [
  "libc",
 ]
