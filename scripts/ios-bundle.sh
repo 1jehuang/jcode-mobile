@@ -18,7 +18,7 @@ if [ -n "${GPUI_LOCAL:-}" ]; then
   # gpui-thinking-orbs pulls gpui through [patch.crates-io]; point it at the same checkout.
   PATCH+=(--config "patch.crates-io.gpui.path='$G/gpui'")
 fi
-cargo build --target aarch64-apple-ios --release "${PATCH[@]}"
+${CARGO:-cargo} build --target aarch64-apple-ios --release "${PATCH[@]}"
 
 OUT=target/ios
 APP="$OUT/Payload/JcodeMobile.app"
@@ -37,11 +37,11 @@ cat > "$APP/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>jcode rs</string>
   <key>CFBundleExecutable</key><string>jcode-mobile</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
   <key>MinimumOSVersion</key><string>15.0</string>
-  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+  <key>UIDeviceFamily</key><array><integer>1</integer></array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string><string>metal</string></array>
   <key>UILaunchScreen</key><dict/>
   <key>ITSAppUsesNonExemptEncryption</key><false/>

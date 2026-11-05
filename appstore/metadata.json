@@ -11,7 +11,7 @@
   "primaryCategory": "DEVELOPER_TOOLS",
   "review": {
     "demoAccountRequired": true,
-    "notes": "Sign in: type the demo email into the email field, tap 'Email me a code', then enter the six-digit code from the password field. No inbox access is needed for this account. After sign-in the app wakes the account's cloud machine (up to about a minute) and opens a chat. Send any message, for example 'Write a hello world in Rust', to see the coding agent respond. Account deletion: tap the menu button (top left) to open Settings, then 'Delete account'. The app has no in-app purchases and no purchase links. 'Continue with Google' opens a sign-in-only web page.",
+    "notes": "Sign in: type the demo email into the email field, tap 'Email me a code', then enter the six-digit code from the password field. No inbox access is needed for this account. After sign-in the app wakes the account's cloud machine (up to about a minute) and opens a chat. Send any message, for example 'Write a hello world in Rust', to see the coding agent respond. Account deletion: tap the menu button (top left) to open Settings, then 'Delete account'. The app has no in-app purchases and no purchase links. Sign in with Apple is also offered on the sign-in screen and creates a new, empty account. Optional extras: a Share extension (share text into Jcode), a Live Activity showing agent progress, and push notifications when an agent finishes. All require only the signed-in account.",
     "contactFirstName": "Jeremy",
     "contactLastName": "Huang",
     "contactEmail": "jeremyhuang55555@gmail.com",

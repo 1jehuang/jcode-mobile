@@ -20,12 +20,13 @@ plist_common() { # $1 bundle id, $2 executable, $3 display name, $4 package type
   <key>CFBundleName</key><string>$2</string>
   <key>CFBundleDisplayName</key><string>$3</string>
   <key>CFBundlePackageType</key><string>$4</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
+  <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
   <key>DTPlatformName</key><string>iphoneos</string>
   <key>DTPlatformVersion</key><string>27.1</string>
   <key>DTSDKName</key><string>iphoneos27.1</string>
