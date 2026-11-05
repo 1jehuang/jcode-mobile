@@ -62,6 +62,11 @@ pub struct MobileApp {
     composer: Entity<TextInput>,
     /// Desktop preview's simulated software keyboard state.
     sim_kb: crate::sim_keyboard::SimKeyboard,
+    /// Animated bottom inset (keyboard slide), eased toward the target.
+    inset_anim: Option<f32>,
+    inset_last: std::time::Instant,
+    /// Last focused field's keyboard config, kept so it can slide away.
+    kb_config: gpui::TextInputConfiguration,
     /// Id of the live tab whose state sits in `connection`/`session`/scroll.
     active_tab: u64,
     next_tab: u64,
@@ -176,6 +181,9 @@ impl MobileApp {
             started: std::time::Instant::now(),
             keyboard_up: false,
             sim_kb: Default::default(),
+            inset_anim: None,
+            inset_last: std::time::Instant::now(),
+            kb_config: Default::default(),
             composer,
             active_tab: 0,
             next_tab: 1,
@@ -1351,6 +1359,28 @@ impl Render for MobileApp {
             (self.safe.top, self.safe.bottom.max(kb))
         };
         self.keyboard_up = f32::from(window.window_insets().ime.bottom) > 0. || sim_kb;
+        // Ease the bottom inset instead of jumping, so the layout slides with
+        // the keyboard (UIKit's own curve is ~250ms).
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.inset_last).as_secs_f32().min(0.05);
+        self.inset_last = now;
+        let shown = match self.inset_anim {
+            None => bottom,
+            Some(v) => {
+                let next = v + (bottom - v) * (1. - (-dt * 16.).exp());
+                if (bottom - next).abs() < 0.5 { bottom } else { next }
+            }
+        };
+        self.inset_anim = Some(shown);
+        if shown != bottom {
+            window.request_animation_frame();
+        }
+        let bottom = shown;
+        if let Some(i) = &focused_input {
+            self.kb_config = i.read(cx).config.clone();
+        }
+        // The simulated keyboard stays on screen while it slides away.
+        let kb_visible = self.device.is_some() && bottom > self.safe.bottom + 0.5;
         let t = Theme::get(cx);
         let body = match self.screen {
             Screen::SignIn => self.render_sign_in(&t, cx),
@@ -1369,23 +1399,27 @@ impl Render for MobileApp {
             // Tapping outside a field dismisses the keyboard, like iOS.
             .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| window.blur(cx))
             .child(body)
-            .when(sim_kb, |d| {
-                let config = focused_input
-                    .as_ref()
-                    .map(|i| i.read(cx).config.clone())
-                    .unwrap_or_default();
+            .when(kb_visible, |d| {
                 let this = cx.entity().downgrade();
                 let on_key: std::rc::Rc<dyn Fn(crate::sim_keyboard::Key, &mut Window, &mut App)> =
                     std::rc::Rc::new(move |key, window, cx| {
                         this.update(cx, |this, cx| this.sim_key(key, window, cx)).ok();
                     });
-                d.relative().child(crate::sim_keyboard::render(
-                    &self.sim_kb,
-                    &config,
-                    self.safe.bottom,
-                    on_key,
-                    &t,
-                ))
+                d.relative().child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .h(px(crate::sim_keyboard::HEIGHT))
+                        .bottom(px(bottom - crate::sim_keyboard::HEIGHT))
+                        .child(crate::sim_keyboard::render(
+                            &self.sim_kb,
+                            &self.kb_config,
+                            self.safe.bottom,
+                            on_key,
+                            &t,
+                        )),
+                )
             });
         // Dev hook (JCODE_MOBILE_FRAMELESS): bare screen for App Store screenshots.
         if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
