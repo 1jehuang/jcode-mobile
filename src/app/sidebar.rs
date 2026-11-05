@@ -150,7 +150,7 @@ impl MobileApp {
         let drag = self.drawer_drag;
         self.drawer_drag_last = None;
         self.drawer_drag = 0.;
-        if drag < -width * CLOSE_SHARE {
+        if should_close_drawer(drag, width) {
             // Continue the slide from where the finger left it.
             self.drawer_t = (self.drawer_t + drag / width).clamp(0., 1.);
             crate::haptics::play(crate::haptics::Haptic::Light);
@@ -562,6 +562,10 @@ fn activity_ms(s: &SessionInfo) -> u64 {
         .unwrap_or(0)
 }
 
+fn should_close_drawer(drag: f32, width: f32) -> bool {
+    drag < -width * CLOSE_SHARE
+}
+
 fn matches_query(s: &SessionInfo, q: &str) -> bool {
     session_title(s).to_lowercase().contains(q)
         || s.save_label.as_deref().is_some_and(|l| l.to_lowercase().contains(q))
@@ -658,5 +662,28 @@ mod tests {
         assert_eq!(time_ago(0, 90_000), "1m ago");
         assert_eq!(estimated_tokens(1_234), "1.2k tok");
         assert_eq!(created_ms("session_fox_1700000000000_ab"), Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn search_matches_title_label_and_dir() {
+        let s: SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "session_fox_1700000000000_ab",
+            "status": "idle",
+            "title": "Fix Turkey parser",
+            "save_label": "Pinned Work",
+            "working_dir": "/home/j/jcode-mobile",
+        }))
+        .expect("session json");
+        for q in ["turkey", "pinned", "mobile"] {
+            assert!(matches_query(&s, q), "{q}");
+        }
+        assert!(!matches_query(&s, "zebra"));
+    }
+
+    #[test]
+    fn drawer_closes_past_threshold() {
+        assert!(should_close_drawer(-0.31 * 300., 300.));
+        assert!(!should_close_drawer(-0.29 * 300., 300.));
+        assert!(!should_close_drawer(0., 300.));
     }
 }

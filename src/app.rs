@@ -190,6 +190,10 @@ impl MobileApp {
                 purpose: TextInputPurpose::Text,
                 ..Default::default()
             };
+            // Dev hook (JCODE_MOBILE_SEARCH=...): prefill the drawer search.
+            if let Ok(q) = std::env::var("JCODE_MOBILE_SEARCH") {
+                t.set_text(q, cx);
+            }
             t
         });
         cx.subscribe(&drawer_search, |_, _, _, cx| cx.notify()).detach();
