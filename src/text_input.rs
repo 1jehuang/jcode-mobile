@@ -51,6 +51,8 @@ pub struct TextInput {
     pub secure: bool,
     /// No own chrome: the parent draws the outline (desktop composer).
     pub bare: bool,
+    /// Soft keyboard behavior (autocorrect, caps, return key).
+    pub config: gpui::TextInputConfiguration,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -67,6 +69,7 @@ impl TextInput {
             last_bounds: None,
             secure: false,
             bare: false,
+            config: gpui::TextInputConfiguration::default(),
         }
     }
 
@@ -237,8 +240,28 @@ impl EntityInputHandler for TextInput {
         self.marked_range.as_ref().map(|r| self.range_to_utf16(r))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+    fn text_input_configuration(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> gpui::TextInputConfiguration {
+        self.config.clone()
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.marked_range = None;
+        cx.notify();
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // UIKit caret moves: taps, spacebar trackpad, selection handles.
+        self.selected_range = self.range_from_utf16(&range_utf16);
+        cx.notify();
     }
 
     fn replace_text_in_range(
@@ -310,7 +333,8 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let local = self.last_bounds?.localize(&p)?;
         let line = self.last_layout.as_ref()?;
-        let i = line.index_for_x(local.x)?;
+        // Past the end of the text means "end", not "nowhere".
+        let i = line.closest_index_for_x(local.x);
         Some(self.offset_to_utf16(i))
     }
 }
@@ -511,5 +535,219 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+/// Replays the exact call sequences the iOS bridge (gpui_ios window.rs and
+/// text_input.rs) makes for soft-keyboard events, against the real widget.
+#[cfg(test)]
+mod ios_keyboard_tests {
+    use super::*;
+    use gpui::{
+        KeyDownEvent, Keystroke, Modifiers, PlatformInput, TestAppContext, VisualTestContext,
+    };
+
+    struct Host {
+        input: Entity<TextInput>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.input.clone())
+        }
+    }
+
+    fn setup(cx: &mut TestAppContext) -> (Entity<TextInput>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            bind_keys(cx);
+            cx.set_global(crate::theme::Theme::pure_black());
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| Host {
+            input: cx.new(|cx| TextInput::new("", cx)),
+        });
+        let input = host.read_with(cx, |h, _| h.input.clone());
+        cx.update(|window, cx| window.focus(&input.focus_handle(cx), cx));
+        cx.run_until_parked();
+        INPUT.with(|i| *i.borrow_mut() = Some(input.clone()));
+        (input, cx)
+    }
+
+    /// gpui_ios `key()`: printable keys prefer text input, others don't.
+    fn key(cx: &mut VisualTestContext, key: &str, key_char: Option<&str>) -> bool {
+        let ev = PlatformInput::KeyDown(KeyDownEvent {
+            keystroke: Keystroke {
+                modifiers: Modifiers::default(),
+                key: key.into(),
+                key_char: key_char.map(Into::into),
+            },
+            is_held: false,
+            prefer_character_input: key_char.is_some(),
+        });
+        let r = cx.update(|window, cx| window.dispatch_event(ev, cx));
+        cx.run_until_parked();
+        !r.propagate
+    }
+
+    /// The bridge's `with_handler`: ElementInputHandler forwards straight to
+    /// the focused entity's EntityInputHandler.
+    fn with_handler<R>(
+        cx: &mut VisualTestContext,
+        f: impl FnOnce(&mut TextInput, &mut Window, &mut Context<TextInput>) -> R,
+    ) -> R {
+        let input = INPUT.with(|i| i.borrow().clone()).unwrap();
+        let r = cx.update(|window, cx| input.update(cx, |t, cx| f(t, window, cx)));
+        cx.run_until_parked();
+        r
+    }
+
+    thread_local! {
+        static INPUT: std::cell::RefCell<Option<Entity<TextInput>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// gpui_ios `insert()` (insertText:).
+    fn insert_text(cx: &mut VisualTestContext, text: &str) {
+        if text == "\n" {
+            key(cx, "enter", None);
+            return;
+        }
+        if text.chars().count() == 1 {
+            let k = text.to_lowercase();
+            let k = if k == " " { "space".to_string() } else { k };
+            if key(cx, &k, Some(text)) {
+                return;
+            }
+        }
+        with_handler(cx, |t, w, cx| t.replace_text_in_range(None, text, w, cx));
+    }
+
+    /// gpui_ios `delete_backward()` (deleteBackward).
+    fn delete_backward(cx: &mut VisualTestContext) {
+        key(cx, "backspace", None);
+    }
+
+    fn text(input: &Entity<TextInput>, cx: &mut VisualTestContext) -> String {
+        input.read_with(cx, |t, _| t.content.to_string())
+    }
+
+    #[gpui::test]
+    fn typing_and_backspace(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        for c in ["h", "i", " ", "Y", "o"] {
+            insert_text(cx, c);
+        }
+        assert_eq!(text(&input, cx), "hi Yo");
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "hi Y");
+        delete_backward(cx);
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "hi");
+    }
+
+    #[gpui::test]
+    fn backspace_on_empty_and_held_down(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "");
+        insert_text(cx, "abc");
+        for _ in 0..10 {
+            delete_backward(cx);
+        }
+        assert_eq!(text(&input, cx), "");
+    }
+
+    #[gpui::test]
+    fn backspace_removes_whole_emoji_and_accents(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "a👍🏽");
+        insert_text(cx, "é");
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "a👍🏽");
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "a");
+    }
+
+    #[gpui::test]
+    fn return_key_submits_not_inserts(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        let submitted = std::rc::Rc::new(std::cell::Cell::new(0));
+        let s = submitted.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&input, move |_, ev, _| {
+                if matches!(ev, TextInputEvent::Submit) {
+                    s.set(s.get() + 1)
+                }
+            })
+            .detach()
+        });
+        insert_text(cx, "go");
+        insert_text(cx, "\n");
+        assert_eq!(text(&input, cx), "go");
+        assert_eq!(submitted.get(), 1);
+    }
+
+    #[gpui::test]
+    fn autocorrect_replaces_word_via_range(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "teh");
+        // UIKit: replaceRange:withText: on the misspelled word, then a space.
+        with_handler(cx, |t, w, cx| t.replace_text_in_range(Some(0..3), "the", w, cx));
+        insert_text(cx, " ");
+        assert_eq!(text(&input, cx), "the ");
+        let sel = with_handler(cx, |t, w, cx| t.selected_text_range(false, w, cx)).unwrap();
+        assert_eq!(sel.range, 4..4);
+    }
+
+    #[gpui::test]
+    fn caret_move_then_backspace_and_insert(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "hello");
+        // Spacebar trackpad / tap: setSelectedTextRange:.
+        with_handler(cx, |t, w, cx| t.set_selected_text_range(2..2, w, cx));
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "hllo");
+        insert_text(cx, "E");
+        assert_eq!(text(&input, cx), "hEllo");
+        // Selected range then backspace deletes the selection.
+        with_handler(cx, |t, w, cx| t.set_selected_text_range(0..2, w, cx));
+        delete_backward(cx);
+        assert_eq!(text(&input, cx), "llo");
+    }
+
+    #[gpui::test]
+    fn marked_text_ime_and_utf16_offsets(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "😀");
+        // Japanese kana composition: setMarkedText then commit via insertText.
+        with_handler(cx, |t, w, cx| t.replace_and_mark_text_in_range(None, "に", Some(1..1), w, cx));
+        with_handler(cx, |t, w, cx| t.replace_and_mark_text_in_range(None, "日本", Some(2..2), w, cx));
+        assert_eq!(with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)), Some(2..4));
+        with_handler(cx, |t, w, cx| t.replace_text_in_range(None, "日本", w, cx));
+        assert_eq!(text(&input, cx), "😀日本");
+        assert_eq!(with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)), None);
+        // Emoji is 2 UTF-16 units, caret after it is utf16 4.
+        let sel = with_handler(cx, |t, w, cx| t.selected_text_range(false, w, cx)).unwrap();
+        assert_eq!(sel.range, 4..4);
+        let mut adj = None;
+        assert_eq!(
+            with_handler(cx, |t, w, cx| t.text_for_range(2..3, &mut adj, w, cx)).as_deref(),
+            Some("日")
+        );
+    }
+
+    #[gpui::test]
+    fn multi_char_paste_and_dictation(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "a");
+        insert_text(cx, "pple pie");
+        assert_eq!(text(&input, cx), "apple pie");
+    }
+
+    #[gpui::test]
+    fn keyboard_config_reaches_platform(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        input.update(cx, |t, _| {
+            t.config.input_action = gpui::TextInputAction::Send;
+        });
+        let c = with_handler(cx, |t, w, cx| t.text_input_configuration(w, cx));
+        assert_eq!(c.input_action, gpui::TextInputAction::Send);
     }
 }

@@ -76,11 +76,32 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let email = cx.new(|cx| TextInput::new("you@example.com", cx));
-        let code = cx.new(|cx| TextInput::new("6-digit code", cx));
+        use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration};
+        let email = cx.new(|cx| {
+            let mut t = TextInput::new("you@example.com", cx);
+            t.config = TextInputConfiguration {
+                input_action: TextInputAction::Next,
+                ..Default::default()
+            };
+            t
+        });
+        let code = cx.new(|cx| {
+            let mut t = TextInput::new("6-digit code", cx);
+            t.config = TextInputConfiguration {
+                input_action: TextInputAction::Go,
+                ..Default::default()
+            };
+            t
+        });
         let composer = cx.new(|cx| {
             let mut t = TextInput::new("Message jcode…", cx);
             t.bare = true;
+            t.config = TextInputConfiguration {
+                autocorrect: true,
+                autocapitalize: Autocapitalize::Sentences,
+                suggestions: true,
+                input_action: TextInputAction::Send,
+            };
             t
         });
         for input in [&email, &code] {
