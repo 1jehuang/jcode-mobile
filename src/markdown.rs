@@ -57,12 +57,44 @@ pub fn render(src: &str, t: &Theme) -> AnyElement {
                     .child(div().text_color(t.text_muted).child("•"))
                     .child(div().flex_1().min_w_0().child(inline(item, t))),
             );
+        } else if let Some((num, item)) = ordered_item(trimmed) {
+            col = flush(&mut para, col);
+            col = col.child(
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .pl(px(4.))
+                    .child(div().text_color(t.text_muted).child(format!("{num}.")))
+                    .child(div().flex_1().min_w_0().child(inline(item, t))),
+            );
         } else {
             para.push(trimmed);
         }
     }
     col = flush(&mut para, col);
     col.into_any_element()
+}
+
+/// `12. item` or `12) item` -> ("12", "item").
+fn ordered_item(line: &str) -> Option<(&str, &str)> {
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 3 {
+        return None;
+    }
+    let rest = &line[digits..];
+    let item = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))?;
+    Some((&line[..digits], item))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ordered_items() {
+        assert_eq!(super::ordered_item("3. ls: list"), Some(("3", "ls: list")));
+        assert_eq!(super::ordered_item("12) x"), Some(("12", "x")));
+        assert_eq!(super::ordered_item("2026. was a year"), None);
+        assert_eq!(super::ordered_item("3.5 GiB"), None);
+    }
 }
 
 /// Strips `code` and **bold** markers and highlights those ranges.
