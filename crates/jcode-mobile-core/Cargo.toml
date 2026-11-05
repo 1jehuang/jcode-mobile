@@ -15,5 +15,8 @@ ureq = { version = "3", features = ["json"] }
 # Harness API client, Jcode Cloud control plane and pure-Rust SSH (iOS-safe).
 jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "18e93c1ff6eed39a41e4fbc87f50b375d91fca98", features = ["ssh-native"] }
 
+[target.'cfg(target_os = "ios")'.dependencies]
+security-framework = { version = "3", default-features = false }
+
 [dev-dependencies]
 jcode-harness-api = { git = "https://github.com/1jehuang/jcode", rev = "18e93c1ff6eed39a41e4fbc87f50b375d91fca98" }

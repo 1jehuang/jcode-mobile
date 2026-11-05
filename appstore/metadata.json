@@ -1,6 +1,6 @@
 {
-  "name": "Jcode: AI Coding Agent",
-  "subtitle": "Your coding agent, on the go",
+  "name": "Jcode iOS",
+  "subtitle": "The official Jcode mobile app",
   "promotionalText": "Chat with your Jcode coding agent running on your own cloud machine. Start tasks, follow tool calls live and review answers from anywhere.",
   "description": "Jcode is an open-source AI coding agent. Jcode for iPhone connects to your Jcode Cloud machine so you can keep working with your agent away from your desk.\n\n- Sign in with Google or a one-time email code.\n- Chat with the agent in multiple session tabs.\n- Watch tool calls, file edits and command output stream in as the agent works.\n- Read rich Markdown answers with code blocks.\n- Your cloud machine wakes on demand and sleeps when idle.\n\nA Jcode Cloud subscription is managed on jcode.sh. You can permanently delete your account from Settings inside the app.",
   "keywords": "ai,coding,agent,developer,code,assistant,terminal,programming,llm,jcode",
@@ -15,6 +15,6 @@
     "contactFirstName": "Jeremy",
     "contactLastName": "Huang",
     "contactEmail": "jeremyhuang55555@gmail.com",
-    "contactPhone": ""
+    "contactPhone": "+1 206 802 5988"
   }
 }

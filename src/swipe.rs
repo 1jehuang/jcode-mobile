@@ -97,7 +97,7 @@ impl Swipe {
         }
         if let Some((from, start)) = self.settle {
             let t = now.duration_since(start).as_secs_f32() / SETTLE.as_secs_f32();
-            if t >= 1.0 {
+            if t >= 1.0 || crate::system::reduce_motion() {
                 self.settle = None;
                 return (0.0, false);
             }

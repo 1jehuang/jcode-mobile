@@ -38,10 +38,43 @@ impl AccountStore {
         Self::new(base.join("jcode-mobile").join("account.json"))
     }
     pub fn load(&self) -> Option<Account> {
+        #[cfg(target_os = "ios")]
+        {
+            if let Some(a) = keychain::load() {
+                return Some(a);
+            }
+            // One-time migration from the pre-Keychain file store.
+            let a = self.load_file()?;
+            if keychain::save(&a).is_ok() {
+                self.clear_file();
+            }
+            Some(a)
+        }
+        #[cfg(not(target_os = "ios"))]
+        self.load_file()
+    }
+    pub fn save(&self, account: &Account) -> std::io::Result<()> {
+        #[cfg(target_os = "ios")]
+        {
+            keychain::save(account)?;
+            self.clear_file();
+            Ok(())
+        }
+        #[cfg(not(target_os = "ios"))]
+        self.save_file(account)
+    }
+    pub fn clear(&self) {
+        #[cfg(target_os = "ios")]
+        keychain::clear();
+        self.clear_file();
+    }
+
+    fn load_file(&self) -> Option<Account> {
         let text = std::fs::read_to_string(&self.path).ok()?;
         serde_json::from_str(&text).ok()
     }
-    pub fn save(&self, account: &Account) -> std::io::Result<()> {
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    fn save_file(&self, account: &Account) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -60,8 +93,30 @@ impl AccountStore {
         }
         std::fs::rename(tmp, &self.path)
     }
-    pub fn clear(&self) {
+    fn clear_file(&self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// iOS Keychain (generic password item) holding the account JSON.
+#[cfg(target_os = "ios")]
+mod keychain {
+    use super::Account;
+    use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
+
+    const SERVICE: &str = "sh.jcode.mobile";
+    const ACCOUNT: &str = "account";
+
+    pub fn load() -> Option<Account> {
+        let bytes = get_generic_password(SERVICE, ACCOUNT).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+    pub fn save(account: &Account) -> std::io::Result<()> {
+        let bytes = serde_json::to_vec(account).map_err(std::io::Error::other)?;
+        set_generic_password(SERVICE, ACCOUNT, &bytes).map_err(|e| std::io::Error::other(e.to_string()))
+    }
+    pub fn clear() {
+        let _ = delete_generic_password(SERVICE, ACCOUNT);
     }
 }
 

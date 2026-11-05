@@ -84,7 +84,7 @@ impl MobileApp {
                     .rounded(px(10.))
                     .bg(gpui::white())
                     .text_color(gpui::black())
-                    .text_size(px(17.))
+                    .text_size(crate::system::fs(17.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .cursor_pointer()
                     .active(|s| s.opacity(0.85))

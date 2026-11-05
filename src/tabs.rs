@@ -86,6 +86,10 @@ pub fn exposed(tabs: &[TabGeometry], position: usize, order: &[usize]) -> (f32, 
 
 /// Critically damped-ish easing toward targets; returns true while moving.
 pub fn step_toward(current: &mut TabGeometry, target: TabGeometry, dt: f32) -> bool {
+    if crate::system::reduce_motion() {
+        *current = target;
+        return false;
+    }
     let k = 1.0 - (-dt * 18.0).exp();
     let mut moving = false;
     for (c, t) in [

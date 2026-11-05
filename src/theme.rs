@@ -67,13 +67,39 @@ impl Theme {
         }
     }
 
+    /// Desktop's "Light Neutral" (palettes.rs `light_neutral`).
+    pub fn light_neutral() -> Self {
+        Self {
+            background: c(0xf6f6f6),
+            raised: c(0xf4f4f4),
+            surface: c(0xf4f4f4),
+            surface_elevated: c(0xe9eaea),
+            code_bg: c(0xf7f7f7),
+            inline_code_bg: c(0xeeeeee),
+            border: c(0xe6e6e6),
+            border_focus: c(0x858585),
+            input_border: c(0xd9d9d9),
+            accent: c(0x3b3d3f),
+            text: c(0x3b3d3f),
+            text_strong: c(0x1a1c1f),
+            text_secondary: c(0x555555),
+            text_muted: c(0x666666),
+            ok: c(0x306844),
+            warning: c(0x805518),
+            error: c(0xb42332),
+            field: c(0xffffff),
+            selection: rgba(0x3a83f730).into(),
+        }
+    }
+
     pub fn get(cx: &App) -> Theme {
         *cx.global::<Theme>()
     }
 
     /// Pure black sets PROMPT_TINT_STRENGTH to 0: prompts are plain USER_BG.
+    /// Light Neutral likewise uses plain USER_BG.
     pub fn prompt_background(_distance: usize) -> Hsla {
-        c(0x121212)
+        if crate::system::is_light() { c(0xf4f4f4) } else { c(0x121212) }
     }
 }
 

@@ -47,7 +47,7 @@ impl MobileApp {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().pl(px(2.)).pb(px(2.)).text_size(px(11.)).text_color(t.text_muted).child("Recent directories"));
+            .child(div().pl(px(2.)).pb(px(2.)).text_size(crate::system::fs(11.)).text_color(t.text_muted).child("Recent directories"));
         for (i, dir) in dirs.into_iter().enumerate() {
             let (name, parent) = crate::labels::cloud_location(Some(&dir));
             col = col.child(
@@ -69,12 +69,12 @@ impl MobileApp {
                             .flex()
                             .items_baseline()
                             .gap(px(6.))
-                            .child(div().flex_none().text_size(px(13.5)).text_color(t.text).child(name))
+                            .child(div().flex_none().text_size(crate::system::fs(13.5)).text_color(t.text).child(name))
                             .when_some(parent, |d, p| {
-                                d.child(div().min_w_0().truncate().text_size(px(11.)).text_color(t.text_muted).child(p))
+                                d.child(div().min_w_0().truncate().text_size(crate::system::fs(11.)).text_color(t.text_muted).child(p))
                             }),
                     )
-                    .child(div().flex_none().text_size(px(14.)).text_color(t.text_muted).child("›"))
+                    .child(div().flex_none().text_size(crate::system::fs(14.)).text_color(t.text_muted).child("›"))
                     .on_click(cx.listener(move |this, _, _, cx| this.start_in_dir(dir.clone(), cx))),
             );
         }

@@ -6,7 +6,7 @@ use gpui::{AnyElement, FontWeight, HighlightStyle, StyledText, div, prelude::*, 
 use crate::theme::Theme;
 
 pub fn render(src: &str, t: &Theme) -> AnyElement {
-    let mut col = div().flex().flex_col().gap(px(8.)).text_size(px(13.5)).line_height(px(21.));
+    let mut col = div().flex().flex_col().gap(px(8.)).text_size(crate::system::fs(13.5)).line_height(crate::system::fs(21.));
     let mut lines = src.lines().peekable();
     let mut para: Vec<&str> = vec![];
     let flush = |para: &mut Vec<&str>, col: gpui::Div| -> gpui::Div {
@@ -36,8 +36,8 @@ pub fn render(src: &str, t: &Theme) -> AnyElement {
                     .border_1()
                     .border_color(t.border)
                     .font_family(crate::theme::FONT)
-                    .text_size(px(12.))
-                    .line_height(px(18.))
+                    .text_size(crate::system::fs(12.))
+                    .line_height(crate::system::fs(18.))
                     .text_color(t.text)
                     .child(code.join("\n")),
             );
@@ -46,7 +46,7 @@ pub fn render(src: &str, t: &Theme) -> AnyElement {
         } else if let Some(h) = trimmed.strip_prefix('#') {
             col = flush(&mut para, col);
             let h = h.trim_start_matches('#').trim();
-            col = col.child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(inline(h, t)));
+            col = col.child(div().font_weight(FontWeight::SEMIBOLD).text_size(crate::system::fs(14.)).child(inline(h, t)));
         } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             col = flush(&mut para, col);
             col = col.child(

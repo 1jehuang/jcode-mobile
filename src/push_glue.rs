@@ -78,7 +78,7 @@ impl MobileApp {
 
     /// Focus the tab showing `session_id`, or resume it in a new tab. With
     /// `reply`, send it to that session as soon as it is connected.
-    fn open_session(&mut self, session_id: String, reply: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn open_session(&mut self, session_id: String, reply: Option<String>, cx: &mut Context<Self>) {
         if self.account.is_none() {
             return;
         }

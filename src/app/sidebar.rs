@@ -57,7 +57,10 @@ impl MobileApp {
         let dt = now.duration_since(self.drawer_last).as_secs_f32().min(0.05);
         self.drawer_last = now;
         let target = if self.drawer_open { 1. } else { 0. };
-        let gap = target - self.drawer_t;
+        let gap = if crate::system::reduce_motion() { 0. } else { target - self.drawer_t };
+        if gap == 0. {
+            self.drawer_t = target;
+        }
         // Critically damped approach, like UIKit's ~300ms sheet curve.
         self.drawer_t = if gap.abs() < 0.002 { target } else { self.drawer_t + gap * (1. - (-dt * 14.).exp()) };
         if self.drawer_t != target {
@@ -107,7 +110,7 @@ impl MobileApp {
     }
 
     /// Desktop's `render_sidebar_quick_actions`: 26px pills on TOOL_BG.
-    fn render_quick_actions(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_quick_actions(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let quick = |id: &'static str, glyph: &'static str, text: &'static str| {
             div()
                 .id(id)
@@ -122,7 +125,7 @@ impl MobileApp {
                 .rounded_full()
                 .cursor_pointer()
                 .bg(t.surface)
-                .text_size(px(12.))
+                .text_size(crate::system::fs(12.))
                 .text_color(t.text_secondary)
                 .child(glyph)
                 .child(div().min_w_0().truncate().child(text))
@@ -145,7 +148,7 @@ impl MobileApp {
             })))
     }
 
-    fn render_session_list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_session_list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.session.session_id.clone();
         let open: Vec<String> = self.parked.iter().filter_map(|p| p.session.session_id.clone()).collect();
         let mut list = div().flex().flex_col().pb(px(8.));
@@ -155,7 +158,7 @@ impl MobileApp {
                 div()
                     .px(px(16.))
                     .py(px(12.))
-                    .text_size(px(12.))
+                    .text_size(crate::system::fs(12.))
                     .text_color(t.text_muted)
                     .child(if self.session.phase == jcode_mobile_core::ConnectionPhase::Connected {
                         "Loading sessions…"
@@ -187,9 +190,9 @@ impl MobileApp {
                             .h(px(8.))
                             .text_color(t.text_muted),
                     )
-                    .child(div().flex_none().text_size(px(12.)).text_color(t.text_secondary).child(name))
+                    .child(div().flex_none().text_size(crate::system::fs(12.)).text_color(t.text_secondary).child(name))
                     .when_some(parent, |d, parent| {
-                        d.child(div().min_w_0().truncate().text_size(px(11.)).text_color(t.text_muted).child(parent))
+                        d.child(div().min_w_0().truncate().text_size(crate::system::fs(11.)).text_color(t.text_muted).child(parent))
                     }),
             );
             for s in rows {
@@ -238,14 +241,14 @@ impl MobileApp {
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(14.))
+                                        .text_size(crate::system::fs(14.))
                                         .line_height(relative(1.4))
                                         .text_color(if live { t.text_strong } else { t.text_secondary })
                                         .child(session_title(s)),
                                 ),
                         )
                         .when_some(session_meta(s, now_ms), |d, meta| {
-                            d.child(div().pl(px(12.)).text_size(px(11.)).text_color(t.text_muted).child(meta))
+                            d.child(div().pl(px(12.)).text_size(crate::system::fs(11.)).text_color(t.text_muted).child(meta))
                         }),
                 );
             }
@@ -254,7 +257,7 @@ impl MobileApp {
     }
 
     /// Desktop's `sidebar_account` footer: avatar initial, email, plan line.
-    fn render_account_footer(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_account_footer(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let email = self.account.as_ref().and_then(|a| a.email.clone()).unwrap_or_else(|| "Not signed in".into());
         let initial = email.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
         div()
@@ -286,7 +289,7 @@ impl MobileApp {
                     .items_center()
                     .justify_center()
                     .bg(t.surface_elevated)
-                    .text_size(px(13.))
+                    .text_size(crate::system::fs(13.))
                     .text_color(t.text_strong)
                     .child(initial),
             )
@@ -296,10 +299,10 @@ impl MobileApp {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().truncate().text_size(px(13.)).text_color(t.text_strong).child(email))
-                    .child(div().text_size(px(11.)).text_color(t.text_muted).child("Jcode Cloud")),
+                    .child(div().truncate().text_size(crate::system::fs(13.)).text_color(t.text_strong).child(email))
+                    .child(div().text_size(crate::system::fs(11.)).text_color(t.text_muted).child("Jcode Cloud")),
             )
-            .child(div().flex_none().text_size(px(16.)).text_color(t.text_muted).child("⚙"))
+            .child(div().flex_none().text_size(crate::system::fs(16.)).text_color(t.text_muted).child("⚙"))
     }
 }
 
@@ -318,7 +321,7 @@ fn group_by_dir(sessions: &[SessionInfo]) -> Vec<(Option<String>, Vec<&SessionIn
     groups
 }
 
-fn session_title(s: &SessionInfo) -> String {
+pub(super) fn session_title(s: &SessionInfo) -> String {
     if let Some(t) = s.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         return t.to_string();
     }

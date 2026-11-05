@@ -6,6 +6,7 @@ mod donut;
 mod donut_field;
 mod sim_keyboard;
 mod swipe;
+mod system;
 mod tabs;
 mod markdown;
 mod notify;
@@ -13,6 +14,7 @@ mod text_input;
 mod theme;
 mod tool_summary;
 mod labels;
+mod ios_ext;
 
 use std::borrow::Cow;
 
@@ -47,7 +49,10 @@ impl gpui::AssetSource for Assets {
 }
 
 fn main() {
-    gpui_platform::application().with_assets(Assets).run(|cx: &mut App| {
+    let application = gpui_platform::application().with_assets(Assets);
+    // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
+    application.on_open_urls(ios_ext::handle_urls);
+    application.run(|cx: &mut App| {
         log::info!("jcode-mobile: launched");
         load_fonts(cx);
         log::info!("jcode-mobile: fonts loaded");
@@ -78,6 +83,10 @@ fn main() {
             }),
         )
         .expect("open window");
+        // Dev hook: JCODE_MOBILE_OPEN_URL=jcode://new?text=hi simulates a deep link.
+        if let Ok(url) = std::env::var("JCODE_MOBILE_OPEN_URL") {
+            ios_ext::handle_urls(vec![url]);
+        }
         log::info!("jcode-mobile: window opened");
         cx.activate(true);
     });

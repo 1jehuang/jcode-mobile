@@ -18,9 +18,11 @@ use crate::text_input::{TextInput, TextInputEvent};
 
 #[path = "push_glue.rs"]
 mod push_glue;
+mod deep_link_glue;
 mod recent_dirs;
 mod sidebar;
 mod apple_sign_in;
+mod ios_system;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -102,6 +104,8 @@ pub struct MobileApp {
     tab_menu: Option<u64>,
     /// Session id the empty-screen recent dirs list was last requested for.
     recent_dirs_asked: Option<String>,
+    /// Horizontal swipe between tabs, like the desktop workspace pull.
+    swipe: crate::swipe::Swipe,
     spinner_step: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
     activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
@@ -144,12 +148,12 @@ impl MobileApp {
         let composer = cx.new(|cx| {
             let mut t = TextInput::new("Message jcode…", cx);
             t.bare = true;
+            t.max_lines = 6;
             t.config = TextInputConfiguration {
                 autocorrect: true,
                 autocapitalize: Autocapitalize::Sentences,
                 suggestions: true,
                 input_action: TextInputAction::Send,
-            t.max_lines = 6;
                 purpose: TextInputPurpose::Text,
             };
             t
@@ -234,13 +238,14 @@ impl MobileApp {
             follow: true,
             follow_last: std::time::Instant::now(),
             follow_max: px(0.),
-            recent_dirs_asked: None,
-            spinner_step: 0,
-            activity_orb: cx.new(|_| inline_orb()),
             tab_hold: None,
             hold_gen: 0,
             hold_fired: false,
             tab_menu: None,
+            recent_dirs_asked: None,
+            swipe: Default::default(),
+            spinner_step: 0,
+            activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
             push_token: None,
@@ -252,6 +257,11 @@ impl MobileApp {
             apple_link: None,
         };
         app.install_push(cx);
+        app.install_deep_links(cx);
+        // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
+        if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {
+            app.composer.update(cx, |c, cx| c.set_text(draft, cx));
+        }
         if let Some(account) = account {
             app.connect(account, cx);
             // Dev hook: JCODE_MOBILE_TABS=N opens N session tabs.
@@ -259,10 +269,6 @@ impl MobileApp {
             for _ in 1..n {
                 app.new_tab(cx);
             }
-        // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
-        if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {
-            app.composer.update(cx, |c, cx| c.set_text(draft, cx));
-        }
         }
         let _ = window;
         app
@@ -488,14 +494,6 @@ impl MobileApp {
         cx.notify();
     }
 
-    fn tab_session(&self, id: u64) -> Option<&SessionState> {
-        if id == self.active_tab {
-            Some(&self.session)
-        } else {
-            self.parked.iter().find(|p| p.id == id).map(|p| &p.session)
-        }
-    }
-
     fn start_tab_hold(&mut self, id: u64, cx: &mut Context<Self>) {
         self.hold_gen += 1;
         let generation = self.hold_gen;
@@ -598,6 +596,14 @@ impl MobileApp {
             .into_any_element()
     }
 
+    fn tab_session(&self, id: u64) -> Option<&SessionState> {
+        if id == self.active_tab {
+            Some(&self.session)
+        } else {
+            self.parked.iter().find(|p| p.id == id).map(|p| &p.session)
+        }
+    }
+
     fn pump(&mut self, tab: u64, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             while let Some(first) = rx.next().await {
@@ -617,6 +623,7 @@ impl MobileApp {
                                     crate::notify::post(&a);
                                 }
                             }
+                            this.sync_live_activity();
                             cx.notify();
                             return;
                         }
@@ -629,6 +636,7 @@ impl MobileApp {
                         let busy = this.session.is_processing
                             || this.parked.iter().any(|p| p.session.is_processing);
                         crate::notify::keep_alive(busy);
+                        this.sync_live_activity();
                         if this.session.phase == ConnectionPhase::Connected
                             && this.session.session_id.is_some()
                             && let Some(msg) = this.auto_send.take()
@@ -708,6 +716,7 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        ios_system::forget_index();
         self.unregister_push(cx);
         if let Some(c) = self.connection.take() {
             c.stop();
@@ -742,7 +751,7 @@ struct ParkedTab {
 }
 
 fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
-    div().text_size(px(size)).text_color(color).child(text.into())
+    div().text_size(crate::system::fs(size)).text_color(color).child(text.into())
 }
 
 /// Desktop's `composer_pill`: 22px rounded-full chip on prompt paper,
@@ -757,7 +766,7 @@ fn pill(id: &'static str, text: impl Into<SharedString>, t: &Theme) -> gpui::Sta
         .items_center()
         .rounded_full()
         .bg(t.surface)
-        .text_size(px(10.5))
+        .text_size(crate::system::fs(10.5))
         .text_color(t.text_secondary)
         .whitespace_nowrap()
         .overflow_hidden()
@@ -783,7 +792,7 @@ fn outline_button(
         .border_1()
         .border_color(if enabled { t.border_focus } else { t.input_border })
         .text_color(if enabled { t.text_strong } else { t.text_muted })
-        .text_size(px(14.))
+        .text_size(crate::system::fs(14.))
         .when(enabled, |d| d.cursor_pointer().active(|s| s.bg(t.surface)))
         .child(text.into())
 }
@@ -864,7 +873,7 @@ impl MobileApp {
                     .justify_center()
                     .gap(px(18.))
                     .child(crate::donut::spinning_donut(140., t.text_strong, self.started))
-                    .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(px(30.))),
+                    .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(crate::system::fs(30.))),
             )
             .child(
                 div()
@@ -895,7 +904,7 @@ impl MobileApp {
                                 .rounded_full()
                                 .bg(gpui::white())
                                 .text_color(gpui::black())
-                                .text_size(px(14.))
+                                .text_size(crate::system::fs(14.))
                                 .cursor_pointer()
                                 .active(|s| s.opacity(0.85))
                                 .when(!waiting, |d| d.child(gpui::img(google_mark()).size(px(18.)).flex_none()))
@@ -952,7 +961,7 @@ impl MobileApp {
     fn render_header(&mut self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::tabs;
         // Phone width minus side buttons and padding.
-        let width = self.device.map_or(390., |(w, _)| w);
+        let width = self.content_width();
         let track = (width - 2. * 10. - 2. * 32. - 2. * 6.).max(40.);
         let count = self.tab_order.len();
         let selected = self.tab_order.iter().position(|id| *id == self.active_tab).unwrap_or(0);
@@ -1067,7 +1076,7 @@ impl MobileApp {
                     .items_center()
                     .justify_center()
                     .text_color(t.text_secondary)
-                    .text_size(px(16.))
+                    .text_size(crate::system::fs(16.))
                     .cursor_pointer()
                     .child("≡")
                     .on_click(cx.listener(|this, _, window, cx| this.open_drawer(window, cx))),
@@ -1082,14 +1091,78 @@ impl MobileApp {
                     .items_center()
                     .justify_center()
                     .text_color(if connected { t.text_strong } else { t.text_muted })
-                    .text_size(px(20.))
+                    .text_size(crate::system::fs(20.))
                     .cursor_pointer()
                     .child("+")
                     .on_click(cx.listener(|this, _, _, cx| this.new_tab(cx))),
             )
     }
 
+    /// Tab ids left and right of the active one.
+    fn tab_neighbors(&self) -> (Option<u64>, Option<u64>) {
+        let i = self.tab_order.iter().position(|id| *id == self.active_tab).unwrap_or(0);
+        let prev = i.checked_sub(1).and_then(|p| self.tab_order.get(p).copied());
+        (prev, self.tab_order.get(i + 1).copied())
+    }
+
+    fn end_swipe(&mut self, cx: &mut Context<Self>) {
+        let width = self.content_width();
+        let (prev, next) = self.tab_neighbors();
+        let now = std::time::Instant::now();
+        if let crate::swipe::Release::Switch(dir) = self.swipe.release(width, prev.is_some(), next.is_some(), now) {
+            if let Some(id) = if dir < 0 { prev } else { next } {
+                self.focus_tab(id, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Chat panel that slides with a horizontal swipe and settles into the neighbor tab.
     fn render_chat(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let width = self.content_width();
+        let now = std::time::Instant::now();
+        // Trackpads without touch phases: a pause ends the gesture.
+        if self.swipe.active && self.swipe.last_event.is_some_and(|e| now.duration_since(e) > crate::swipe::IDLE_END) {
+            self.end_swipe(cx);
+        }
+        let (prev, next) = self.tab_neighbors();
+        let (offset, settling) = self.swipe.offset(width, prev.is_some(), next.is_some(), now);
+        if settling || self.swipe.active {
+            window.request_animation_frame();
+        }
+        let inner = self.render_chat_inner(t, window, cx);
+        div()
+            .id("chat-swipe")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
+                let d = ev.delta.pixel_delta(px(20.));
+                let now = std::time::Instant::now();
+                if this.swipe.feed(f32::from(d.x), f32::from(d.y), now) {
+                    window.request_animation_frame();
+                    cx.notify();
+                }
+                if ev.touch_phase == gpui::TouchPhase::Ended {
+                    this.end_swipe(cx);
+                }
+            }))
+            .child(
+                div()
+                    .relative()
+                    .left(px(offset))
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(inner),
+            )
+            .into_any_element()
+    }
+
+    fn render_chat_inner(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Unpin follow mode when the user scrolls up.
         let max = self.transcript_scroll.max_offset().y;
         let mut off = -self.transcript_scroll.offset().y;
@@ -1166,7 +1239,7 @@ impl MobileApp {
                         this.reconnect(cx);
                     })))
                 })
-                .child(label("What would you like to work on?", t.text, 22.).line_height(px(30.)))
+                .child(label("What would you like to work on?", t.text, 22.).line_height(crate::system::fs(30.)))
                 .children(recent)
                 .into_any_element()
         } else {
@@ -1277,8 +1350,8 @@ impl MobileApp {
                             .rounded_full()
                             .bg(bg)
                             .text_center()
-                            .text_size(px(10.))
-                            .line_height(px(20.))
+                            .text_size(crate::system::fs(10.))
+                            .line_height(crate::system::fs(20.))
                             .text_color(t.text_secondary)
                             .child(prompt_n.to_string()),
                     )
@@ -1290,8 +1363,8 @@ impl MobileApp {
                             .py(px(4.))
                             .rounded(px(8.))
                             .bg(bg)
-                            .text_size(px(13.5))
-                            .line_height(px(21.))
+                            .text_size(crate::system::fs(13.5))
+                            .line_height(crate::system::fs(21.))
                             .text_color(t.text_strong)
                             .child(e.text.clone()),
                     )
@@ -1340,7 +1413,7 @@ impl MobileApp {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .text_size(px(12.))
+                    .text_size(crate::system::fs(12.))
                     .child(div().flex_none().text_color(color).child(glyph))
                     .child(div().flex_none().text_color(t.text).child(call.name.clone()))
                     .when(!headline.is_empty(), |d| {
@@ -1371,7 +1444,7 @@ impl MobileApp {
                         .py(px(4.))
                         .border_l_1()
                         .border_color(t.border_focus)
-                        .text_size(px(11.))
+                        .text_size(crate::system::fs(11.))
                         .text_color(t.text_secondary)
                         .child(if body.is_empty() { call.input.clone() } else { body }),
                 )
@@ -1491,7 +1564,7 @@ impl MobileApp {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(11.5))
+                                    .text_size(crate::system::fs(11.5))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(t.text_secondary)
                                     .child(name),
@@ -1501,7 +1574,7 @@ impl MobileApp {
                                     div()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(px(10.5))
+                                        .text_size(crate::system::fs(10.5))
                                         .text_color(t.text_muted)
                                         .child(p),
                                 )
@@ -1635,7 +1708,7 @@ impl MobileApp {
                             .id("back")
                             .cursor_pointer()
                             .text_color(t.text_strong)
-                            .text_size(px(13.))
+                            .text_size(crate::system::fs(13.))
                             .child("‹ back")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.screen = if this.account.is_some() { Screen::Chat } else { Screen::SignIn };
@@ -1657,7 +1730,7 @@ impl MobileApp {
                                 .flex()
                                 .justify_between()
                                 .gap(px(12.))
-                                .text_size(px(12.))
+                                .text_size(crate::system::fs(12.))
                                 .child(div().flex_none().text_color(t.text_muted).child(k))
                                 .child(
                                     div()
@@ -1757,7 +1830,7 @@ fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, t: &Theme) -> g
         .rounded_full()
         .bg(t.surface_elevated)
         .text_color(fg)
-        .text_size(px(15.))
+        .text_size(crate::system::fs(15.))
         .cursor_pointer()
         .active(|s| s.bg(t.surface))
         .child(glyph)
@@ -1782,6 +1855,7 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::notify::set_visible_session(self.session.session_id.clone());
+        self.system_tick(window, cx);
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
         if std::mem::take(&mut self.focus_code) {
             window.focus(&self.code.focus_handle(cx), cx);
@@ -1838,6 +1912,18 @@ impl Render for MobileApp {
             Screen::Chat => self.render_chat(&t, window, cx),
             Screen::Settings => self.render_settings(&t, cx),
         };
+        let body = if let (Some(id), Screen::Chat) = (self.tab_menu, &self.screen) {
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(body)
+                .child(self.render_tab_menu(id, &t, cx))
+                .into_any_element()
+        } else {
+            body
+        };
         let body = if self.model_picker && matches!(self.screen, Screen::Chat) {
             div()
                 .relative()
@@ -1850,6 +1936,7 @@ impl Render for MobileApp {
         } else {
             body
         };
+        let body = self.wrap_wide(body, &t, window, cx);
         self.drawer_insets = (top, base);
         let drawer = self.render_drawer(&t, window, cx);
         let screen = div()
@@ -1910,18 +1997,6 @@ impl Render for MobileApp {
                         .rounded(px(48.))
                         .border_1()
                         .border_color(t.input_border)
-        let body = if let (Some(id), Screen::Chat) = (self.tab_menu, &self.screen) {
-            div()
-                .relative()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(body)
-                .child(self.render_tab_menu(id, &t, cx))
-                .into_any_element()
-        } else {
-            body
-        };
                         .child(
                             // Dynamic Island and home indicator, for honest inset checks.
                             div()
@@ -1978,6 +2053,6 @@ impl MobileApp {
 }
 
 pub fn init(cx: &mut App) {
-    cx.set_global(Theme::pure_black());
+    crate::system::install(cx);
     crate::text_input::bind_keys(cx);
 }
