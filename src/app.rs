@@ -20,6 +20,7 @@ use crate::text_input::{TextInput, TextInputEvent};
 mod push_glue;
 mod recent_dirs;
 mod sidebar;
+mod apple_sign_in;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -115,6 +116,8 @@ pub struct MobileApp {
     drawer_t: f32,
     drawer_last: std::time::Instant,
     drawer_insets: (f32, f32),
+    /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
+    apple_link: Option<Entity<apple_sign_in::AppleLinkPanel>>,
 }
 
 impl MobileApp {
@@ -246,6 +249,7 @@ impl MobileApp {
             drawer_t: 0.,
             drawer_last: std::time::Instant::now(),
             drawer_insets: (0., 0.),
+            apple_link: None,
         };
         app.install_push(cx);
         if let Some(account) = account {
@@ -717,6 +721,7 @@ impl MobileApp {
         self.tab_motion.clear();
         self.store.clear();
         self.account = None;
+        self.apple_link = None;
         self.session = SessionState::default();
         self.login_token = None;
         self.screen = Screen::SignIn;
@@ -838,6 +843,7 @@ impl MobileApp {
             )),
             (false, false) => None,
         };
+        let apple = (!code_step).then(|| self.render_apple_button(cx));
         // Fixed layout: branding fills whatever space is left above, the form
         // is pinned to the bottom. The screen's bottom padding grows with the
         // keyboard, so the form rides up above it and nothing else moves.
@@ -871,6 +877,7 @@ impl MobileApp {
                     // form glides onto the keyboard instead of jumping.
                     .pb(px(16. + (220. - self.kb_lift).max(0.)))
                     .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
+                    .children(apple)
                     // No third-party login on iOS: offering Google would oblige
                     // Sign in with Apple (App Review 4.8). Email codes only there.
                     // The desktop preview mirrors iOS, so it hides Google too.
@@ -1611,6 +1618,7 @@ impl MobileApp {
             ("Session", s.session_id.clone()),
             ("Tokens", Some(format!("↑{} ↓{}", s.token_input, s.token_output))),
         ];
+        let apple_link = self.render_apple_link(cx);
         div()
             .flex()
             .flex_col()
@@ -1674,6 +1682,7 @@ impl MobileApp {
                                 cx.notify()
                             },
                         )))
+                        .children(apple_link)
                         .child(
                             outline_button("sign-out", "Sign out", true, t)
                                 .text_color(t.error)
