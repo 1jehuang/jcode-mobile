@@ -18,6 +18,7 @@ use crate::text_input::{TextInput, TextInputEvent};
 
 #[path = "push_glue.rs"]
 mod push_glue;
+mod recent_dirs;
 mod sidebar;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
@@ -91,6 +92,8 @@ pub struct MobileApp {
     follow: bool,
     follow_last: std::time::Instant,
     follow_max: gpui::Pixels,
+    /// Session id the empty-screen recent dirs list was last requested for.
+    recent_dirs_asked: Option<String>,
     spinner_step: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
     activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
@@ -220,6 +223,7 @@ impl MobileApp {
             follow: true,
             follow_last: std::time::Instant::now(),
             follow_max: px(0.),
+            recent_dirs_asked: None,
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
@@ -368,8 +372,13 @@ impl MobileApp {
 
     /// Open a connection for the active tab, resuming `session_id` if given.
     fn start_connection(&mut self, resume: Option<String>, cx: &mut Context<Self>) {
+        self.start_connection_in(resume, None, cx);
+    }
+
+    fn start_connection_in(&mut self, resume: Option<String>, working_dir: Option<String>, cx: &mut Context<Self>) {
         let Some(account) = self.account.clone() else { return };
         let mut config = Config::cloud(account);
+        config.working_dir = working_dir;
         config.max_reconnect_attempts = Some(6);
         let (tx, rx) = unbounded();
         let conn = Connection::start(config, resume, move |o| {
@@ -1006,8 +1015,13 @@ impl MobileApp {
             );
         }
         let empty = entries.is_empty() && !self.session.is_reasoning;
+        if empty && self.session.phase == ConnectionPhase::Connected {
+            self.ensure_recent_dirs();
+        }
+        let recent = if empty { self.render_recent_dirs(t, cx) } else { None };
         let body = if empty {
-            // Desktop's fresh session: the question sits just above the composer.
+            // Desktop's fresh session: the question sits just above the composer,
+            // with recent cloud dirs as quick nav in the space above it.
             div()
                 .flex_1()
                 .min_h_0()
@@ -1025,6 +1039,7 @@ impl MobileApp {
                     })))
                 })
                 .child(label("What would you like to work on?", t.text, 22.).line_height(px(30.)))
+                .children(recent)
                 .into_any_element()
         } else {
             div()

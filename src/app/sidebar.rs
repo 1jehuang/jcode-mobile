@@ -343,7 +343,7 @@ fn session_meta(s: &SessionInfo, now_ms: u64) -> Option<String> {
     }
 }
 
-fn created_ms(session_id: &str) -> Option<u64> {
+pub(super) fn created_ms(session_id: &str) -> Option<u64> {
     session_id
         .split('_')
         .filter_map(|part| part.parse::<u64>().ok())
