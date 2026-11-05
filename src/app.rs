@@ -671,7 +671,8 @@ impl MobileApp {
                     .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
                     // No third-party login on iOS: offering Google would oblige
                     // Sign in with Apple (App Review 4.8). Email codes only there.
-                    .when(!code_step && !cfg!(target_os = "ios"), |d| {
+                    // The desktop preview mirrors iOS, so it hides Google too.
+                    .when(!code_step && !cfg!(target_os = "ios") && self.device.is_none(), |d| {
                         let waiting = self.browser_login.is_some();
                         d.child(
                             div()
