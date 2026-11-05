@@ -70,6 +70,13 @@ pub enum NoticeKind {
     Compaction,
 }
 
+/// A user-facing system notification (iOS banner, desktop toast).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
     pub id: u64,
@@ -99,6 +106,8 @@ pub struct SessionState {
     pub error_banner: Option<String>,
     pub notices: Vec<Notice>,
     pub pending_interrupts: Vec<String>,
+    /// System notifications for the shell to post (drain after `apply`).
+    pub alerts: Vec<Alert>,
     next_id: u64,
 }
 
@@ -125,6 +134,7 @@ impl Default for SessionState {
             error_banner: None,
             notices: vec![],
             pending_interrupts: vec![],
+            alerts: vec![],
             next_id: 1,
         }
     }
@@ -230,6 +240,24 @@ impl SessionState {
             }
             ConnectionPhase::Connecting | ConnectionPhase::Provisioning { .. } => {}
         }
+    }
+
+    fn alert(&mut self, body: impl Into<String>) {
+        let title = self.session_title.clone().unwrap_or_else(|| "jcode".into());
+        let mut body: String = body.into();
+        if body.chars().count() > 180 {
+            body = body.chars().take(179).collect::<String>() + "…";
+        }
+        self.alerts.push(Alert { title, body });
+    }
+
+    fn last_reply_preview(&self) -> String {
+        self.transcript
+            .iter()
+            .rev()
+            .find(|e| e.role == Role::Assistant && !e.text.trim().is_empty())
+            .map(|e| e.text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|| "Finished".into())
     }
 
     fn turn_over(&mut self) {
@@ -346,7 +374,12 @@ impl SessionState {
                 self.pending_interrupts.clear();
             }
             TurnDone { .. } => {
+                let was_busy = self.is_processing;
                 self.turn_over();
+                if was_busy {
+                    let preview = self.last_reply_preview();
+                    self.alert(preview);
+                }
                 self.drain_pending_interrupts();
             }
             TurnStopped { reason, message, .. } => {
@@ -362,6 +395,7 @@ impl SessionState {
             }
             Error { message, .. } => {
                 self.turn_over();
+                self.alert(format!("Error: {message}"));
                 self.error_banner = Some(message);
             }
             ModelInfo { provider, model, reasoning_effort, .. }
@@ -389,7 +423,10 @@ impl SessionState {
                 }
                 self.session_titles.insert(session_id, display_title);
             }
-            WakeRequested { notification, .. } => self.notice(NoticeKind::Notification, notification),
+            WakeRequested { notification, .. } => {
+                self.alert(notification.clone());
+                self.notice(NoticeKind::Notification, notification)
+            }
             SessionRecovery { reconnect_notice: Some(n), .. } => self.notice(NoticeKind::Info, n),
             BackgroundProgress { label, summary, done, .. } => {
                 self.status_detail = if done { None } else { Some(format!("{label}: {summary}")) }

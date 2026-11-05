@@ -746,8 +746,10 @@ mod ios_keyboard_tests {
         let (input, cx) = setup(cx);
         input.update(cx, |t, _| {
             t.config.input_action = gpui::TextInputAction::Send;
+            t.config.purpose = gpui::TextInputPurpose::OneTimeCode;
         });
         let c = with_handler(cx, |t, w, cx| t.text_input_configuration(w, cx));
         assert_eq!(c.input_action, gpui::TextInputAction::Send);
+        assert_eq!(c.purpose, gpui::TextInputPurpose::OneTimeCode);
     }
 }

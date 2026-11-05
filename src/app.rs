@@ -78,11 +78,12 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration};
+        use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration, TextInputPurpose};
         let email = cx.new(|cx| {
             let mut t = TextInput::new("you@example.com", cx);
             t.config = TextInputConfiguration {
                 input_action: TextInputAction::Next,
+                purpose: TextInputPurpose::Email,
                 ..Default::default()
             };
             t
@@ -91,6 +92,7 @@ impl MobileApp {
             let mut t = TextInput::new("6-digit code", cx);
             t.config = TextInputConfiguration {
                 input_action: TextInputAction::Go,
+                purpose: TextInputPurpose::OneTimeCode,
                 ..Default::default()
             };
             t
@@ -103,6 +105,7 @@ impl MobileApp {
                 autocapitalize: Autocapitalize::Sentences,
                 suggestions: true,
                 input_action: TextInputAction::Send,
+                purpose: TextInputPurpose::Text,
             };
             t
         });
