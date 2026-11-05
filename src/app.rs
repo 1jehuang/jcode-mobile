@@ -1201,11 +1201,12 @@ impl MobileApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
+            .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
                 let d = ev.delta.pixel_delta(px(20.));
                 let now = std::time::Instant::now();
                 if this.swipe.feed(f32::from(d.x), f32::from(d.y), now) {
-                    window.request_animation_frame();
+                    // Not window.request_animation_frame(): it reads the render
+                    // stack and panics outside render. Render re-arms frames.
                     cx.notify();
                 }
                 if ev.touch_phase == gpui::TouchPhase::Ended {

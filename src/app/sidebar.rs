@@ -122,7 +122,7 @@ impl MobileApp {
             .pt(px(self.drawer_insets.0))
             .pb(px(self.drawer_insets.1))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(cx.listener(move |this, ev: &gpui::ScrollWheelEvent, window, cx| {
+            .on_scroll_wheel(cx.listener(move |this, ev: &gpui::ScrollWheelEvent, _window, cx| {
                 let d = ev.delta.pixel_delta(px(20.));
                 let (dx, dy) = (f32::from(d.x), f32::from(d.y));
                 // Only a mostly-horizontal leftward drag moves the drawer;
@@ -130,7 +130,7 @@ impl MobileApp {
                 if this.drawer_drag_last.is_some() || (dx < -4. && dx.abs() > dy.abs() * 1.5) {
                     this.drawer_drag = (this.drawer_drag + dx).min(0.);
                     this.drawer_drag_last = Some(std::time::Instant::now());
-                    window.request_animation_frame();
+                    // request_animation_frame panics outside render; notify suffices.
                     cx.stop_propagation();
                     cx.notify();
                 }
