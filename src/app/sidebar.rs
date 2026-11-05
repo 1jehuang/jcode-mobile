@@ -307,7 +307,6 @@ impl MobileApp {
                             .child("×")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                crate::haptics::play(crate::haptics::Haptic::Rigid);
                                 this.close_tab(id, cx);
                             })),
                     ),
