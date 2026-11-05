@@ -27,7 +27,7 @@ jobs:
         run: SIM=1 scripts/ios-bundle.sh
       - name: Install idb
         run: |
-          brew tap facebook/fb && brew install idb-companion
+          brew tap facebook/fb && (brew trust facebook/fb || true) && brew install facebook/fb/idb-companion
           python3 -m pip install --break-system-packages fb-idb
       - name: Monkey
         run: OUT=monkey-out scripts/ios-monkey.sh target/ios/Payload/JcodeMobile.app ${{ inputs.seconds || '180' }}
