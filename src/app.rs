@@ -92,6 +92,13 @@ pub struct MobileApp {
     follow: bool,
     follow_last: std::time::Instant,
     follow_max: gpui::Pixels,
+    /// Long-press on a tab: generation of the pending hold timer.
+    tab_hold: Option<u64>,
+    hold_gen: u64,
+    /// The hold already fired, so the release must not also count as a tap.
+    hold_fired: bool,
+    /// Tab whose options sheet is open.
+    tab_menu: Option<u64>,
     /// Session id the empty-screen recent dirs list was last requested for.
     recent_dirs_asked: Option<String>,
     spinner_step: usize,
@@ -226,6 +233,10 @@ impl MobileApp {
             recent_dirs_asked: None,
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
+            tab_hold: None,
+            hold_gen: 0,
+            hold_fired: false,
+            tab_menu: None,
             status_orb: cx.new(|_| inline_orb()),
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
             push_token: None,
@@ -474,6 +485,108 @@ impl MobileApp {
         } else {
             self.parked.iter().find(|p| p.id == id).map(|p| &p.session)
         }
+    }
+
+    fn start_tab_hold(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.hold_gen += 1;
+        let generation = self.hold_gen;
+        self.tab_hold = Some(generation);
+        self.hold_fired = false;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(450)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.tab_hold == Some(generation) {
+                    this.tab_hold = None;
+                    this.hold_fired = true;
+                    this.tab_menu = Some(id);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn render_tab_menu(&self, id: u64, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let s = self.tab_session(id);
+        let title = s.and_then(|s| s.session_title.clone()).unwrap_or_else(|| "New session".into());
+        let session_id = s.and_then(|s| s.session_id.clone());
+        let many = self.tab_order.len() > 1;
+        let row = |key: &'static str, text: &'static str, color: Hsla, enabled: bool| {
+            div()
+                .id(key)
+                .px(px(12.))
+                .py(px(12.))
+                .rounded(px(10.))
+                .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(t.surface)))
+                .child(label(text, if enabled { color } else { t.text_muted }, 14.))
+        };
+        let close = |this: &mut Self, cx: &mut Context<Self>| {
+            this.tab_menu = None;
+            cx.notify();
+        };
+        let mut list = div().flex().flex_col().px(px(8.)).pt(px(6.));
+        if id != self.active_tab {
+            list = list.child(row("tm-open", "Switch to tab", t.text, true).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    close(this, cx);
+                    this.focus_tab(id, cx)
+                },
+            )));
+        }
+        if let Some(sid) = session_id {
+            list = list.child(row("tm-copy", "Copy session ID", t.text, true).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(sid.clone()));
+                    close(this, cx)
+                },
+            )));
+        }
+        list = list
+            .child(row("tm-others", "Close other tabs", t.text, many).when(many, |d| {
+                d.on_click(cx.listener(move |this, _, _, cx| {
+                    close(this, cx);
+                    this.focus_tab(id, cx);
+                    for other in this.tab_order.clone() {
+                        if other != id {
+                            this.close_tab(other, cx);
+                        }
+                    }
+                }))
+            }))
+            .child(row("tm-close", "Close tab", t.error, many).when(many, |d| {
+                d.on_click(cx.listener(move |this, _, _, cx| {
+                    close(this, cx);
+                    this.close_tab(id, cx)
+                }))
+            }));
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .bg(gpui::black().opacity(0.5))
+            .child(div().id("tm-dismiss").flex_1().on_click(cx.listener(move |this, _, _, cx| close(this, cx))))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .bg(t.surface_elevated)
+                    .rounded_t(px(18.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .pt(px(8.))
+                    .pb(px(16.))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.text_muted)),
+                    )
+                    .child(label(title, t.text_strong, 16.).px(px(20.)).pt(px(8.)).truncate())
+                    .child(list),
+            )
+            .into_any_element()
     }
 
     fn pump(&mut self, tab: u64, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
@@ -912,11 +1025,14 @@ impl MobileApp {
                     .bg(bg)
                     .cursor_pointer()
                     .child(content)
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
-                        // Double-tap closes, like the desktop's middle-click.
-                        if ev.click_count() >= 2 {
-                            this.close_tab(id, cx);
-                        } else {
+                    // Hold opens tab options, like iOS context menus; tap switches.
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                        this.start_tab_hold(id, cx)
+                    }))
+                    .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _, _, _| this.tab_hold = None))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tab_hold = None;
+                        if !std::mem::take(&mut this.hold_fired) {
                             this.focus_tab(id, cx);
                         }
                     })),
@@ -1780,6 +1896,18 @@ impl Render for MobileApp {
                         .rounded(px(48.))
                         .border_1()
                         .border_color(t.input_border)
+        let body = if let (Some(id), Screen::Chat) = (self.tab_menu, &self.screen) {
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(body)
+                .child(self.render_tab_menu(id, &t, cx))
+                .into_any_element()
+        } else {
+            body
+        };
                         .child(
                             // Dynamic Island and home indicator, for honest inset checks.
                             div()
