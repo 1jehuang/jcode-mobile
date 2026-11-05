@@ -6,7 +6,7 @@ on:
       seconds: {description: Monkey duration in seconds, default: "180"}
 concurrency:
   group: ios-monkey-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   monkey:
     runs-on: macos-latest
