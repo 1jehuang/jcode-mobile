@@ -29,8 +29,24 @@ fn load_fonts(cx: &App) {
     cx.text_system().add_fonts(fonts).expect("load bundled fonts");
 }
 
+/// Bundled SVG icons (shared with jcode-desktop's `assets/icons`).
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(match path {
+            "icons/cloud.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/cloud.svg"))),
+            _ => None,
+        })
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        Ok(vec!["icons/cloud.svg".into()])
+    }
+}
+
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_platform::application().with_assets(Assets).run(|cx: &mut App| {
         log::info!("jcode-mobile: launched");
         load_fonts(cx);
         log::info!("jcode-mobile: fonts loaded");

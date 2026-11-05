@@ -85,6 +85,7 @@ pub struct MobileApp {
     transcript_scroll: ScrollHandle,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
+    follow_last: std::time::Instant,
     spinner_step: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
     activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
@@ -204,6 +205,7 @@ impl MobileApp {
             transcript_scroll: ScrollHandle::new(),
             expanded_tools: Default::default(),
             follow: true,
+            follow_last: std::time::Instant::now(),
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
@@ -481,9 +483,7 @@ impl MobileApp {
                             this.composer.update(cx, |t, cx| t.set_text(msg, cx));
                             this.send_draft(cx);
                         }
-                        if this.follow {
-                            this.transcript_scroll.scroll_to_bottom();
-                        }
+                        // Follow mode glides to the new end in render_chat.
                         cx.notify();
                     })
                     .is_ok();
@@ -517,7 +517,7 @@ impl MobileApp {
         }
         self.composer.update(cx, |t, cx| t.set_text("", cx));
         self.follow = true;
-        self.transcript_scroll.scroll_to_bottom();
+        // render_chat glides to the end.
         cx.notify();
     }
 
@@ -934,7 +934,21 @@ impl MobileApp {
     fn render_chat(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Unpin follow mode when the user scrolls up.
         let max = self.transcript_scroll.max_offset().y;
-        let off = -self.transcript_scroll.offset().y;
+        let mut off = -self.transcript_scroll.offset().y;
+        // Streamed text grows the transcript a chunk at a time. Ease toward
+        // the end instead of snapping, so following reads as one glide.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.follow_last).as_secs_f32().min(0.05);
+        self.follow_last = now;
+        if self.follow && off < max {
+            let gap = f32::from(max - off);
+            let step = if gap < 1. { gap } else { gap * (1. - (-dt * 14.).exp()) };
+            off += px(step.max(gap.min(1.)));
+            self.transcript_scroll.set_offset(gpui::point(px(0.), -off));
+            if off < max {
+                window.request_animation_frame();
+            }
+        }
         let at_bottom = max - off < px(56.);
         let entries = &self.session.transcript;
         let mut prompt_n = 0;
@@ -1023,7 +1037,7 @@ impl MobileApp {
                             .child("↓")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.follow = true;
-                                this.transcript_scroll.scroll_to_bottom();
+                                // render_chat glides to the end.
                                 cx.notify()
                             })),
                     )
@@ -1282,21 +1296,46 @@ impl MobileApp {
                                     })),
                             ),
                     )
-                    .child(
-                        // Desktop's remote machine chip (ACCENT_DIM on ACCENT).
+                    .child({
+                        // Desktop's location label: cloud icon, repo name,
+                        // then its dim parent path on the cloud VM.
+                        let (name, parent) = crate::labels::cloud_location(self.session.working_dir.as_deref());
                         div()
-                            .flex_none()
-                            .h(px(22.))
-                            .px(px(10.))
+                            .flex_shrink(8.)
+                            .min_w_0()
+                            .px(px(4.))
                             .flex()
                             .items_center()
-                            .rounded_full()
-                            .bg(t.surface_elevated)
-                            .text_size(px(10.5))
-                            .text_color(t.accent)
+                            .gap(px(6.))
+                            .overflow_hidden()
                             .whitespace_nowrap()
-                            .child("Jcode Cloud"),
-                    ),
+                            .child(
+                                gpui::svg()
+                                    .flex_none()
+                                    .path("icons/cloud.svg")
+                                    .w(px(14.))
+                                    .h(px(9.))
+                                    .text_color(t.text_secondary),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(11.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(t.text_secondary)
+                                    .child(name),
+                            )
+                            .when_some(parent, |d, p| {
+                                d.child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(10.5))
+                                        .text_color(t.text_muted)
+                                        .child(p),
+                                )
+                            })
+                    }),
             )
     }
 

@@ -150,3 +150,37 @@ mod tests {
         assert_eq!(account_label(Some("openai"), Some("openai-api")), "OpenAI · API key");
     }
 }
+
+/// Desktop's `remote_location_label`: `/home/ec2-user/src/app` reads `app`
+/// then `~/src`. The cloud home itself reads `~`.
+pub fn cloud_location(path: Option<&str>) -> (String, Option<String>) {
+    let Some(trimmed) = path.map(|p| p.trim().trim_end_matches('/')).filter(|p| !p.is_empty()) else {
+        return ("~".into(), None);
+    };
+    const HOME: &str = "/home/ec2-user";
+    if trimmed == HOME {
+        return ("~".into(), None);
+    }
+    let Some((parent, name)) = trimmed.rsplit_once('/') else {
+        return (trimmed.into(), None);
+    };
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let parent = match parent.strip_prefix(HOME) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => parent.to_string(),
+    };
+    (name.to_string(), Some(parent))
+}
+
+#[cfg(test)]
+mod location_tests {
+    #[test]
+    fn cloud_paths_read_like_desktop() {
+        use super::cloud_location as l;
+        assert_eq!(l(Some("/home/ec2-user")), ("~".into(), None));
+        assert_eq!(l(Some("/home/ec2-user/src/app/")), ("app".into(), Some("~/src".into())));
+        assert_eq!(l(Some("/home/ec2-user/jcode")), ("jcode".into(), Some("~".into())));
+        assert_eq!(l(None), ("~".into(), None));
+    }
+}

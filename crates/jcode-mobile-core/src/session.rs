@@ -100,6 +100,8 @@ pub struct SessionState {
     /// Every (model, provider, auth) route the session can switch to.
     pub routes: Vec<jcode_sdk::ModelRouteInfo>,
     pub reasoning_effort: Option<String>,
+    /// Session directory on the cloud VM.
+    pub working_dir: Option<String>,
     pub server_version: Option<String>,
     pub token_input: u64,
     pub token_output: u64,
@@ -126,6 +128,7 @@ impl Default for SessionState {
             is_reasoning: false,
             model_name: None,
             provider_name: None,
+            working_dir: None,
             available_models: vec![],
             routes: vec![],
             reasoning_effort: None,
@@ -279,6 +282,9 @@ impl SessionState {
                 if let Some(t) = session.title.clone() {
                     self.session_title = Some(t.clone());
                     self.session_titles.insert(session.session_id.clone(), t);
+                }
+                if let Some(d) = session.working_dir.clone().filter(|d| !d.trim().is_empty()) {
+                    self.working_dir = Some(d);
                 }
                 self.is_processing = session.status == "running";
                 self.session_id = Some(session.session_id);
