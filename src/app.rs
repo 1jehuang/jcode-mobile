@@ -84,6 +84,9 @@ pub struct MobileApp {
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
     spinner_step: usize,
+    /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
+    activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
+    status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     /// Dev hook (JCODE_MOBILE_SEND): message sent once connected.
     auto_send: Option<String>,
 }
@@ -199,6 +202,8 @@ impl MobileApp {
             expanded_tools: Default::default(),
             follow: true,
             spinner_step: 0,
+            activity_orb: cx.new(|_| inline_orb()),
+            status_orb: cx.new(|_| inline_orb()),
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
         };
         if let Some(account) = account {
@@ -632,6 +637,32 @@ fn google_mark() -> std::sync::Arc<gpui::Image> {
     .clone()
 }
 
+fn inline_orb() -> gpui_thinking_orbs::ThinkingOrb {
+    use gpui_thinking_orbs::{OrbSize, OrbTheme, ThinkingOrb};
+    ThinkingOrb::new().size(OrbSize::Inline).theme(OrbTheme::Dark)
+}
+
+/// Desktop's mapping (panel_activity.rs) from activity to orb animation.
+fn orb_state(activity: &str) -> gpui_thinking_orbs::OrbState {
+    use gpui_thinking_orbs::OrbState;
+    match activity {
+        "thinking" => OrbState::Reasoning,
+        "responding" => OrbState::Composing,
+        "running tools" => OrbState::Solving,
+        _ => OrbState::Working,
+    }
+}
+
+/// An orb followed by a status line.
+fn orb_row(orb: &Entity<gpui_thinking_orbs::ThinkingOrb>, text: impl Into<SharedString>, color: Hsla) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(div().flex_none().size(px(20.)).child(orb.clone()))
+        .child(label(text, color, 12.))
+}
+
 fn spinner_glyph(step: usize) -> &'static str {
     ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][step % 8]
 }
@@ -642,8 +673,8 @@ impl MobileApp {
         // The keyboard's return key ("next"/"go") submits, so there is no
         // action button: only a status line under the field.
         let status: Option<String> = match (code_step, self.signing_in) {
-            (false, true) => Some(format!("{} Sending a code…", spinner_glyph(self.spinner_step))),
-            (true, true) => Some(format!("{} Signing in…", spinner_glyph(self.spinner_step))),
+            (false, true) => Some("Sending a code…".into()),
+            (true, true) => Some("Signing in…".into()),
             (true, false) => Some(format!(
                 "We emailed a code to {}. Enter it above.",
                 self.email.read(cx).text().trim()
@@ -724,7 +755,12 @@ impl MobileApp {
                     })
                     .child(if code_step { self.code.clone() } else { self.email.clone() })
                     .when_some(status, |d, s| {
-                        d.child(label(s, t.text_secondary, 13.).w_full().flex().justify_center())
+                        let row = if self.signing_in {
+                            orb_row(&self.status_orb, s, t.text_secondary)
+                        } else {
+                            div().child(label(s, t.text_secondary, 13.))
+                        };
+                        d.child(row.w_full().flex().justify_center())
                     })
                     .when(code_step && !self.signing_in, |d| {
                         d.child(
@@ -903,7 +939,8 @@ impl MobileApp {
             rows.push(self.render_entry(e, prompt_n, t, cx));
         }
         if let Some(a) = self.activity() {
-            rows.push(activity_label(a, self.spinner_step, t).into_any_element());
+            self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
+            rows.push(orb_row(&self.activity_orb, a, t.text_muted).into_any_element());
         }
         if let Some(err) = self.session.error_banner.clone() {
             rows.push(
@@ -1006,13 +1043,7 @@ impl MobileApp {
             ConnectionPhase::Reconnecting { attempt } => format!("Reconnecting ({attempt})…"),
             ConnectionPhase::Disconnected => "Disconnected".into(),
         };
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(label(spinner_glyph(self.spinner_step), t.text_secondary, 13.))
-            .child(label(text, t.text_muted, 12.))
-            .into_any_element()
+        orb_row(&self.status_orb, text, t.text_muted).into_any_element()
     }
 
     fn activity(&self) -> Option<&'static str> {
@@ -1331,16 +1362,6 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
         .border_color(with_alpha(tint, 0.3))
         .child(label("✗", tint, 12.))
         .child(label(msg.to_string(), t.text, 12.).flex_1())
-}
-
-fn activity_label(text: &'static str, step: usize, t: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .text_size(px(12.))
-        .child(div().text_color(t.text_secondary).child(spinner_glyph(step)))
-        .child(div().text_color(t.text_muted).child(text))
 }
 
 impl Render for MobileApp {

@@ -27,6 +27,8 @@ futures = "0.3"
 unicode-segmentation = "1"
 serde_json = "1"
 log = "0.4.35"
+# Desktop's thinking orbs (same GPUI instance via the crates-io patch below).
+gpui-thinking-orbs = { git = "https://github.com/FrancoEscob/gpui-thinking-orbs", rev = "8bb92031040688bfd24e4d6bd96c76b61ed86ad1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
@@ -42,6 +44,8 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger"] }
 
 [patch.crates-io]
+# Keep the orb library on the exact GPUI instance the app uses.
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
 cgl = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
 
 [dev-dependencies]
