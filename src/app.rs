@@ -1173,6 +1173,10 @@ impl MobileApp {
                     .gap(px(4.))
                     .px(px(4.))
                     .overflow_hidden()
+                    // Model and provider on the left, the machine on the right.
+                    .when_some(model, |d, m| d.child(pill(m, t)))
+                    .when_some(provider, |d, p| d.child(pill(p, t)))
+                    .child(div().flex_1())
                     .child(
                         div()
                             .flex_none()
@@ -1185,9 +1189,7 @@ impl MobileApp {
                             .text_size(px(11.))
                             .text_color(t.accent)
                             .child("☁ jcode-cloud"),
-                    )
-                    .when_some(model, |d, m| d.child(pill(m, t)))
-                    .when_some(provider, |d, p| d.child(pill(p, t))),
+                    ),
             )
     }
 
