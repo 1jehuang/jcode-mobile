@@ -74,6 +74,7 @@ if [ "${1:-}" = "--testflight" ]; then
   <key>com.apple.developer.team-identifier</key><string>TAS6ARKDN7</string>
   <key>get-task-allow</key><false/>
   <key>beta-reports-active</key><true/>
+  <key>aps-environment</key><string>production</string>
 </dict></plist>
 ENT
   rcodesign sign --p12-file "$SIGN/dist.p12" --p12-password jcode \

@@ -75,6 +75,8 @@ pub enum Request {
     Compact { id: u64 },
     RenameSession { id: u64, title: Option<String> },
     Clear { id: u64 },
+    /// Refresh the account's session list (answered with `ApiEvent::Sessions`).
+    ListSessions { id: u64 },
 }
 
 enum Command {
@@ -212,6 +214,9 @@ fn open(config: &Config, inbox: &Mutex<Inbox>, emit: &dyn Fn(ConnectionOutput)) 
     }
 }
 
+/// Newest sessions fetched for the sidebar.
+const SESSION_LIST_LIMIT: u32 = 80;
+
 /// Attach the session to resume, or start a fresh one if it is gone.
 fn attach(client: &JcodeClient, resume: Option<&str>, working_dir: Option<String>) -> jcode_sdk::Result<jcode_sdk::SessionInfo> {
     if let Some(id) = resume {
@@ -262,6 +267,10 @@ fn run(
                     jcode_sdk::ApiRequest::GetHistory { session_id: sid.clone() },
                     jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid.clone() },
                     jcode_sdk::ApiRequest::ListModels { session_id: sid.clone() },
+                    jcode_sdk::ApiRequest::ListSessions {
+                        include_archived: false,
+                        limit: Some(SESSION_LIST_LIMIT),
+                    },
                 ] {
                     if let Ok(frame) = client.request(req) {
                         emit(ConnectionOutput::Event(frame.event));
@@ -364,6 +373,9 @@ fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent
             .map(|message| Some(ApiEvent::Compacted { session_id: s(), message })),
         Request::RenameSession { title, .. } => client.rename_session(sid, title).map(|_| None),
         Request::Clear { .. } => client.clear(sid).map(|_| None),
+        Request::ListSessions { .. } => client
+            .list_sessions_limited(SESSION_LIST_LIMIT)
+            .map(|sessions| Some(ApiEvent::Sessions { sessions })),
     };
     match result {
         Ok(event) => event,

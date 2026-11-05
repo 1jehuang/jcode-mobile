@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-pub use jcode_sdk::cloud::{Account, CloudClient, DEFAULT_API_BASE, DeviceLogin};
+pub use jcode_sdk::cloud::{
+    Account, CloudClient, DEFAULT_API_BASE, DeviceLogin, PushDevice, PushEnvironment, push_token_hex,
+};
 
 /// Kept for API stability: the browser sign-in handle.
 pub type DeviceStart = DeviceLogin;
@@ -161,4 +163,19 @@ mod tests {
         assert_eq!(client().client_name, "jcode-ios");
         assert_eq!(client().api_base, DEFAULT_API_BASE);
     }
+}
+
+/// Register this phone's APNs token with the account.
+pub fn register_push(account: &Account, device: &PushDevice) -> Result<(), String> {
+    client_for(account).register_push_device(account, device).map_err(|e| e.to_string())
+}
+
+/// Forget this phone's APNs token (sign-out).
+pub fn unregister_push(account: &Account, token_hex: &str) -> Result<(), String> {
+    client_for(account).unregister_push_device(account, token_hex).map_err(|e| e.to_string())
+}
+
+/// Reset the server-side unread badge counter.
+pub fn reset_badge(account: &Account) -> Result<(), String> {
+    client_for(account).reset_push_badge(account).map_err(|e| e.to_string())
 }

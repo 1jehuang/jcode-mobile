@@ -15,6 +15,9 @@ use jcode_mobile_core::{
 };
 
 use crate::text_input::{TextInput, TextInputEvent};
+
+#[path = "push_glue.rs"]
+mod push_glue;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -86,12 +89,15 @@ pub struct MobileApp {
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
     follow_last: std::time::Instant,
+    follow_max: gpui::Pixels,
     spinner_step: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
     activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     /// Dev hook (JCODE_MOBILE_SEND): message sent once connected.
     auto_send: Option<String>,
+    /// APNs device token (hex) once iOS hands it over.
+    push_token: Option<String>,
 }
 
 impl MobileApp {
@@ -206,11 +212,14 @@ impl MobileApp {
             expanded_tools: Default::default(),
             follow: true,
             follow_last: std::time::Instant::now(),
+            follow_max: px(0.),
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
+            push_token: None,
         };
+        app.install_push(cx);
         if let Some(account) = account {
             app.connect(account, cx);
             // Dev hook: JCODE_MOBILE_TABS=N opens N session tabs.
@@ -339,6 +348,7 @@ impl MobileApp {
         }
         self.session = SessionState::default();
         self.account = Some(account);
+        self.register_push(cx);
         self.start_connection(None, cx);
         self.screen = Screen::Chat;
         cx.notify();
@@ -555,6 +565,7 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.unregister_push(cx);
         if let Some(c) = self.connection.take() {
             c.stop();
         }
@@ -940,6 +951,13 @@ impl MobileApp {
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.follow_last).as_secs_f32().min(0.05);
         self.follow_last = now;
+        // Layout lags one frame behind new content: keep ticking while the
+        // end moves, or the glide stops short and text hides under the composer.
+        let grew = max != self.follow_max;
+        self.follow_max = max;
+        if self.follow && grew {
+            window.request_animation_frame();
+        }
         if self.follow && off < max {
             let gap = f32::from(max - off);
             let step = if gap < 1. { gap } else { gap * (1. - (-dt * 14.).exp()) };
@@ -1608,6 +1626,7 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
 
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::notify::set_visible_session(self.session.session_id.clone());
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
         if std::mem::take(&mut self.focus_code) {
             window.focus(&self.code.focus_handle(cx), cx);

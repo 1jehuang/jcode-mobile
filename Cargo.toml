@@ -8,8 +8,8 @@ license = "MIT"
 
 [workspace.dependencies]
 # Same GPUI fork and revision as jcode-desktop so components can be shared.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "c019d0f7248ab5bacf96458fd0f9ba562d1116b8" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "c019d0f7248ab5bacf96458fd0f9ba562d1116b8" }
 jcode-mobile-core = { path = "crates/jcode-mobile-core" }
 
 [package]
@@ -39,14 +39,14 @@ gpui_platform.workspace = true
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUUID", "NSError", "NSDate"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSString", "NSUUID", "NSError", "NSDate", "NSArray", "NSSet", "NSDictionary", "NSObject", "NSNotification", "NSOperation"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "UIApplication", "UIResponder"] }
-objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNNotification", "UNNotificationResponse", "UNNotificationAction", "UNNotificationCategory"] }
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance the app uses.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
-cgl = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "c019d0f7248ab5bacf96458fd0f9ba562d1116b8" }
+cgl = { git = "https://github.com/1jehuang/gpui", rev = "c019d0f7248ab5bacf96458fd0f9ba562d1116b8" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

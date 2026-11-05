@@ -75,6 +75,8 @@ pub enum NoticeKind {
 pub struct Alert {
     pub title: String,
     pub body: String,
+    /// Session the alert is about (taps open it, replies go to it).
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +94,8 @@ pub struct SessionState {
     pub session_title: Option<String>,
     pub all_sessions: Vec<String>,
     pub session_titles: HashMap<String, String>,
+    /// Newest-first session list for the sidebar (from `ApiEvent::Sessions`).
+    pub session_list: Vec<jcode_sdk::SessionInfo>,
     pub is_processing: bool,
     pub is_reasoning: bool,
     pub model_name: Option<String>,
@@ -124,6 +128,7 @@ impl Default for SessionState {
             session_title: None,
             all_sessions: vec![],
             session_titles: HashMap::new(),
+            session_list: vec![],
             is_processing: false,
             is_reasoning: false,
             model_name: None,
@@ -254,7 +259,8 @@ impl SessionState {
         if body.chars().count() > 180 {
             body = body.chars().take(179).collect::<String>() + "…";
         }
-        self.alerts.push(Alert { title, body });
+        let session_id = self.session_id.clone();
+        self.alerts.push(Alert { title, body, session_id });
     }
 
     fn last_reply_preview(&self) -> String {
@@ -291,6 +297,7 @@ impl SessionState {
             }
             Sessions { sessions } => {
                 self.all_sessions = sessions.iter().map(|s| s.session_id.clone()).collect();
+                self.session_list = sessions.clone();
                 for s in sessions {
                     if let Some(t) = s.title {
                         self.session_titles.insert(s.session_id, t);
