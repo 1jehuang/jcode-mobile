@@ -15,6 +15,9 @@ mod theme;
 mod tool_summary;
 mod labels;
 mod ios_ext;
+mod haptics;
+mod gestures;
+mod share;
 
 use std::borrow::Cow;
 

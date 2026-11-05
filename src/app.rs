@@ -25,6 +25,7 @@ mod recent_dirs;
 mod sidebar;
 mod apple_sign_in;
 mod ios_system;
+mod ios_feel;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -104,6 +105,7 @@ pub struct MobileApp {
     hold_fired: bool,
     /// Tab whose options sheet is open.
     tab_menu: Option<u64>,
+    feel: ios_feel::Feel,
     /// Session id the empty-screen recent dirs list was last requested for.
     recent_dirs_asked: Option<String>,
     /// Horizontal swipe between tabs, like the desktop workspace pull.
@@ -244,6 +246,7 @@ impl MobileApp {
             hold_gen: 0,
             hold_fired: false,
             tab_menu: None,
+            feel: Default::default(),
             recent_dirs_asked: None,
             swipe: Default::default(),
             spinner_step: 0,
@@ -472,6 +475,7 @@ impl MobileApp {
         if self.tab_order.len() <= 1 {
             return;
         }
+        crate::haptics::play(crate::haptics::Haptic::Rigid);
         let pos = self.tab_order.iter().position(|t| *t == id).unwrap_or(0);
         self.tab_order.remove(pos);
         self.tab_motion.remove(&id);
@@ -551,6 +555,12 @@ impl MobileApp {
             )));
         }
         list = list
+            .child(row("tm-rename", "Rename", t.text, true).on_click(cx.listener(move |this, _, _, cx| {
+                this.feel_rename_tab(id, cx)
+            })))
+            .child(row("tm-dup", "Duplicate", t.text, true).on_click(cx.listener(move |this, _, _, cx| {
+                this.duplicate_tab(id, cx)
+            })))
             .child(row("tm-others", "Close other tabs", t.text, many).when(many, |d| {
                 d.on_click(cx.listener(move |this, _, _, cx| {
                     close(this, cx);
@@ -629,9 +639,11 @@ impl MobileApp {
                             cx.notify();
                             return;
                         }
+                        let was = this.session.is_processing;
                         for o in batch {
                             this.session.apply(o);
                         }
+                        ios_feel::turn_haptic(was, &this.session);
                         for a in this.session.alerts.drain(..) {
                             crate::notify::post(&a);
                         }
@@ -678,6 +690,7 @@ impl MobileApp {
             self.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
             self.send(|id| Request::Message { id, content: text });
         }
+        self.feel_sent();
         self.composer.update(cx, |t, cx| t.set_text("", cx));
         self.follow = true;
         // render_chat glides to the end.
@@ -1049,6 +1062,7 @@ impl MobileApp {
                     .bg(bg)
                     .cursor_pointer()
                     .child(content)
+                    .child(self.feel_tab_hit(id))
                     // Hold opens tab options, like iOS context menus; tap switches.
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
                         this.start_tab_hold(id, cx)
@@ -1198,7 +1212,8 @@ impl MobileApp {
             if e.role == Role::User {
                 prompt_n += 1;
             }
-            rows.push(self.render_entry(e, prompt_n, t, cx));
+            let el = self.render_entry(e, prompt_n, t, cx);
+            rows.push(self.feel_hit(crate::gestures::Target::Message(e.id), el));
         }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
@@ -1291,6 +1306,7 @@ impl MobileApp {
                 })
                 .into_any_element()
         };
+        let body = self.feel_transcript(body, t);
         div()
             .flex()
             .flex_col()
@@ -1631,13 +1647,13 @@ impl MobileApp {
             .inset_0()
             .flex()
             .flex_col()
-            .bg(gpui::black().opacity(0.5))
+            .bg(gpui::black().opacity(self.feel_backdrop()))
             .child(
                 div()
                     .id("picker-dismiss")
                     .flex_1()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.model_picker = false;
+                        this.feel_close_sheet();
                         cx.notify()
                     })),
             )
@@ -1679,6 +1695,7 @@ impl MobileApp {
 
     fn pick_model(&mut self, spec: String, cx: &mut Context<Self>) {
         self.model_picker = false;
+        crate::haptics::play(crate::haptics::Haptic::Selection);
         self.send(|id| Request::SetModel { id, model: spec });
         cx.notify();
     }
@@ -1701,6 +1718,11 @@ impl MobileApp {
             .size_full()
             .child(
                 div()
+                    .relative()
+                    .top(px(self.feel_sheet_offsets().0))
+                    .left(px(self.feel_sheet_offsets().1))
+                    .mb(px(-self.feel_sheet_offsets().2))
+                    .child(self.feel_sheet_recorder())
                     .flex()
                     .items_center()
                     .h(px(48.))
@@ -1714,7 +1736,7 @@ impl MobileApp {
                             .text_size(crate::system::fs(13.))
                             .child("‹ back")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.screen = if this.account.is_some() { Screen::Chat } else { Screen::SignIn };
+                                this.feel_back();
                                 cx.notify()
                             })),
                     )
@@ -1939,6 +1961,7 @@ impl Render for MobileApp {
         } else {
             body
         };
+        let body = self.feel_wrap(body, &t, window, cx);
         let body = self.wrap_wide(body, &t, window, cx);
         self.drawer_insets = (top, base);
         let drawer = self.render_drawer(&t, window, cx);
