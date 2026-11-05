@@ -79,11 +79,32 @@ pub fn install_hook(path: PathBuf) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let loc = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
-        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        // Raw addresses first: stripped release binaries symbolize to <unknown>,
+        // so scripts/crash_fetch.py needs these plus the image base.
+        let mut bt = raw_frames();
+        bt.push_str(&std::backtrace::Backtrace::force_capture().to_string());
         let report = format_report(&payload_message(info), loc.as_deref(), &bt, &build, &os);
         let _ = write_report(&path, &report);
         previous(info);
     }));
+}
+
+#[cfg(target_vendor = "apple")]
+fn raw_frames() -> String {
+    unsafe extern "C" {
+        fn backtrace(buf: *mut *mut std::ffi::c_void, size: i32) -> i32;
+        fn _dyld_get_image_header(index: u32) -> *const std::ffi::c_void;
+    }
+    let mut buf = [std::ptr::null_mut(); 128];
+    // SAFETY: libSystem APIs; buf is valid for its length, image 0 is the main executable.
+    let (n, base) = unsafe { (backtrace(buf.as_mut_ptr(), buf.len() as i32), _dyld_get_image_header(0)) };
+    let addrs: Vec<String> = buf[..n.max(0) as usize].iter().map(|p| format!("{:#x}", *p as usize)).collect();
+    format!("image_base: {:#x}\nraw_frames: {}\n", base as usize, addrs.join(" "))
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn raw_frames() -> String {
+    String::new()
 }
 
 /// Keeps the first panic of a run (later ones are usually fallout).
