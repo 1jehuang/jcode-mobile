@@ -104,6 +104,10 @@ pub struct SessionState {
     /// Every (model, provider, auth) route the session can switch to.
     pub routes: Vec<jcode_sdk::ModelRouteInfo>,
     pub reasoning_effort: Option<String>,
+    /// Credential the daemon resolved (`oauth` or `api_key`).
+    pub auth_method: Option<String>,
+    /// OAuth account the daemon's account router picked for this session.
+    pub account_label: Option<String>,
     /// Session directory on the cloud VM.
     pub working_dir: Option<String>,
     pub server_version: Option<String>,
@@ -137,6 +141,8 @@ impl Default for SessionState {
             available_models: vec![],
             routes: vec![],
             reasoning_effort: None,
+            auth_method: None,
+            account_label: None,
             server_version: None,
             token_input: 0,
             token_output: 0,
@@ -414,10 +420,14 @@ impl SessionState {
                 self.alert(format!("Error: {message}"));
                 self.error_banner = Some(message);
             }
-            RuntimeInfo { provider, model, reasoning_effort, routes, .. } => {
+            RuntimeInfo { provider, model, reasoning_effort, auth_method, account_label, routes, .. } => {
                 if !routes.is_empty() {
                     self.routes = routes;
                 }
+                // Identity events are authoritative snapshots: an absent
+                // account means the route has none (API key, or no OAuth).
+                self.auth_method = auth_method;
+                self.account_label = account_label;
                 if provider.is_some() {
                     self.provider_name = provider;
                 }
@@ -428,7 +438,9 @@ impl SessionState {
                     self.reasoning_effort = reasoning_effort;
                 }
             }
-            ModelInfo { provider, model, reasoning_effort, .. } => {
+            ModelInfo { provider, model, reasoning_effort, auth_method, account_label, .. } => {
+                self.auth_method = auth_method;
+                self.account_label = account_label;
                 if provider.is_some() {
                     self.provider_name = provider;
                 }

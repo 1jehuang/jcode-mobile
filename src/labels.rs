@@ -136,6 +136,31 @@ pub fn account_label(provider: Option<&str>, api_method: Option<&str>) -> String
     }
 }
 
+/// The account pill with the router's pick: `Anthropic · work`. The routed
+/// account replaces the generic `OAuth`, since naming the account implies it.
+/// API-key routes and sessions without a label read exactly as before.
+pub fn routed_account_label(provider: Option<&str>, api_method: Option<&str>, account: Option<&str>) -> String {
+    let base = account_label(provider, api_method);
+    let Some(account) = account.map(str::trim).filter(|a| !a.is_empty()) else {
+        return base;
+    };
+    let account = short_account(account);
+    match base.strip_suffix(" · OAuth") {
+        Some(p) => format!("{p} · {account}"),
+        None if base == "OAuth" || base == "Accounts" => account,
+        None if base.ends_with(" · API key") || base == "API key" => base,
+        None => format!("{base} · {account}"),
+    }
+}
+
+/// Emails read as their local part so the pill stays narrow on a phone.
+fn short_account(account: &str) -> String {
+    match account.split_once('@') {
+        Some((local, _)) if !local.is_empty() => local.to_string(),
+        _ => account.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +173,15 @@ mod tests {
         assert_eq!(pretty_model(None), "Choose model");
         assert_eq!(account_label(Some("Claude"), Some("claude-oauth")), "Anthropic · OAuth");
         assert_eq!(account_label(Some("openai"), Some("openai-api")), "OpenAI · API key");
+    }
+
+    #[test]
+    fn routed_account_names_the_account() {
+        assert_eq!(routed_account_label(Some("claude"), Some("oauth"), Some("work")), "Anthropic · work");
+        assert_eq!(routed_account_label(Some("claude"), Some("oauth"), Some("jer@x.com")), "Anthropic · jer");
+        assert_eq!(routed_account_label(Some("openai"), Some("api_key"), Some("work")), "OpenAI · API key");
+        assert_eq!(routed_account_label(Some("claude"), Some("oauth"), None), "Anthropic · OAuth");
+        assert_eq!(routed_account_label(None, None, Some("work")), "work");
     }
 }
 
