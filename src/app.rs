@@ -65,6 +65,8 @@ pub struct MobileApp {
     /// Animated bottom inset (keyboard slide), eased toward the target.
     inset_anim: Option<f32>,
     inset_last: std::time::Instant,
+    /// How far the keyboard currently pushes content up (animated).
+    kb_lift: f32,
     /// Last focused field's keyboard config, kept so it can slide away.
     kb_config: gpui::TextInputConfiguration,
     /// Id of the live tab whose state sits in `connection`/`session`/scroll.
@@ -183,6 +185,7 @@ impl MobileApp {
             sim_kb: Default::default(),
             inset_anim: None,
             inset_last: std::time::Instant::now(),
+            kb_lift: 0.,
             kb_config: Default::default(),
             composer,
             active_tab: 0,
@@ -675,7 +678,10 @@ impl MobileApp {
                     .flex()
                     .flex_col()
                     .gap(px(14.))
-                    .pb(px(16.))
+                    // Keyboard hidden: a spacer holds the form near the
+                    // middle. It shrinks as the keyboard slides up, so the
+                    // form glides onto the keyboard instead of jumping.
+                    .pb(px(16. + (220. - self.kb_lift).max(0.)))
                     .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
                     // No third-party login on iOS: offering Google would oblige
                     // Sign in with Apple (App Review 4.8). Email codes only there.
@@ -1376,6 +1382,12 @@ impl Render for MobileApp {
             window.request_animation_frame();
         }
         let bottom = shown;
+        let base = if self.device.is_none() {
+            f32::from(window.window_insets().safe_area.bottom)
+        } else {
+            self.safe.bottom
+        };
+        self.kb_lift = (bottom - base).max(0.);
         if let Some(i) = &focused_input {
             self.kb_config = i.read(cx).config.clone();
         }
