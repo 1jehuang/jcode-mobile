@@ -4,7 +4,7 @@
 //! narrower and overlap like folder tabs once the track is crowded.
 
 pub const TAB_GAP: f32 = 6.0;
-pub const TAB_HEIGHT: f32 = 34.0;
+pub const TAB_HEIGHT: f32 = 28.0;
 const ACTIVE_MAX: f32 = 208.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,7 +52,7 @@ impl TabLayout {
                     0.0
                 },
             width: if position == selected { self.active_width } else { self.inactive_width },
-            height: if position == selected { TAB_HEIGHT } else { TAB_HEIGHT - 4.0 },
+            height: if position == selected { TAB_HEIGHT } else { TAB_HEIGHT - 2.0 },
         }
     }
 }

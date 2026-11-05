@@ -867,7 +867,8 @@ impl MobileApp {
                 _ => t.warning,
             };
             let pad = (visible / 12.).min(6.);
-            let bg = if focused { t.background } else { t.raised };
+            // Focused tab lifts slightly off the bar; others sit flush with it.
+            let bg = if focused { t.raised } else { t.background };
             // Label lives only in the exposed part, so overlaps never hide it.
             let content = div()
                 .absolute()
@@ -896,9 +897,9 @@ impl MobileApp {
                     .bottom_0()
                     .w(px(g.width))
                     .h(px(g.height))
-                    .rounded(px(8.))
+                    .rounded_full()
                     .border_1()
-                    .border_color(if focused { t.border_focus } else { t.border })
+                    .border_color(if focused { t.border } else { gpui::transparent_black() })
                     .bg(bg)
                     .cursor_pointer()
                     .child(content)
@@ -918,8 +919,8 @@ impl MobileApp {
             .items_center()
             .gap(px(6.))
             .px(px(10.))
-            .h(px(48.))
-            .bg(t.raised)
+            .h(px(38.))
+            .bg(t.background)
             .child(
                 div()
                     .id("menu")
