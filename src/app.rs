@@ -258,7 +258,8 @@ impl MobileApp {
             login_token: None,
             focus_code: false,
             signing_in: false,
-            sign_in_error: None,
+            // Dev hook: JCODE_MOBILE_ERROR=text shows a sign-in error banner.
+            sign_in_error: std::env::var("JCODE_MOBILE_ERROR").ok(),
             delete_step: 0,
             delete_error: None,
             browser_login: None,
