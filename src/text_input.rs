@@ -85,6 +85,21 @@ impl TextInput {
         cx.notify();
     }
 
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
+    /// Simulated soft keyboard (desktop preview): same paths UIKit drives.
+    pub fn sim_insert(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_text_in_range(None, text, window, cx);
+    }
+    pub fn sim_backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.backspace(&Backspace, window, cx);
+    }
+    pub fn sim_submit(&mut self, cx: &mut Context<Self>) {
+        cx.emit(TextInputEvent::Submit);
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         let to = if self.selected_range.is_empty() {
             self.previous_boundary(self.selected_range.start)

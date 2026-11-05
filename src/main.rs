@@ -4,6 +4,7 @@
 mod app;
 mod donut;
 mod donut_field;
+mod sim_keyboard;
 mod tabs;
 mod markdown;
 mod notify;

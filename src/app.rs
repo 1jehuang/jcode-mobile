@@ -15,6 +15,7 @@ use jcode_mobile_core::{
 };
 
 use crate::text_input::{TextInput, TextInputEvent};
+use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
 /// Insets the shell reserves for the notch / home indicator. On iOS these come
@@ -57,6 +58,8 @@ pub struct MobileApp {
     /// Animation clock for the spinning mark.
     started: std::time::Instant,
     composer: Entity<TextInput>,
+    /// Desktop preview's simulated software keyboard state.
+    sim_kb: crate::sim_keyboard::SimKeyboard,
     /// Id of the live tab whose state sits in `connection`/`session`/scroll.
     active_tab: u64,
     next_tab: u64,
@@ -169,6 +172,7 @@ impl MobileApp {
             browser_login: None,
             started: std::time::Instant::now(),
             keyboard_up: false,
+            sim_kb: Default::default(),
             composer,
             active_tab: 0,
             next_tab: 1,
@@ -1317,17 +1321,24 @@ fn activity_label(text: &'static str, step: usize, t: &Theme) -> impl IntoElemen
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
+        // Preview: the simulated keyboard shows whenever a field is focused
+        // (JCODE_MOBILE_KEYBOARD=1 forces it, =0 disables it).
+        let focused_input = [&self.email, &self.code, &self.composer]
+            .into_iter()
+            .find(|i| i.read(cx).is_focused(window))
+            .cloned();
+        let kb_env = std::env::var("JCODE_MOBILE_KEYBOARD").ok();
+        let sim_kb = self.device.is_some()
+            && kb_env.as_deref() != Some("0")
+            && (focused_input.is_some() || kb_env.is_some());
         let (top, bottom) = if self.device.is_none() {
             let e = window.window_insets().effective();
             (f32::from(e.top), f32::from(e.bottom))
         } else {
-            // Dev hook (JCODE_MOBILE_KEYBOARD=1): fake an iPhone keyboard
-            // (336pt incl. suggestion bar) to check layouts in the preview.
-            let kb = std::env::var_os("JCODE_MOBILE_KEYBOARD").map_or(0., |_| 336.);
+            let kb = if sim_kb { crate::sim_keyboard::HEIGHT } else { 0. };
             (self.safe.top, self.safe.bottom.max(kb))
         };
-        self.keyboard_up = f32::from(window.window_insets().ime.bottom) > 0.
-            || (self.device.is_some() && std::env::var_os("JCODE_MOBILE_KEYBOARD").is_some());
+        self.keyboard_up = f32::from(window.window_insets().ime.bottom) > 0. || sim_kb;
         let t = Theme::get(cx);
         let body = match self.screen {
             Screen::SignIn => self.render_sign_in(&t, cx),
@@ -1343,7 +1354,25 @@ impl Render for MobileApp {
             .pt(px(top))
             .pb(px(bottom))
             .overflow_hidden()
-            .child(body);
+            .child(body)
+            .when(sim_kb, |d| {
+                let config = focused_input
+                    .as_ref()
+                    .map(|i| i.read(cx).config.clone())
+                    .unwrap_or_default();
+                let this = cx.entity().downgrade();
+                let on_key: std::rc::Rc<dyn Fn(crate::sim_keyboard::Key, &mut Window, &mut App)> =
+                    std::rc::Rc::new(move |key, window, cx| {
+                        this.update(cx, |this, cx| this.sim_key(key, window, cx)).ok();
+                    });
+                d.relative().child(crate::sim_keyboard::render(
+                    &self.sim_kb,
+                    &config,
+                    self.safe.bottom,
+                    on_key,
+                    &t,
+                ))
+            });
         // Dev hook (JCODE_MOBILE_FRAMELESS): bare screen for App Store screenshots.
         if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
             return screen.size_full().into_any_element();
@@ -1393,6 +1422,35 @@ impl Render for MobileApp {
                 .into_any_element(),
             None => screen.size_full().into_any_element(),
         }
+    }
+}
+
+impl MobileApp {
+    /// A tap on the simulated keyboard, routed to the focused field.
+    fn sim_key(&mut self, key: crate::sim_keyboard::Key, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::sim_keyboard::Key;
+        let Some(input) = [&self.email, &self.code, &self.composer]
+            .into_iter()
+            .find(|i| i.read(cx).is_focused(window))
+            .cloned()
+        else {
+            return;
+        };
+        match self.sim_kb.press(&key) {
+            Some(Key::Char(c)) => input.update(cx, |t, cx| t.sim_insert(&c, window, cx)),
+            Some(Key::Space) => input.update(cx, |t, cx| t.sim_insert(" ", window, cx)),
+            Some(Key::Backspace) => input.update(cx, |t, cx| t.sim_backspace(window, cx)),
+            Some(Key::Return) => {
+                // "next" on the email field moves on like iOS, then sends the code.
+                input.update(cx, |t, cx| t.sim_submit(cx));
+                if input == self.email && self.login_token.is_some() {
+                    let code = self.code.clone();
+                    window.focus(&code.focus_handle(cx), cx);
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 }
 
