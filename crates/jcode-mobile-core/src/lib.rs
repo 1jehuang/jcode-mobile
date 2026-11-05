@@ -6,6 +6,7 @@ pub mod cloud;
 pub mod connection;
 pub mod credentials;
 pub mod gateway;
+pub mod routes;
 pub mod session;
 
 /// The harness API client this core is built on.

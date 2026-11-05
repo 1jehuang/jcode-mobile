@@ -67,6 +67,8 @@ pub struct MobileApp {
     inset_last: std::time::Instant,
     /// How far the keyboard currently pushes content up (animated).
     kb_lift: f32,
+    /// Model/provider picker sheet open.
+    model_picker: bool,
     /// Last focused field's keyboard config, kept so it can slide away.
     kb_config: gpui::TextInputConfiguration,
     /// Id of the live tab whose state sits in `connection`/`session`/scroll.
@@ -189,6 +191,7 @@ impl MobileApp {
             inset_anim: None,
             inset_last: std::time::Instant::now(),
             kb_lift: 0.,
+            model_picker: false,
             kb_config: Default::default(),
             composer,
             active_tab: 0,
@@ -1205,8 +1208,22 @@ impl MobileApp {
                     .px(px(4.))
                     .overflow_hidden()
                     // Model and provider on the left, the machine on the right.
-                    .when_some(model, |d, m| d.child(pill(m, t)))
-                    .when_some(provider, |d, p| d.child(pill(p, t)))
+                    .child(
+                        div()
+                            .id("model-pills")
+                            .flex()
+                            .gap(px(4.))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .cursor_pointer()
+                            .when_some(model, |d, m| d.child(pill(format!("{m} ▾"), t)))
+                            .when_some(provider, |d, p| d.child(pill(p, t)))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                window.blur(cx);
+                                this.model_picker = true;
+                                cx.notify();
+                            })),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1222,6 +1239,103 @@ impl MobileApp {
                             .child("☁ jcode-cloud"),
                     ),
             )
+    }
+
+    /// Bottom sheet listing every model route, grouped by model. Tapping one
+    /// switches the session to that model on that provider.
+    fn render_model_picker(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use jcode_mobile_core::routes::{method_label, route_spec};
+        let current_model = self.session.model_name.clone().unwrap_or_default();
+        let current_provider = self.session.provider_name.clone().unwrap_or_default();
+        let mut rows = div().flex().flex_col().gap(px(2.));
+        let mut last_model = String::new();
+        let routes = &self.session.routes;
+        if routes.is_empty() {
+            // Older servers: only bare model names.
+            for (i, m) in self.session.available_models.iter().enumerate() {
+                let spec = m.clone();
+                let selected = *m == current_model;
+                rows = rows.child(
+                    picker_row(("bare", i), m.clone(), String::new(), selected, true, t)
+                        .on_click(cx.listener(move |this, _, _, cx| this.pick_model(spec.clone(), cx))),
+                );
+            }
+        }
+        for (i, r) in routes.iter().enumerate() {
+            if r.model != last_model {
+                last_model = r.model.clone();
+                rows = rows.child(label(r.model.clone(), t.text_strong, 13.).pt(px(10.)).pb(px(2.)).px(px(4.)));
+            }
+            let spec = route_spec(r);
+            let selected = r.model == current_model && r.provider.eq_ignore_ascii_case(&current_provider);
+            let detail = [method_label(r), if r.available { "" } else { r.detail.as_str() }]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let row = picker_row(("route", i), r.provider.clone(), detail, selected, r.available, t);
+            rows = rows.child(if r.available {
+                row.on_click(cx.listener(move |this, _, _, cx| this.pick_model(spec.clone(), cx)))
+            } else {
+                row
+            });
+        }
+        let empty = routes.is_empty() && self.session.available_models.is_empty();
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .bg(gpui::black().opacity(0.5))
+            .child(
+                div()
+                    .id("picker-dismiss")
+                    .flex_1()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model_picker = false;
+                        cx.notify()
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .max_h(px(520.))
+                    .bg(t.surface_elevated)
+                    .rounded_t(px(18.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .pt(px(8.))
+                    .pb(px(12.))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.text_muted)),
+                    )
+                    .child(label("Model", t.text_strong, 16.).px(px(16.)).pt(px(8.)))
+                    .child(
+                        div()
+                            .id("picker-list")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(px(12.))
+                            .pb(px(8.))
+                            .child(if empty {
+                                label("Loading models…", t.text_muted, 13.).p(px(8.)).into_any_element()
+                            } else {
+                                rows.into_any_element()
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn pick_model(&mut self, spec: String, cx: &mut Context<Self>) {
+        self.model_picker = false;
+        self.send(|id| Request::SetModel { id, model: spec });
+        cx.notify();
     }
 
     fn render_settings(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1331,6 +1445,36 @@ impl MobileApp {
     }
 }
 
+fn picker_row(
+    id: (&'static str, usize),
+    title: String,
+    detail: String,
+    selected: bool,
+    available: bool,
+    t: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(gpui::ElementId::NamedInteger(id.0.into(), id.1 as u64))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(10.))
+        .when(selected, |d| d.bg(t.surface))
+        .when(available, |d| d.cursor_pointer())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(label(title, if available { t.text } else { t.text_muted }, 14.))
+                .when(!detail.is_empty(), |d| d.child(label(detail, t.text_muted, 11.))),
+        )
+        .when(selected, |d| d.child(label("✓", t.text_strong, 14.)))
+}
+
 fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -1421,6 +1565,18 @@ impl Render for MobileApp {
             Screen::SignIn => self.render_sign_in(&t, cx),
             Screen::Chat => self.render_chat(&t, window, cx),
             Screen::Settings => self.render_settings(&t, cx),
+        };
+        let body = if self.model_picker && matches!(self.screen, Screen::Chat) {
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(body)
+                .child(self.render_model_picker(&t, cx))
+                .into_any_element()
+        } else {
+            body
         };
         let screen = div()
             .flex()

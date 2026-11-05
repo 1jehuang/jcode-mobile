@@ -97,6 +97,8 @@ pub struct SessionState {
     pub model_name: Option<String>,
     pub provider_name: Option<String>,
     pub available_models: Vec<String>,
+    /// Every (model, provider, auth) route the session can switch to.
+    pub routes: Vec<jcode_sdk::ModelRouteInfo>,
     pub reasoning_effort: Option<String>,
     pub server_version: Option<String>,
     pub token_input: u64,
@@ -125,6 +127,7 @@ impl Default for SessionState {
             model_name: None,
             provider_name: None,
             available_models: vec![],
+            routes: vec![],
             reasoning_effort: None,
             server_version: None,
             token_input: 0,
@@ -398,8 +401,21 @@ impl SessionState {
                 self.alert(format!("Error: {message}"));
                 self.error_banner = Some(message);
             }
-            ModelInfo { provider, model, reasoning_effort, .. }
-            | RuntimeInfo { provider, model, reasoning_effort, .. } => {
+            RuntimeInfo { provider, model, reasoning_effort, routes, .. } => {
+                if !routes.is_empty() {
+                    self.routes = routes;
+                }
+                if provider.is_some() {
+                    self.provider_name = provider;
+                }
+                if model.is_some() {
+                    self.model_name = model;
+                }
+                if reasoning_effort.is_some() {
+                    self.reasoning_effort = reasoning_effort;
+                }
+            }
+            ModelInfo { provider, model, reasoning_effort, .. } => {
                 if provider.is_some() {
                     self.provider_name = provider;
                 }
