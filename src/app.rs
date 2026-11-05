@@ -590,9 +590,11 @@ fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
     div().text_size(px(size)).text_color(color).child(text.into())
 }
 
-/// Desktop's composer pill: 22px rounded-full chip on prompt paper.
-fn pill(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
+/// Desktop's `composer_pill`: 22px rounded-full chip on prompt paper,
+/// 10.5px dim text that truncates.
+fn pill(id: &'static str, text: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
+        .id(id)
         .flex_none()
         .h(px(22.))
         .px(px(10.))
@@ -600,10 +602,12 @@ fn pill(text: impl Into<SharedString>, t: &Theme) -> gpui::Div {
         .items_center()
         .rounded_full()
         .bg(t.surface)
-        .text_size(px(11.))
+        .text_size(px(10.5))
         .text_color(t.text_secondary)
         .whitespace_nowrap()
-        .child(text.into())
+        .overflow_hidden()
+        .cursor_pointer()
+        .child(div().min_w_0().truncate().child(text.into()))
 }
 
 /// Outlined, fully rounded action (desktop's composer/tab outline language).
@@ -960,7 +964,6 @@ impl MobileApp {
             );
         }
         let empty = entries.is_empty() && !self.session.is_reasoning;
-        let _ = window;
         let body = if empty {
             // Desktop's fresh session: the question sits just above the composer.
             div()
@@ -979,7 +982,7 @@ impl MobileApp {
                         this.reconnect(cx);
                     })))
                 })
-                .child(label("What would you like to work on?", t.text_strong, 20.).line_height(px(28.)))
+                .child(label("What would you like to work on?", t.text, 22.).line_height(px(30.)))
                 .into_any_element()
         } else {
             div()
@@ -1033,7 +1036,7 @@ impl MobileApp {
             .size_full()
             .child(self.render_header(t, cx))
             .child(body)
-            .child(self.render_composer(t, cx))
+            .child(self.render_composer(t, window, cx))
             .into_any_element()
     }
 
@@ -1071,18 +1074,44 @@ impl MobileApp {
 
     fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         match e.role {
-            // Desktop prompt: "N›" prefix, strong ink on USER_BG paper.
-            Role::User => div()
-                .flex()
-                .gap(px(6.))
-                .px(px(8.))
-                .py(px(4.))
-                .rounded(px(6.))
-                .bg(Theme::prompt_background(0))
-                .when(e.is_queued, |d| d.opacity(0.6))
-                .child(label(format!("{prompt_n}›"), t.text_muted, 13.).flex_none())
-                .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(t.text_strong).child(e.text.clone()))
-                .into_any_element(),
+            // Desktop prompt: round number badge beside a USER_BG card.
+            Role::User => {
+                let bg = Theme::prompt_background(0);
+                let badge_w = (prompt_n.to_string().len() as f32 * 7. + 8.).max(20.);
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(6.))
+                    .when(e.is_queued, |d| d.opacity(0.6))
+                    .child(
+                        div()
+                            .flex_none()
+                            .mt(px(4.))
+                            .w(px(badge_w))
+                            .h(px(20.))
+                            .rounded_full()
+                            .bg(bg)
+                            .text_center()
+                            .text_size(px(10.))
+                            .line_height(px(20.))
+                            .text_color(t.text_secondary)
+                            .child(prompt_n.to_string()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_shrink_1()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(8.))
+                            .bg(bg)
+                            .text_size(px(13.5))
+                            .line_height(px(21.))
+                            .text_color(t.text_strong)
+                            .child(e.text.clone()),
+                    )
+                    .into_any_element()
+            }
             Role::System => label(e.text.clone(), t.text_muted, 12.).into_any_element(),
             Role::Assistant => {
                 let mut col = div().flex().flex_col().gap(px(6.));
@@ -1165,17 +1194,39 @@ impl MobileApp {
             .into_any_element()
     }
 
-    /// Desktop composer: fully rounded outline, round action at the right,
-    /// identity pills (model, provider, machine) underneath.
-    fn render_composer(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Desktop composer: 18px-radius input (INPUT_BORDER, focus outline),
+    /// then desktop's pill row: model, effort, `Provider · Auth` on the left,
+    /// the machine chip on the right.
+    fn render_composer(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let processing = self.session.is_processing;
         let has_text = !self.composer.read(cx).text().trim().is_empty();
-        let model = self.session.model_name.clone();
-        let provider = self.session.provider_name.clone();
+        let focused = self.composer.read(cx).is_focused(window);
+        let model_raw = self.session.model_name.clone();
+        let model = crate::labels::pretty_model(model_raw.as_deref());
+        let effort = self
+            .session
+            .reasoning_effort
+            .clone()
+            .filter(|e| !e.trim().is_empty() && model_raw.is_some());
+        let api_method = self
+            .session
+            .routes
+            .iter()
+            .find(|r| {
+                Some(&r.model) == model_raw.as_ref()
+                    && self.session.provider_name.as_deref().is_some_and(|p| r.provider.eq_ignore_ascii_case(p))
+            })
+            .map(|r| r.api_method.clone());
+        let account = crate::labels::account_label(self.session.provider_name.as_deref(), api_method.as_deref());
+        let open_picker = cx.listener(|this, _, window, cx| {
+            window.blur(cx);
+            this.model_picker = true;
+            cx.notify();
+        });
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(px(4.))
             .px(px(12.))
             .pt(px(6.))
             .pb(px(8.))
@@ -1186,11 +1237,12 @@ impl MobileApp {
                     .items_center()
                     .gap(px(8.))
                     .pl(px(16.))
-                    .pr(px(5.))
-                    .min_h(px(46.))
-                    .rounded(px(23.))
+                    .pr(px(4.))
+                    .min_h(px(40.))
+                    .rounded(px(18.))
+                    .bg(t.field)
                     .border_1()
-                    .border_color(t.border_focus)
+                    .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, t)
@@ -1207,25 +1259,31 @@ impl MobileApp {
                     .gap(px(4.))
                     .px(px(4.))
                     .overflow_hidden()
-                    // Model and provider on the left, the machine on the right.
                     .child(
                         div()
-                            .id("model-pills")
                             .flex()
+                            .flex_auto()
+                            .items_center()
                             .gap(px(4.))
                             .min_w_0()
                             .overflow_hidden()
-                            .cursor_pointer()
-                            .when_some(model, |d, m| d.child(pill(format!("{m} ▾"), t)))
-                            .when_some(provider, |d, p| d.child(pill(p, t)))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                window.blur(cx);
-                                this.model_picker = true;
-                                cx.notify();
-                            })),
+                            .child(pill("pill-model", model, t).flex_shrink_1().min_w(px(48.)).on_click(open_picker))
+                            .when_some(effort, |d, e| {
+                                d.child(pill("pill-effort", e, t).flex_shrink_1().min_w(px(24.)))
+                            })
+                            .child(
+                                pill("pill-account", account, t)
+                                    .flex_shrink_1()
+                                    .min_w(px(40.))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        window.blur(cx);
+                                        this.model_picker = true;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
-                    .child(div().flex_1())
                     .child(
+                        // Desktop's remote machine chip (ACCENT_DIM on ACCENT).
                         div()
                             .flex_none()
                             .h(px(22.))
@@ -1234,9 +1292,10 @@ impl MobileApp {
                             .items_center()
                             .rounded_full()
                             .bg(t.surface_elevated)
-                            .text_size(px(11.))
+                            .text_size(px(10.5))
                             .text_color(t.accent)
-                            .child("☁ jcode-cloud"),
+                            .whitespace_nowrap()
+                            .child("Jcode Cloud"),
                     ),
             )
     }

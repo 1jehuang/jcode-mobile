@@ -11,6 +11,7 @@ mod notify;
 mod text_input;
 mod theme;
 mod tool_summary;
+mod labels;
 
 use std::borrow::Cow;
 

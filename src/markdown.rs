@@ -6,7 +6,7 @@ use gpui::{AnyElement, FontWeight, HighlightStyle, StyledText, div, prelude::*, 
 use crate::theme::Theme;
 
 pub fn render(src: &str, t: &Theme) -> AnyElement {
-    let mut col = div().flex().flex_col().gap(px(8.)).text_size(px(13.)).line_height(px(20.));
+    let mut col = div().flex().flex_col().gap(px(8.)).text_size(px(13.5)).line_height(px(21.));
     let mut lines = src.lines().peekable();
     let mut para: Vec<&str> = vec![];
     let flush = |para: &mut Vec<&str>, col: gpui::Div| -> gpui::Div {
