@@ -19,6 +19,8 @@ use crate::text_input::{TextInput, TextInputEvent};
 #[path = "push_glue.rs"]
 mod push_glue;
 mod deep_link_glue;
+mod a11y;
+use a11y::A11yExt as _;
 mod recent_dirs;
 mod sidebar;
 mod apple_sign_in;
@@ -759,6 +761,7 @@ fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
 fn pill(id: &'static str, text: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .a11y_text_button()
         .flex_none()
         .h(px(22.))
         .px(px(10.))
@@ -1069,7 +1072,7 @@ impl MobileApp {
             .bg(t.background)
             .child(
                 div()
-                    .id("menu")
+                    .id("menu").a11y_button("Sessions")
                     .flex_none()
                     .size(px(32.))
                     .flex()
@@ -1084,7 +1087,7 @@ impl MobileApp {
             .child(strip)
             .child(
                 div()
-                    .id("new-session")
+                    .id("new-session").a11y_button("New session")
                     .flex_none()
                     .size(px(32.))
                     .flex()
@@ -1264,7 +1267,7 @@ impl MobileApp {
                 .when(!at_bottom && max > px(0.), |d| {
                     d.child(
                         div()
-                            .id("jump")
+                            .id("jump").a11y_button("Jump to latest")
                             .absolute()
                             .right(px(14.))
                             .bottom(px(8.))
@@ -1705,7 +1708,7 @@ impl MobileApp {
                     .bg(t.raised)
                     .child(
                         div()
-                            .id("back")
+                            .id("back").a11y_button("Back")
                             .cursor_pointer()
                             .text_color(t.text_strong)
                             .text_size(crate::system::fs(13.))

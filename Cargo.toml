@@ -8,8 +8,8 @@ license = "MIT"
 
 [workspace.dependencies]
 # Same GPUI fork and revision as jcode-desktop so components can be shared.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "6dffb9fda273715245a86f496119be83dfae9193" }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "6dffb9fda273715245a86f496119be83dfae9193" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "db41a01587f775196eebf8bc65106fab84eb3ae7" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "db41a01587f775196eebf8bc65106fab84eb3ae7" }
 jcode-mobile-core = { path = "crates/jcode-mobile-core" }
 
 [package]
@@ -45,8 +45,8 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance the app uses.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "6dffb9fda273715245a86f496119be83dfae9193" }
-cgl = { git = "https://github.com/1jehuang/gpui", rev = "6dffb9fda273715245a86f496119be83dfae9193" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "db41a01587f775196eebf8bc65106fab84eb3ae7" }
+cgl = { git = "https://github.com/1jehuang/gpui", rev = "db41a01587f775196eebf8bc65106fab84eb3ae7" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

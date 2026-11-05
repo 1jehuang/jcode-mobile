@@ -65,6 +65,9 @@ cat > "$APP/Info.plist" <<PLIST
     <key>CFBundleURLSchemes</key><array><string>jcode</string></array>
   </dict></array>
   <key>NSSupportsLiveActivities</key><true/>
+  <key>NSUserActivityTypes</key><array>
+    <string>sh.jcode.mobile.new-session</string><string>sh.jcode.mobile.ask</string>
+  </array>
   <key>UIApplicationShortcutItems</key><array>
     <dict><key>UIApplicationShortcutItemType</key><string>jcode://new</string>
       <key>UIApplicationShortcutItemTitle</key><string>New session</string>
