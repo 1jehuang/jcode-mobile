@@ -95,6 +95,9 @@ PLIST
 
 SIGN="$HOME/.appstoreconnect/signing"
 if [ "${1:-}" = "--testflight" ]; then
+  # Keep the unstripped binary for crash symbolication (scripts/crash_fetch.py).
+  mkdir -p "$HOME/.appstoreconnect/builds/$BUILD_NUMBER"
+  cp "target/$TARGET/release/jcode-mobile" "$HOME/.appstoreconnect/builds/$BUILD_NUMBER/jcode-mobile"
   cp "$SIGN/appstore.mobileprovision" "$APP/embedded.mobileprovision"
   cat > "$OUT/entitlements.plist" <<'ENT'
 <?xml version="1.0" encoding="UTF-8"?>

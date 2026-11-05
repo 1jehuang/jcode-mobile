@@ -52,6 +52,15 @@ impl gpui::AssetSource for Assets {
 }
 
 fn main() {
+    // First thing: capture panics to disk, upload last run's report in the background.
+    let crash_path = jcode_mobile_core::crash::default_path();
+    jcode_mobile_core::crash::install_hook(crash_path.clone());
+    std::thread::spawn(move || {
+        let account = jcode_mobile_core::cloud::AccountStore::default_location().load();
+        if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref()) {
+            log::warn!("jcode-mobile: crash upload failed: {e}");
+        }
+    });
     let application = gpui_platform::application().with_assets(Assets);
     // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
     application.on_open_urls(ios_ext::handle_urls);

@@ -5,6 +5,7 @@
 pub mod apple;
 pub mod cloud;
 pub mod connection;
+pub mod crash;
 pub mod credentials;
 pub mod gateway;
 pub mod routes;
