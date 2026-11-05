@@ -146,6 +146,7 @@ impl MobileApp {
                 autocapitalize: Autocapitalize::Sentences,
                 suggestions: true,
                 input_action: TextInputAction::Send,
+            t.max_lines = 6;
                 purpose: TextInputPurpose::Text,
             };
             t
@@ -254,6 +255,10 @@ impl MobileApp {
             for _ in 1..n {
                 app.new_tab(cx);
             }
+        // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
+        if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {
+            app.composer.update(cx, |c, cx| c.set_text(draft, cx));
+        }
         }
         let _ = window;
         app
