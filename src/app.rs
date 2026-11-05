@@ -628,105 +628,107 @@ fn spinner_glyph(step: usize) -> &'static str {
 impl MobileApp {
     fn render_sign_in(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let code_step = self.login_token.is_some();
-        let ready = if code_step {
-            self.code.read(cx).text().trim().len() >= 6
-        } else {
-            self.email.read(cx).text().contains('@')
+        // The keyboard's return key ("next"/"go") submits, so there is no
+        // action button: only a status line under the field.
+        let status: Option<String> = match (code_step, self.signing_in) {
+            (false, true) => Some(format!("{} Sending a code…", spinner_glyph(self.spinner_step))),
+            (true, true) => Some(format!("{} Signing in…", spinner_glyph(self.spinner_step))),
+            (true, false) => Some(format!(
+                "We emailed a code to {}. Enter it above.",
+                self.email.read(cx).text().trim()
+            )),
+            (false, false) => None,
         };
-        let action = match (code_step, self.signing_in) {
-            (false, false) => "Email me a code",
-            (false, true) => "Sending…",
-            (true, false) => "Sign in",
-            (true, true) => "Signing in…",
-        };
-        let keyboard_up = self.keyboard_up;
+        // Fixed layout: branding fills whatever space is left above, the form
+        // is pinned to the bottom. The screen's bottom padding grows with the
+        // keyboard, so the form rides up above it and nothing else moves.
         div()
             .id("sign-in")
             .size_full()
             .flex()
             .flex_col()
-            // Keyboard up: anchor to the top and scroll, so the field and
-            // its button stay above the keyboard instead of centering under it.
-            .when(keyboard_up, |d| d.justify_start().pt(px(12.)).overflow_y_scroll())
-            .when(!keyboard_up, |d| d.justify_center())
             .px(px(20.))
-            .gap(px(if keyboard_up { 12. } else { 18. }))
             .child(
-                div().w_full().flex().justify_center().pb(px(8.)).child(
-                    crate::donut::spinning_donut(
-                        if keyboard_up { 64. } else { 140. },
-                        t.text_strong,
-                        self.started,
-                    ),
-                ),
-            )
-            .child(
-                label("Sign in to Jcode Cloud", t.text_strong, 22.)
-                    .line_height(px(30.))
-                    .w_full()
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
                     .flex()
-                    .justify_center(),
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(18.))
+                    .child(crate::donut::spinning_donut(140., t.text_strong, self.started))
+                    .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(px(30.))),
             )
-            .when(code_step, |d| {
-                d.child(label("Enter the 6-digit code we emailed you.", t.text_secondary, 13.).text_center())
-            })
-            .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
-            // No third-party login on iOS: offering Google would oblige
-            // Sign in with Apple (App Review 4.8). Email codes only there.
-            .when(!code_step && !cfg!(target_os = "ios"), |d| {
-                let waiting = self.browser_login.is_some();
-                d.child(
-                    div()
-                        .id("google")
-                        .w_full()
-                        .h(px(44.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(10.))
-                        .rounded_full()
-                        .bg(gpui::white())
-                        .text_color(gpui::black())
-                        .text_size(px(14.))
-                        .cursor_pointer()
-                        .active(|s| s.opacity(0.85))
-                        .when(!waiting, |d| d.child(gpui::img(google_mark()).size(px(18.)).flex_none()))
-                        .child(if waiting {
-                            format!("{} Waiting for browser… (tap to cancel)", spinner_glyph(self.spinner_step))
-                        } else {
-                            "Continue with Google".into()
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.google_sign_in(cx))),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(div().flex_1().h(px(1.)).bg(t.border))
-                        .child(label("or", t.text_muted, 12.))
-                        .child(div().flex_1().h(px(1.)).bg(t.border)),
-                )
-            })
-            .child(if code_step { self.code.clone() } else { self.email.clone() })
             .child(
-                outline_button("sign-in-go", action, ready && !self.signing_in, t)
-                    .on_click(cx.listener(|this, _, _, cx| this.sign_in_step(cx))),
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .pb(px(16.))
+                    .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
+                    // No third-party login on iOS: offering Google would oblige
+                    // Sign in with Apple (App Review 4.8). Email codes only there.
+                    .when(!code_step && !cfg!(target_os = "ios"), |d| {
+                        let waiting = self.browser_login.is_some();
+                        d.child(
+                            div()
+                                .id("google")
+                                .w_full()
+                                .h(px(44.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(10.))
+                                .rounded_full()
+                                .bg(gpui::white())
+                                .text_color(gpui::black())
+                                .text_size(px(14.))
+                                .cursor_pointer()
+                                .active(|s| s.opacity(0.85))
+                                .when(!waiting, |d| d.child(gpui::img(google_mark()).size(px(18.)).flex_none()))
+                                .child(if waiting {
+                                    format!("{} Waiting for browser… (tap to cancel)", spinner_glyph(self.spinner_step))
+                                } else {
+                                    "Continue with Google".into()
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| this.google_sign_in(cx))),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .child(div().flex_1().h(px(1.)).bg(t.border))
+                                .child(label("or", t.text_muted, 12.))
+                                .child(div().flex_1().h(px(1.)).bg(t.border)),
+                        )
+                    })
+                    .child(if code_step { self.code.clone() } else { self.email.clone() })
+                    .when_some(status, |d, s| {
+                        d.child(label(s, t.text_secondary, 13.).w_full().flex().justify_center())
+                    })
+                    .when(code_step && !self.signing_in, |d| {
+                        d.child(
+                            div()
+                                .id("use-other-email")
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .cursor_pointer()
+                                .child(label("Use a different email", t.text_muted, 12.))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.login_token = None;
+                                    this.sign_in_error = None;
+                                    window.focus(&this.email.focus_handle(cx), cx);
+                                    cx.notify()
+                                })),
+                        )
+                    }),
             )
-            .when(code_step, |d| {
-                d.child(
-                    div()
-                        .id("use-other-email")
-                        .cursor_pointer()
-                        .child(label("Use a different email", t.text_muted, 12.))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.login_token = None;
-                            this.sign_in_error = None;
-                            cx.notify()
-                        })),
-                )
-            })
             .into_any_element()
     }
 
