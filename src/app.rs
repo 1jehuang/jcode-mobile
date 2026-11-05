@@ -1930,8 +1930,10 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
         .bg(with_alpha(tint, 0.06))
         .border_1()
         .border_color(with_alpha(tint, 0.3))
-        .child(label("✗", tint, 12.))
-        .child(label(msg.to_string(), t.text, 12.).flex_1())
+        .overflow_hidden()
+        .child(label("✗", tint, 12.).flex_none())
+        // min_w_0 lets long errors wrap instead of overflowing the card.
+        .child(label(msg.to_string(), t.text, 12.).flex_1().min_w_0().whitespace_normal())
 }
 
 impl Render for MobileApp {

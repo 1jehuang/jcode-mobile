@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       seconds: {description: Monkey duration in seconds, default: "180"}
-concurrency: {group: ios-monkey-${{ github.ref }}, cancel-in-progress: true}
+concurrency:
+  group: ios-monkey-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   monkey:
     runs-on: macos-latest

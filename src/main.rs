@@ -78,6 +78,13 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| {
+                // Desktop preview: the mouse acts as a finger, so drags go
+                // through gpui's touch recognizer exactly like on the phone
+                // (touch-phase pans, taps, long press). JCODE_MOBILE_MOUSE=1
+                // restores plain mouse input.
+                if !cfg!(target_os = "ios") && std::env::var_os("JCODE_MOBILE_MOUSE").is_none() {
+                    window.set_emulate_touch_from_mouse(true);
+                }
                 let mut app = MobileApp::new(safe, window, cx);
                 if !cfg!(target_os = "ios") {
                     app.device = Some((w, h));
