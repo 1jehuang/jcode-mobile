@@ -2153,3 +2153,103 @@ pub fn init(cx: &mut App) {
     crate::system::install(cx);
     crate::text_input::bind_keys(cx);
 }
+
+#[cfg(test)]
+mod monkey_tests {
+    //! Headless random-gesture stress test. It drives the real MobileApp through
+    //! gpui's test platform with mouse-to-touch emulation, so render-only APIs
+    //! called from touch/scroll listeners panic here instead of on a phone.
+    use super::*;
+    use gpui::{
+        Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+        ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
+    };
+
+    fn rng(seed: &mut u64) -> f32 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        (*seed % 10_000) as f32 / 10_000.
+    }
+
+    #[gpui::test]
+    fn random_gestures_on_every_screen_do_not_panic(cx: &mut TestAppContext) {
+        // Keep the test offline: no saved account, so nothing connects.
+        let tmp = std::env::temp_dir().join(format!("jcode-mobile-monkey-{}", std::process::id()));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+            std::env::set_var("HOME", &tmp);
+        }
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx);
+            app.device = Some((390., 844.));
+            app
+        });
+        cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
+        cx.run_until_parked();
+        let send = |input: PlatformInput, cx: &mut gpui::VisualTestContext| match input {
+            PlatformInput::MouseDown(e) => cx.simulate_event(e),
+            PlatformInput::MouseMove(e) => cx.simulate_event(e),
+            PlatformInput::MouseUp(e) => cx.simulate_event(e),
+            PlatformInput::ScrollWheel(e) => cx.simulate_event(e),
+            _ => {}
+        };
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for screen in [Screen::SignIn, Screen::Chat, Screen::Settings, Screen::Chat] {
+            view.update(cx, |app, cx| {
+                app.screen = screen;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            for _ in 0..150 {
+                let p = point(px(rng(&mut seed) * 390.), px(rng(&mut seed) * 844.));
+                let kind = rng(&mut seed);
+                send(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: p,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+                let mut end = p;
+                if kind > 0.4 {
+                    let (dx, dy) = ((rng(&mut seed) - 0.5) * 400., (rng(&mut seed) - 0.5) * 400.);
+                    for s in 1..=6 {
+                        end = point(p.x + px(dx * s as f32 / 6.), p.y + px(dy * s as f32 / 6.));
+                        send(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position: end,
+                                pressed_button: Some(MouseButton::Left),
+                                modifiers: Modifiers::default(),
+                            }),
+                            cx,
+                        );
+                    }
+                }
+                send(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: end,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+                if kind > 0.85 {
+                    send(
+                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position: end,
+                            delta: ScrollDelta::Pixels(point(px(0.), px((rng(&mut seed) - 0.5) * 600.))),
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+}
