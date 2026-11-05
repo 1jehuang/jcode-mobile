@@ -153,6 +153,7 @@ impl MobileApp {
         if drag < -width * CLOSE_SHARE {
             // Continue the slide from where the finger left it.
             self.drawer_t = (self.drawer_t + drag / width).clamp(0., 1.);
+            crate::haptics::play(crate::haptics::Haptic::Light);
             self.close_drawer(cx);
         } else {
             self.drawer_t = (self.drawer_t + drag / width).clamp(0., 1.);
@@ -306,6 +307,7 @@ impl MobileApp {
                             .child("×")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
+                                crate::haptics::play(crate::haptics::Haptic::Rigid);
                                 this.close_tab(id, cx);
                             })),
                     ),
@@ -375,6 +377,9 @@ impl MobileApp {
                 .on_click(cx.listener(move |this, _, _, cx| this.drawer_open_session(sid.clone(), cx)))
                 .child(
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .items_center()
                         .gap(px(6.))
