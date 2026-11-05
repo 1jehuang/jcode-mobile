@@ -18,6 +18,7 @@ use crate::text_input::{TextInput, TextInputEvent};
 
 #[path = "push_glue.rs"]
 mod push_glue;
+mod sidebar;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -98,6 +99,12 @@ pub struct MobileApp {
     auto_send: Option<String>,
     /// APNs device token (hex) once iOS hands it over.
     push_token: Option<String>,
+    /// Session drawer (see `sidebar.rs`): target, eased progress, clock,
+    /// and the (top, bottom) safe insets it pads by.
+    drawer_open: bool,
+    drawer_t: f32,
+    drawer_last: std::time::Instant,
+    drawer_insets: (f32, f32),
 }
 
 impl MobileApp {
@@ -218,6 +225,11 @@ impl MobileApp {
             status_orb: cx.new(|_| inline_orb()),
             auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
             push_token: None,
+            // Dev hook (JCODE_MOBILE_DRAWER=1): start with the session drawer open.
+            drawer_open: std::env::var_os("JCODE_MOBILE_DRAWER").is_some(),
+            drawer_t: 0.,
+            drawer_last: std::time::Instant::now(),
+            drawer_insets: (0., 0.),
         };
         app.install_push(cx);
         if let Some(account) = account {
@@ -920,10 +932,7 @@ impl MobileApp {
                     .text_size(px(16.))
                     .cursor_pointer()
                     .child("≡")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.screen = Screen::Settings;
-                        cx.notify()
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.open_drawer(window, cx))),
             )
             .child(strip)
             .child(
@@ -1695,7 +1704,10 @@ impl Render for MobileApp {
         } else {
             body
         };
+        self.drawer_insets = (top, base);
+        let drawer = self.render_drawer(&t, window, cx);
         let screen = div()
+            .relative()
             .flex()
             .flex_col()
             .bg(t.background)
@@ -1728,7 +1740,8 @@ impl Render for MobileApp {
                             &t,
                         )),
                 )
-            });
+            })
+            .children(drawer);
         // Dev hook (JCODE_MOBILE_FRAMELESS): bare screen for App Store screenshots.
         if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
             return screen.size_full().into_any_element();
