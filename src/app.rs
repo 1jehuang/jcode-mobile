@@ -1314,6 +1314,10 @@ impl Render for MobileApp {
             .pb(px(bottom))
             .overflow_hidden()
             .child(body);
+        // Dev hook (JCODE_MOBILE_FRAMELESS): bare screen for App Store screenshots.
+        if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
+            return screen.size_full().into_any_element();
+        }
         match self.device {
             // Preview: an exact-size device screen centred in whatever window
             // the compositor gives us (tiling WMs ignore the requested size).
@@ -1355,8 +1359,9 @@ impl Render for MobileApp {
                                 .rounded_full()
                                 .bg(t.text),
                         ),
-                ),
-            None => screen.size_full(),
+                )
+                .into_any_element(),
+            None => screen.size_full().into_any_element(),
         }
     }
 }

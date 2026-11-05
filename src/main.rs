@@ -41,7 +41,8 @@ fn main() {
             })
             .unwrap_or((390.0f32, 844.0f32));
         let safe = if h >= 800.0 { SafeArea { top: 47.0, bottom: 34.0 } } else { SafeArea { top: 20.0, bottom: 0.0 } };
-        let bounds = Bounds::centered(None, size(px(w + 40.), px(h + 40.)), cx);
+        let pad = if std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() { 0. } else { 40. };
+        let bounds = Bounds::centered(None, size(px(w + pad), px(h + pad)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

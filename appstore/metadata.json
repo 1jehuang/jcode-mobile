@@ -1,0 +1,18 @@
+{
+  "name": "Jcode",
+  "subtitle": "AI coding agent in your pocket",
+  "promotionalText": "Chat with your Jcode coding agent running on your own cloud machine. Start tasks, follow tool calls live and review answers from anywhere.",
+  "description": "Jcode is an open-source AI coding agent. Jcode for iPhone connects to your Jcode Cloud machine so you can keep working with your agent away from your desk.\n\n- Sign in with Google or a one-time email code.\n- Chat with the agent in multiple session tabs.\n- Watch tool calls, file edits and command output stream in as the agent works.\n- Read rich Markdown answers with code blocks.\n- Your cloud machine wakes on demand and sleeps when idle.\n\nA Jcode Cloud subscription is managed on jcode.sh. You can permanently delete your account from Settings inside the app.",
+  "keywords": "ai,coding,agent,developer,code,assistant,terminal,programming,llm,jcode",
+  "supportUrl": "https://jcode.sh/support",
+  "marketingUrl": "https://jcode.sh",
+  "privacyPolicyUrl": "https://jcode.sh/privacy",
+  "copyright": "2026 Solo Systems",
+  "primaryCategory": "DEVELOPER_TOOLS",
+  "review": {
+    "demoAccountRequired": true,
+    "demoAccountName": "appreview@jcode.sh",
+    "demoAccountPassword": "<APP_REVIEW_LOGIN code, set as backend secret>",
+    "notes": "Sign in: type appreview@jcode.sh in the email field, tap 'Email me a code', then enter the six-digit code given in the password field. No email is needed for this account. After sign-in the app wakes the account's cloud machine (about 30 seconds) and opens a chat. Send any message, for example 'Write a hello world in Rust', to see the agent respond. Account deletion: Settings (gear icon) > Delete account. The app does not offer in-app purchases. Subscriptions are sold only on jcode.sh and the app contains no purchase links."
+  }
+}
