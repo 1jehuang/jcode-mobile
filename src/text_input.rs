@@ -162,6 +162,7 @@ impl TextInput {
     }
 
     fn on_mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         window.focus(&self.focus_handle, cx);
         window.request_virtual_keyboard();
         let i = self.index_for_position(e.position);

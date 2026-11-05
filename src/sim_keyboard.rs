@@ -75,7 +75,8 @@ pub fn render(
 ) -> AnyElement {
     let key_bg: Hsla = gpui::rgb(0x6b6b6b).into();
     let fn_bg: Hsla = gpui::rgb(0x464646).into();
-    let accent = t.accent;
+    let accent: Hsla = gpui::rgb(0x0a84ff).into();
+    let _ = t;
     let key = |k: Key, text: SharedString, flex: f32, bg: Hsla| {
         let on_key = on_key.clone();
         div()
@@ -121,7 +122,7 @@ pub fn render(
                 .px(px(14.))
                 .py(px(4.))
                 .rounded(px(6.))
-                .text_color(accent)
+                .text_color(gpui::white())
                 .child(suggestion_text)
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     cx.stop_propagation();
@@ -198,6 +199,7 @@ pub fn render(
         .h(px(HEIGHT))
         .pb(px(bottom_inset))
         .bg(gpui::rgb(0x2b2b2b))
+        .rounded_b(px(47.))
         .flex()
         .flex_col()
         .gap(px(11.))

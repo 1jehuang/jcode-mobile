@@ -48,6 +48,8 @@ pub struct MobileApp {
     email: Entity<TextInput>,
     code: Entity<TextInput>,
     login_token: Option<String>,
+    /// Move focus to the code field on the next frame (after the code is mailed).
+    focus_code: bool,
     signing_in: bool,
     sign_in_error: Option<String>,
     /// Account deletion: 0 idle, 1 armed (second tap confirms), 2 in flight.
@@ -165,6 +167,7 @@ impl MobileApp {
             email,
             code,
             login_token: None,
+            focus_code: false,
             signing_in: false,
             sign_in_error: None,
             delete_step: 0,
@@ -233,7 +236,10 @@ impl MobileApp {
             this.update(cx, |this, cx| {
                 this.signing_in = false;
                 match result {
-                    Ok(Step::Sent(t)) => this.login_token = Some(t),
+                    Ok(Step::Sent(t)) => {
+                        this.login_token = Some(t);
+                        this.focus_code = true;
+                    }
                     Ok(Step::Done(account)) => {
                         if let Err(e) = this.store.save(&account) {
                             this.sign_in_error = Some(format!("Could not save sign-in: {e}"));
@@ -1321,6 +1327,9 @@ fn activity_label(text: &'static str, step: usize, t: &Theme) -> impl IntoElemen
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
+        if std::mem::take(&mut self.focus_code) {
+            window.focus(&self.code.focus_handle(cx), cx);
+        }
         // Preview: the simulated keyboard shows whenever a field is focused
         // (JCODE_MOBILE_KEYBOARD=1 forces it, =0 disables it).
         let focused_input = [&self.email, &self.code, &self.composer]
@@ -1354,6 +1363,8 @@ impl Render for MobileApp {
             .pt(px(top))
             .pb(px(bottom))
             .overflow_hidden()
+            // Tapping outside a field dismisses the keyboard, like iOS.
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| window.blur(cx))
             .child(body)
             .when(sim_kb, |d| {
                 let config = focused_input
@@ -1443,10 +1454,6 @@ impl MobileApp {
             Some(Key::Return) => {
                 // "next" on the email field moves on like iOS, then sends the code.
                 input.update(cx, |t, cx| t.sim_submit(cx));
-                if input == self.email && self.login_token.is_some() {
-                    let code = self.code.clone();
-                    window.focus(&code.focus_handle(cx), cx);
-                }
             }
             _ => {}
         }
