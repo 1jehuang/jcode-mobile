@@ -1036,7 +1036,6 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1516,7 +1515,6 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1574,7 +1572,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1851,7 +1849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2402,7 +2400,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.59.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2428,7 +2426,6 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2499,7 +2496,6 @@ dependencies = [
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "block",
@@ -2528,7 +2524,6 @@ dependencies = [
 [[package]]
 name = "gpui_ios"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "async-task",
@@ -2551,7 +2546,6 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2597,7 +2591,6 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2644,7 +2637,6 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2655,7 +2647,6 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2669,7 +2660,6 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "schemars",
  "serde",
@@ -2679,7 +2669,6 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "log",
@@ -2689,7 +2678,6 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2717,7 +2705,6 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2743,7 +2730,6 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -2946,7 +2932,6 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -2981,7 +2966,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.59.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -3329,11 +3314,16 @@ name = "jcode-mobile"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "futures",
  "gpui",
  "gpui_platform",
  "jcode-mobile-core",
  "log",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit",
+ "objc2-user-notifications",
  "serde_json",
  "unicode-segmentation",
 ]
@@ -3844,7 +3834,6 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -4069,7 +4058,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4451,6 +4440,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-ui-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-user-notifications"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4732,7 +4733,6 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "collections",
  "serde",
@@ -5456,7 +5456,6 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "derive_refineable",
 ]
@@ -5704,7 +5703,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5805,7 +5804,6 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6342,7 +6340,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "heapless",
  "log",
@@ -6558,7 +6555,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7111,7 +7108,6 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "perf",
  "quote",
@@ -7675,7 +7671,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8259,7 +8255,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8706,7 +8702,6 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8723,7 +8718,6 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -8734,7 +8728,6 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=0a724280cdbe980f6d9a41bff1cfa11c0f769804#0a724280cdbe980f6d9a41bff1cfa11c0f769804"
 
 [[package]]
 name = "zune-core"

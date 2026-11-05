@@ -34,6 +34,13 @@ gpui_platform = { workspace = true, features = ["wayland", "x11", "font-kit"] }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 gpui_platform.workspace = true
 
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUUID", "NSError", "NSDate"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "UIApplication", "UIResponder"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger"] }
+
 [patch.crates-io]
 cgl = { git = "https://github.com/1jehuang/gpui", rev = "0a724280cdbe980f6d9a41bff1cfa11c0f769804" }
 

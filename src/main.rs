@@ -6,6 +6,7 @@ mod donut;
 mod donut_field;
 mod tabs;
 mod markdown;
+mod notify;
 mod text_input;
 mod theme;
 mod tool_summary;

@@ -556,6 +556,10 @@ mod tests {
         assert_eq!(a.tool_calls[0].input, "ls");
         assert_eq!(a.tool_calls[0].status, ToolStatus::Succeeded);
         assert!(!s.is_processing);
+        assert_eq!(s.alerts.len(), 1);
+        assert_eq!(s.alerts[0].body, "Hello");
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        assert_eq!(s.alerts.len(), 1, "idle TurnDone must not re-alert");
     }
 
     #[test]

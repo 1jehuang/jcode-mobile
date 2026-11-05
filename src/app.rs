@@ -429,6 +429,9 @@ impl MobileApp {
                                 for o in batch {
                                     p.session.apply(o);
                                 }
+                                for a in p.session.alerts.drain(..) {
+                                    crate::notify::post(&a);
+                                }
                             }
                             cx.notify();
                             return;
@@ -436,6 +439,12 @@ impl MobileApp {
                         for o in batch {
                             this.session.apply(o);
                         }
+                        for a in this.session.alerts.drain(..) {
+                            crate::notify::post(&a);
+                        }
+                        let busy = this.session.is_processing
+                            || this.parked.iter().any(|p| p.session.is_processing);
+                        crate::notify::keep_alive(busy);
                         if this.session.phase == ConnectionPhase::Connected
                             && this.session.session_id.is_some()
                             && let Some(msg) = this.auto_send.take()
@@ -468,6 +477,8 @@ impl MobileApp {
         if text.is_empty() || self.session.phase != ConnectionPhase::Connected {
             return;
         }
+        static ASKED: std::sync::Once = std::sync::Once::new();
+        ASKED.call_once(crate::notify::request_permission);
         if self.session.is_processing {
             self.session.apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
             self.send(|id| Request::SoftInterrupt { id, content: text, urgent: false });
