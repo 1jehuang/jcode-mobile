@@ -197,54 +197,63 @@ mod imp {
         add_continue_user_activity();
     }
 
-    /// GPUI's app delegate does not implement
-    /// `application:continueUserActivity:restorationHandler:`, so graft it on.
+    type ContinueFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject) -> Bool;
+    /// GPUI's own `continueUserActivity` (deep links), if it has one.
+    static PREVIOUS: std::sync::OnceLock<Option<ContinueFn>> = std::sync::OnceLock::new();
+
+    /// Handle Spotlight taps in `application:continueUserActivity:restorationHandler:`
+    /// on GPUI's app delegate, chaining to any implementation it already has.
     fn add_continue_user_activity() {
         unsafe extern "C-unwind" fn continue_activity(
-            _this: *mut AnyObject,
-            _sel: Sel,
-            _app: *mut AnyObject,
+            this: *mut AnyObject,
+            sel: Sel,
+            app: *mut AnyObject,
             activity: *mut AnyObject,
-            _restore: *mut AnyObject,
+            restore: *mut AnyObject,
         ) -> Bool {
             unsafe {
+                if let Some(id) = spotlight_id(activity) {
+                    SPOTLIGHT_OPEN.lock().unwrap().push(id);
+                    super::NEEDS_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Bool::YES;
+                }
+                match PREVIOUS.get().copied().flatten() {
+                    Some(prev) => prev(this, sel, app, activity, restore),
+                    None => Bool::NO,
+                }
+            }
+        }
+        unsafe fn spotlight_id(activity: *mut AnyObject) -> Option<String> {
+            unsafe {
                 if activity.is_null() {
-                    return Bool::NO;
+                    return None;
                 }
                 let kind: *mut NSString = msg_send![activity, activityType];
                 if kind.is_null() || (*kind).to_string() != SPOTLIGHT_ACTIVITY {
-                    return Bool::NO;
+                    return None;
                 }
                 let info: *mut AnyObject = msg_send![activity, userInfo];
                 if info.is_null() {
-                    return Bool::NO;
+                    return None;
                 }
                 let key = NSString::from_str(SPOTLIGHT_ID_KEY);
                 let id: *mut NSString = msg_send![info, objectForKey: &*key];
-                if id.is_null() {
-                    return Bool::NO;
-                }
-                SPOTLIGHT_OPEN.lock().unwrap().push((*id).to_string());
-                super::NEEDS_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
-                Bool::YES
+                (!id.is_null()).then(|| (*id).to_string())
             }
         }
         let Some(class) = AnyClass::get(c"GPUIAppDelegate") else {
             log::warn!("spotlight: GPUIAppDelegate not found");
             return;
         };
-        let imp: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject) -> Bool =
-            continue_activity;
+        let imp: ContinueFn = continue_activity;
         unsafe {
-            let ok = objc2::ffi::class_addMethod(
+            let prev = objc2::ffi::class_replaceMethod(
                 class as *const AnyClass as *mut AnyClass,
                 sel!(application:continueUserActivity:restorationHandler:),
-                std::mem::transmute::<_, objc2::runtime::Imp>(imp),
+                std::mem::transmute::<ContinueFn, objc2::runtime::Imp>(imp),
                 c"B@:@@@?".as_ptr(),
             );
-            if !ok.as_bool() {
-                log::warn!("spotlight: continueUserActivity already defined");
-            }
+            let _ = PREVIOUS.set(prev.map(|p| std::mem::transmute::<objc2::runtime::Imp, ContinueFn>(p)));
         }
     }
 
