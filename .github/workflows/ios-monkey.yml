@@ -1,0 +1,34 @@
+name: iOS Simulator monkey
+on:
+  push: {branches: [main]}
+  workflow_dispatch:
+    inputs:
+      seconds: {description: Monkey duration in seconds, default: "180"}
+concurrency: {group: ios-monkey-${{ github.ref }}, cancel-in-progress: true}
+jobs:
+  monkey:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: sim-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sim-
+      - name: Toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --target aarch64-apple-ios-sim && rustup default 1.98.1
+      - name: Build simulator app
+        run: SIM=1 scripts/ios-bundle.sh
+      - name: Install idb
+        run: |
+          brew tap facebook/fb && brew install idb-companion
+          python3 -m pip install --break-system-packages fb-idb
+      - name: Monkey
+        run: OUT=monkey-out scripts/ios-monkey.sh target/ios/Payload/JcodeMobile.app ${{ inputs.seconds || '180' }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: monkey-out, path: monkey-out, if-no-files-found: ignore}

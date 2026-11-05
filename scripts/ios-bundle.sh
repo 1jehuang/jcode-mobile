@@ -4,9 +4,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SDK="$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
-export RUSTUP_TOOLCHAIN=1.98.1 SDKROOT="$SDK"
-export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=ios-clang CC_aarch64_apple_ios=ios-clang AR_aarch64_apple_ios=llvm-ar
+# SIM=1 builds for the iOS Simulator (aarch64-apple-ios-sim). On macOS it uses
+# Xcode's toolchain directly; extensions and signing are skipped.
+TARGET=aarch64-apple-ios PLATFORM=iPhoneOS
+[ -n "${SIM:-}" ] && TARGET=aarch64-apple-ios-sim PLATFORM=iPhoneSimulator NO_IOS_EXT=1
+if [ "$(uname)" != Darwin ]; then
+  SDK="$HOME/.swiftpm/swift-sdks/darwin.artifactbundle/Developer/Platforms/$PLATFORM.platform/Developer/SDKs/$PLATFORM.sdk"
+  export RUSTUP_TOOLCHAIN=1.98.1 SDKROOT="$SDK"
+  export CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=ios-clang CC_aarch64_apple_ios=ios-clang AR_aarch64_apple_ios=llvm-ar
+  export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER=ios-clang CC_aarch64_apple_ios_sim=ios-clang AR_aarch64_apple_ios_sim=llvm-ar
+fi
 
 # GPUI_LOCAL=1 builds against the ~/gpui checkout instead of the pinned rev.
 PATCH=()
@@ -18,12 +25,12 @@ if [ -n "${GPUI_LOCAL:-}" ]; then
   # gpui-thinking-orbs pulls gpui through [patch.crates-io]; point it at the same checkout.
   PATCH+=(--config "patch.crates-io.gpui.path='$G/gpui'")
 fi
-${CARGO:-cargo} build --target aarch64-apple-ios --release "${PATCH[@]}"
+${CARGO:-cargo} build --target "$TARGET" --release ${PATCH[@]+"${PATCH[@]}"}
 
 OUT=target/ios
 APP="$OUT/Payload/JcodeMobile.app"
 rm -rf "$OUT" && mkdir -p "$APP"
-cp target/aarch64-apple-ios/release/jcode-mobile "$APP/jcode-mobile"
+cp "target/$TARGET/release/"jcode-mobile "$APP/jcode-mobile"
 [ -d assets ] && cp -r assets "$APP/" || true
 cp ios-res/Assets.car ios-res/AppIcon60x60@2x.png ios-res/PrivacyInfo.xcprivacy "$APP/"
 
@@ -39,7 +46,7 @@ cat > "$APP/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+  <key>CFBundleSupportedPlatforms</key><array><string>$PLATFORM</string></array>
   <key>MinimumOSVersion</key><string>15.0</string>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string><string>metal</string></array>
