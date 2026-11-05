@@ -33,6 +33,8 @@ enum Screen {
 }
 
 pub struct MobileApp {
+    /// Soft keyboard currently covers the bottom of the screen.
+    keyboard_up: bool,
     screen: Screen,
     safe: SafeArea,
     /// Fixed device size for the desktop preview; None on a real phone.
@@ -163,6 +165,7 @@ impl MobileApp {
             delete_error: None,
             browser_login: None,
             started: std::time::Instant::now(),
+            keyboard_up: false,
             composer,
             active_tab: 0,
             next_tab: 1,
@@ -612,17 +615,25 @@ impl MobileApp {
             (true, false) => "Sign in",
             (true, true) => "Signing in…",
         };
+        let keyboard_up = self.keyboard_up;
         div()
             .id("sign-in")
             .size_full()
             .flex()
             .flex_col()
-            .justify_center()
+            // Keyboard up: anchor to the top and scroll, so the field and
+            // its button stay above the keyboard instead of centering under it.
+            .when(keyboard_up, |d| d.justify_start().pt(px(12.)).overflow_y_scroll())
+            .when(!keyboard_up, |d| d.justify_center())
             .px(px(20.))
-            .gap(px(18.))
+            .gap(px(if keyboard_up { 12. } else { 18. }))
             .child(
                 div().w_full().flex().justify_center().pb(px(8.)).child(
-                    crate::donut::spinning_donut(140., t.text_strong, self.started),
+                    crate::donut::spinning_donut(
+                        if keyboard_up { 64. } else { 140. },
+                        t.text_strong,
+                        self.started,
+                    ),
                 ),
             )
             .child(
@@ -1293,11 +1304,16 @@ impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
         let (top, bottom) = if self.device.is_none() {
-            let e = window.safe_area_insets();
+            let e = window.window_insets().effective();
             (f32::from(e.top), f32::from(e.bottom))
         } else {
-            (self.safe.top, self.safe.bottom)
+            // Dev hook (JCODE_MOBILE_KEYBOARD=1): fake an iPhone keyboard
+            // (336pt incl. suggestion bar) to check layouts in the preview.
+            let kb = std::env::var_os("JCODE_MOBILE_KEYBOARD").map_or(0., |_| 336.);
+            (self.safe.top, self.safe.bottom.max(kb))
         };
+        self.keyboard_up = f32::from(window.window_insets().ime.bottom) > 0.
+            || (self.device.is_some() && std::env::var_os("JCODE_MOBILE_KEYBOARD").is_some());
         let t = Theme::get(cx);
         let body = match self.screen {
             Screen::SignIn => self.render_sign_in(&t, cx),
