@@ -108,6 +108,9 @@ pub struct MobileApp {
     feel: ios_feel::Feel,
     /// Session id the empty-screen recent dirs list was last requested for.
     recent_dirs_asked: Option<String>,
+    /// Directory sheet opened from the composer's location label.
+    dir_picker: bool,
+    dir_input: Entity<TextInput>,
     /// Horizontal swipe between tabs, like the desktop workspace pull.
     swipe: crate::swipe::Swipe,
     spinner_step: usize,
@@ -124,6 +127,11 @@ pub struct MobileApp {
     drawer_t: f32,
     drawer_last: std::time::Instant,
     drawer_insets: (f32, f32),
+    /// Drawer drag-to-close travel (negative px) and last drag event.
+    drawer_drag: f32,
+    drawer_drag_last: Option<std::time::Instant>,
+    /// Drawer session search field.
+    drawer_search: Entity<TextInput>,
     /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
     apple_link: Option<Entity<apple_sign_in::AppleLinkPanel>>,
 }
@@ -171,6 +179,35 @@ impl MobileApp {
         }
         cx.subscribe(&composer, |this, _, ev, cx| match ev {
             TextInputEvent::Submit => this.send_draft(cx),
+            TextInputEvent::Changed => cx.notify(),
+        })
+        .detach();
+        let drawer_search = cx.new(|cx| {
+            let mut t = TextInput::new("Search sessions", cx);
+            t.bare = true;
+            t.config = TextInputConfiguration {
+                input_action: TextInputAction::Search,
+                purpose: TextInputPurpose::Text,
+                ..Default::default()
+            };
+            t
+        });
+        cx.subscribe(&drawer_search, |_, _, _, cx| cx.notify()).detach();
+        let dir_input = cx.new(|cx| {
+            let mut t = TextInput::new("/home/ec2-user/src/app", cx);
+            t.bare = true;
+            t.config = TextInputConfiguration {
+                input_action: TextInputAction::Go,
+                purpose: TextInputPurpose::Text,
+                ..Default::default()
+            };
+            t
+        });
+        cx.subscribe(&dir_input, |this, input, ev, cx| match ev {
+            TextInputEvent::Submit => {
+                let dir = input.read(cx).text().to_string();
+                this.change_dir(dir, cx)
+            }
             TextInputEvent::Changed => cx.notify(),
         })
         .detach();
@@ -248,6 +285,8 @@ impl MobileApp {
             tab_menu: None,
             feel: Default::default(),
             recent_dirs_asked: None,
+            dir_picker: false,
+            dir_input,
             swipe: Default::default(),
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
@@ -259,6 +298,9 @@ impl MobileApp {
             drawer_t: 0.,
             drawer_last: std::time::Instant::now(),
             drawer_insets: (0., 0.),
+            drawer_drag: 0.,
+            drawer_drag_last: None,
+            drawer_search,
             apple_link: None,
         };
         app.install_push(cx);
@@ -1485,16 +1527,23 @@ impl MobileApp {
             .reasoning_effort
             .clone()
             .filter(|e| !e.trim().is_empty() && model_raw.is_some());
-        let api_method = self
-            .session
-            .routes
-            .iter()
-            .find(|r| {
-                Some(&r.model) == model_raw.as_ref()
-                    && self.session.provider_name.as_deref().is_some_and(|p| r.provider.eq_ignore_ascii_case(p))
-            })
-            .map(|r| r.api_method.clone());
-        let account = crate::labels::account_label(self.session.provider_name.as_deref(), api_method.as_deref());
+        // The daemon's resolved credential wins; guessing from routes is
+        // ambiguous when one model has both an OAuth and an API-key route.
+        let api_method = self.session.auth_method.clone().or_else(|| {
+            self.session
+                .routes
+                .iter()
+                .find(|r| {
+                    Some(&r.model) == model_raw.as_ref()
+                        && self.session.provider_name.as_deref().is_some_and(|p| r.provider.eq_ignore_ascii_case(p))
+                })
+                .map(|r| r.api_method.clone())
+        });
+        let account = crate::labels::routed_account_label(
+            self.session.provider_name.as_deref(),
+            api_method.as_deref(),
+            self.session.account_label.as_deref(),
+        );
         let open_picker = cx.listener(|this, _, window, cx| {
             window.blur(cx);
             this.model_picker = true;
@@ -1564,6 +1613,9 @@ impl MobileApp {
                         // then its dim parent path on the cloud VM.
                         let (name, parent) = crate::labels::cloud_location(self.session.working_dir.as_deref());
                         div()
+                            .id("location")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| this.open_dir_picker(window, cx)))
                             .flex_shrink(8.)
                             .min_w_0()
                             .px(px(4.))
@@ -1659,6 +1711,11 @@ impl MobileApp {
             )
             .child(
                 div()
+                    .relative()
+                    .top(px(self.feel_sheet_offsets().0))
+                    .left(px(self.feel_sheet_offsets().1))
+                    .mb(px(-self.feel_sheet_offsets().2))
+                    .child(self.feel_sheet_recorder())
                     .flex()
                     .flex_col()
                     .max_h(px(520.))
@@ -1718,11 +1775,6 @@ impl MobileApp {
             .size_full()
             .child(
                 div()
-                    .relative()
-                    .top(px(self.feel_sheet_offsets().0))
-                    .left(px(self.feel_sheet_offsets().1))
-                    .mb(px(-self.feel_sheet_offsets().2))
-                    .child(self.feel_sheet_recorder())
                     .flex()
                     .items_center()
                     .h(px(48.))
@@ -1961,6 +2013,18 @@ impl Render for MobileApp {
         } else {
             body
         };
+        let body = if self.dir_picker && matches!(self.screen, Screen::Chat) {
+            div()
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(body)
+                .child(self.render_dir_picker(&t, cx))
+                .into_any_element()
+        } else {
+            body
+        };
         let body = self.feel_wrap(body, &t, window, cx);
         let body = self.wrap_wide(body, &t, window, cx);
         self.drawer_insets = (top, base);
@@ -2057,7 +2121,7 @@ impl MobileApp {
     /// A tap on the simulated keyboard, routed to the focused field.
     fn sim_key(&mut self, key: crate::sim_keyboard::Key, window: &mut Window, cx: &mut Context<Self>) {
         use crate::sim_keyboard::Key;
-        let Some(input) = [&self.email, &self.code, &self.composer]
+        let Some(input) = [&self.email, &self.code, &self.composer, &self.drawer_search]
             .into_iter()
             .find(|i| i.read(cx).is_focused(window))
             .cloned()

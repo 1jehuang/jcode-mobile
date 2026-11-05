@@ -102,9 +102,14 @@ def upload_screenshots(loc_id):
                   "attributes": {"screenshotDisplayType": "APP_IPHONE_67"}, "relationships": {
                   "appStoreVersionLocalization": {"data": {"type": "appStoreVersionLocalizations", "id": loc_id}}}}}),
                   "screenshot set")["data"]
-    for old in get(f"/v1/appScreenshotSets/{sset['id']}/appScreenshots")["data"]:
-        call("DELETE", f"/v1/appScreenshots/{old['id']}")
+    existing = get(f"/v1/appScreenshotSets/{sset['id']}/appScreenshots")["data"]
     folder = os.path.join(ROOT, "screenshots", "6.9")
+    local = {n: hashlib.md5(open(os.path.join(folder, n), "rb").read()).hexdigest() for n in sorted(os.listdir(folder))}
+    remote = {s["attributes"]["fileName"]: s["attributes"].get("sourceFileChecksum") for s in existing}
+    if remote == local:
+        return  # unchanged: re-uploading would restart Apple's processing
+    for old in existing:
+        call("DELETE", f"/v1/appScreenshots/{old['id']}")
     for name in sorted(os.listdir(folder)):
         blob = open(os.path.join(folder, name), "rb").read()
         shot = ok(*call("POST", "/v1/appScreenshots", {"data": {"type": "appScreenshots",

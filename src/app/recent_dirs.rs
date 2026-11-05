@@ -1,7 +1,7 @@
 //! Empty-session quick nav: the blank middle of a fresh tab lists the cloud
 //! directories used most recently, and tapping one restarts the tab there.
 
-use gpui::{AnyElement, Context, div, prelude::*, px, svg};
+use gpui::{AnyElement, Context, Window, div, prelude::*, px, svg};
 use jcode_mobile_core::Request;
 use jcode_mobile_core::jcode_sdk::SessionInfo;
 
@@ -32,6 +32,121 @@ impl MobileApp {
         self.session.working_dir = Some(dir.clone());
         self.start_connection_in(None, Some(dir), cx);
         cx.notify();
+    }
+
+    /// Open the directory sheet from the composer's location label.
+    pub(super) fn open_dir_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_recent_dirs();
+        let current = self.session.working_dir.clone().unwrap_or_default();
+        self.dir_input.update(cx, |t, cx| t.set_text(current, cx));
+        self.dir_picker = true;
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// Move to `dir`. A session's working dir is fixed once it starts, so an
+    /// empty tab restarts there and a tab with history opens a new tab instead
+    /// of discarding the conversation.
+    pub(super) fn change_dir(&mut self, dir: String, cx: &mut Context<Self>) {
+        self.dir_picker = false;
+        let dir = dir.trim().to_string();
+        if dir.is_empty() {
+            cx.notify();
+            return;
+        }
+        let same = self.session.working_dir.as_deref().map(|d| d.trim_end_matches('/')) == Some(dir.trim_end_matches('/'));
+        if same {
+            cx.notify();
+        } else if self.session.transcript.is_empty() {
+            self.start_in_dir(dir, cx);
+        } else {
+            self.new_tab_in_dir(Some(dir), cx);
+        }
+    }
+
+    /// Bottom sheet: a path field plus recent cloud dirs.
+    pub(super) fn render_dir_picker(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let lists = std::iter::once(&self.session.session_list).chain(self.parked.iter().map(|p| &p.session.session_list));
+        let dirs = lists.max_by_key(|l| l.len()).map(|l| recent_dirs(l)).unwrap_or_default();
+        let current = self.session.working_dir.as_deref().map(|d| d.trim_end_matches('/').to_string());
+        let mut rows = div().flex().flex_col().gap(px(2.));
+        for (i, dir) in dirs.into_iter().enumerate() {
+            let selected = current.as_deref() == Some(dir.trim_end_matches('/'));
+            let (name, parent) = crate::labels::cloud_location(Some(&dir));
+            rows = rows.child(
+                super::picker_row(("dir", i), name, parent.unwrap_or_default(), selected, true, t)
+                    .on_click(cx.listener(move |this, _, _, cx| this.change_dir(dir.clone(), cx))),
+            );
+        }
+        let note = if self.session.transcript.is_empty() {
+            "Restarts this tab in the chosen directory."
+        } else {
+            "Opens a new tab there. This conversation stays put."
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .bg(gpui::black().opacity(0.5))
+            .child(div().id("dir-dismiss").flex_1().on_click(cx.listener(|this, _, _, cx| {
+                this.dir_picker = false;
+                cx.notify()
+            })))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .max_h(px(520.))
+                    .bg(t.surface_elevated)
+                    .rounded_t(px(18.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .pt(px(8.))
+                    .pb(px(12.))
+                    .child(div().w_full().flex().justify_center().child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.text_muted)))
+                    .child(super::label("Directory", t.text_strong, 16.).px(px(16.)).pt(px(8.)))
+                    .child(
+                        div()
+                            .mx(px(12.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .pl(px(12.))
+                            .pr(px(4.))
+                            .min_h(px(40.))
+                            .rounded(px(12.))
+                            .bg(t.field)
+                            .border_1()
+                            .border_color(t.input_border)
+                            .child(div().flex_1().min_w_0().child(self.dir_input.clone()))
+                            .child(
+                                div()
+                                    .id("dir-go")
+                                    .px(px(10.))
+                                    .py(px(6.))
+                                    .rounded(px(10.))
+                                    .bg(t.surface)
+                                    .cursor_pointer()
+                                    .child(super::label("Go", t.text_strong, 13.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let dir = this.dir_input.read(cx).text().to_string();
+                                        this.change_dir(dir, cx)
+                                    })),
+                            ),
+                    )
+                    .child(super::label(note, t.text_muted, 11.).px(px(16.)))
+                    .child(
+                        div()
+                            .id("dir-list")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(px(12.))
+                            .child(rows),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_recent_dirs(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
