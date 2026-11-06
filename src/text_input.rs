@@ -796,6 +796,10 @@ impl Render for TextInput {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.selection_anchor = None),
             )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.selection_anchor = None),
+            )
             .w_full()
             .when(!self.bare, |d| {
                 d.px(px(16.))
