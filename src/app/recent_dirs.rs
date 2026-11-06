@@ -189,7 +189,7 @@ impl MobileApp {
             .flex_col()
             .gap(px(6.));
         if !sessions.is_empty() {
-            col = col.child(super::label("Pick up where you left off", t.text_muted, 11.).pl(px(2.)).pb(px(2.)));
+            col = col.child(super::label("Continue a session", t.text_muted, 11.).pl(px(2.)).pb(px(2.)));
         }
         for (i, session) in sessions.into_iter().enumerate() {
             let sid = session.session_id.clone();
@@ -202,25 +202,26 @@ impl MobileApp {
                     .id(("suggested-session", i))
                     .a11y_button(format!("{action} {title}"))
                     .flex_none()
-                    .min_h(px(52.))
-                    .px(px(12.))
-                    .py(px(6.))
+                    .min_h(px(56.))
+                    .px(px(4.))
+                    .py(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(12.))
-                    .bg(t.surface)
+                    .when(i > 0, |d| d.border_t_1().border_color(t.border))
                     .cursor_pointer()
-                    .child(div().flex_none().size(px(6.)).rounded_full().bg(if live { t.accent } else { t.text_muted }))
-                    .child(div().flex_1().min_w_0().flex().flex_col()
+                    .hover(|d| d.bg(t.raised))
+                    .active(|d| d.bg(t.surface))
+                    .child(div().flex_none().size(px(5.)).rounded_full().bg(if live { t.ok } else { t.text_muted }))
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(px(3.))
                         .child(super::label(title, t.text, 13.5).truncate())
-                        .child(super::label(format!("{} · {location}", if live { "Running" } else { "Recent" }), t.text_muted, 11.).truncate()))
-                    .child(super::label(action, t.accent, 12.).flex_none())
+                        .child(super::label(location, t.text_muted, 11.).truncate()))
+                    .child(super::label("›", t.text_muted, 16.).flex_none())
                     .on_click(cx.listener(move |this, _, _, cx| this.drawer_open_session(sid.clone(), cx))),
             );
         }
         if !dirs.is_empty() {
-            col = col.child(super::label("Recent directories", t.text_muted, 11.).pl(px(2.)).pt(px(6.)).pb(px(2.)));
+            col = col.child(super::label("Recent directories", t.text_muted, 11.).pl(px(2.)).pt(px(16.)).pb(px(2.)));
         }
         for (i, dir) in dirs.into_iter().enumerate() {
             let (name, parent) = crate::labels::cloud_location(Some(&dir));

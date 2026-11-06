@@ -1461,7 +1461,7 @@ impl MobileApp {
                         this.reconnect(cx);
                     })))
                 })
-                .child(label("What would you like to work on?", t.text, 22.).line_height(crate::system::fs(30.)))
+                .child(label("What would you like to work on?", t.text, 20.).line_height(crate::system::fs(28.)))
                 .children(recent)
                 .into_any_element()
         } else {
