@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 /// Stored history prefixes assistant text with terminal-specific reasoning
 /// markup. Decode only the sentinel-tagged prefix, never ordinary Markdown or
 /// examples in the answer. Keep this in sync with jcode-render-core/reasoning.
-fn history_assistant_content(content: &str) -> (String, String) {
+fn history_assistant_content(mut content: String) -> (String, String) {
     let mut reasoning = String::new();
     let mut consumed = 0;
     let mut tagged = false;
@@ -37,9 +37,19 @@ fn history_assistant_content(content: &str) -> (String, String) {
         consumed += line.len();
     }
     if !tagged {
-        return (content.to_owned(), String::new());
+        return (content, String::new());
     }
-    (content[consumed..].to_owned(), reasoning.trim_matches('\n').to_owned())
+    content.drain(..consumed);
+    // A long reasoning prefix followed by a short answer should not keep a
+    // second large allocation alive after the prefix has been decoded.
+    if content.capacity() > 64 * 1024 && content.len() < content.capacity() / 2 {
+        content.shrink_to_fit();
+    }
+    let trimmed_end = reasoning.trim_end_matches('\n').len();
+    reasoning.truncate(trimmed_end);
+    let leading = reasoning.len() - reasoning.trim_start_matches('\n').len();
+    reasoning.drain(..leading);
+    (content, reasoning)
 }
 
 /// Keep useful prose, not Markdown layout, in the small banner preview.
@@ -565,7 +575,7 @@ impl SessionState {
             tail.into_iter().filter(|e| !history_user.contains(e.text.as_str())).collect();
 
         let mut transcript = Vec::with_capacity(messages.len() + tail.len());
-        for m in &messages {
+        for m in messages {
             let role = match m.role.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -575,10 +585,13 @@ impl SessionState {
             if m.content.is_empty() {
                 continue;
             }
-            let mut entry = self.entry(role, m.content.clone());
-            if role == Role::Assistant {
-                (entry.text, entry.reasoning) = history_assistant_content(&m.content);
-            }
+            let (text, reasoning) = if role == Role::Assistant {
+                history_assistant_content(m.content)
+            } else {
+                (m.content, String::new())
+            };
+            let mut entry = self.entry(role, text);
+            entry.reasoning = reasoning;
             transcript.push(entry);
         }
         transcript.extend(tail);
@@ -656,6 +669,60 @@ mod tests {
     }
 
     #[test]
+    fn history_reuses_incoming_text_allocations() {
+        for role in ["user", "assistant", "system"] {
+            let text = "界 answer **markup**".repeat(512);
+            let ptr = text.as_ptr();
+            let mut state = SessionState::default();
+            state.apply_history(sid(), vec![HistoryMessage {
+                response_stats: None, role: role.into(), content: text,
+            }]);
+            assert_eq!(state.transcript[0].text.as_ptr(), ptr);
+        }
+        let content = format!("\n*\u{2063}thought\u{2063}*\n\n{}", "回答".repeat(512));
+        let ptr = content.as_ptr();
+        let (answer, reasoning) = history_assistant_content(content);
+        assert_eq!(answer.as_ptr(), ptr);
+        assert_eq!(answer, "回答".repeat(512));
+        assert_eq!(reasoning, "thought");
+        let (answer, reasoning) = history_assistant_content(format!("*\u{2063}{}\u{2063}*\nOK", "r".repeat(128 * 1024)));
+        assert_eq!(answer, "OK");
+        assert_eq!(reasoning.len(), 128 * 1024);
+        assert!(answer.capacity() <= 64 * 1024);
+    }
+
+    #[test]
+    #[ignore = "controlled history buffer-transfer benchmark"]
+    fn benchmark_history_buffer_transfer() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        for bytes in [4096, 65536] {
+            let template = "a".repeat(bytes);
+            let mut old = Duration::ZERO;
+            let mut new = Duration::ZERO;
+            for _ in 0..20 {
+                // Incoming message creation is outside both timed sections.
+                let messages: Vec<_> = (0..250).map(|_| HistoryMessage {
+                    response_stats: None, role: "assistant".into(), content: template.clone(),
+                }).collect();
+                let start = Instant::now();
+                let entries: Vec<_> = messages.iter().map(|m| {
+                    let discarded = m.content.clone();
+                    black_box(&discarded);
+                    m.content.clone()
+                }).collect();
+                old += start.elapsed();
+                black_box(entries);
+                let mut state = SessionState::default();
+                let start = Instant::now();
+                state.apply_history(sid(), messages);
+                new += start.elapsed();
+                black_box(state);
+            }
+            eprintln!("history 250x{bytes} bytes: old double-copy only {:.3}ms/load, new full reducer {:.3}ms/load", old.as_secs_f64()*50.0, new.as_secs_f64()*50.0);
+        }
+    }
+
+    #[test]
     fn attached_history_decodes_reasoning_and_preserves_answer_markdown() {
         let mut s = SessionState::default();
         let content = "*\u{2063}\\*\\*Adding TODO initialization\\*\\*\u{2063}*  \n\n*\u{2063}Checking `path` and C:\\work\u{2063}*  \n\nThe **answer** keeps \\*literal\\* markup.";
@@ -670,11 +737,11 @@ mod tests {
     #[test]
     fn history_decoder_preserves_literal_examples_and_partial_wrappers() {
         for content in ["\n\n**ordinary**", "**ordinary**", "*ordinary italic*", "*\u{2063}unfinished", "```\n*\u{2063}example\u{2063}*\n```", "Answer\n*\u{2063}example\u{2063}*"] {
-            assert_eq!(history_assistant_content(content), (content.into(), String::new()));
+            assert_eq!(history_assistant_content(content.into()), (content.into(), String::new()));
         }
-        assert_eq!(history_assistant_content("*\u{2063}é文字 \\[docs\\] \\\\ \\*\u{2063}*"),
+        assert_eq!(history_assistant_content("*\u{2063}é文字 \\[docs\\] \\\\ \\*\u{2063}*".into()),
             (String::new(), "é文字 [docs] \\ *".into()));
-        assert_eq!(history_assistant_content("\n\n*\u{2063}Thought\u{2063}*  \r\n\nAnswer"),
+        assert_eq!(history_assistant_content("\n\n*\u{2063}Thought\u{2063}*  \r\n\nAnswer".into()),
             ("Answer".into(), "Thought".into()));
     }
 

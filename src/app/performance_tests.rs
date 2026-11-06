@@ -26,6 +26,38 @@ fn redraw(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+#[ignore = "cold-layout versus warm-frame performance investigation"]
+fn benchmark_cold_transcript_layout(cx: &mut TestAppContext) {
+    use std::time::Instant;
+    let (view, cx) = mount(cx);
+    for count in [90, 500] {
+        view.update(cx, |app, cx| {
+            app.session.phase = ConnectionPhase::Connected;
+            app.follow = false;
+            app.session.transcript = (0..count).map(|index| TranscriptEntry {
+                // Fresh keys prevent earlier measurements from supplying heights.
+                id: (count * 1000 + index) as u64,
+                role: Role::Assistant,
+                text: format!("Cold workload {count}/{index}\n\nA **formatted** paragraph with `inline code` and Unicode 界🦀.\n\n- first item\n- second item\n\n```rust\nfn example() {{}}\n```"),
+                reasoning: String::new(), tool_calls: vec![], is_streaming: false, is_queued: false,
+            }).collect();
+            cx.notify();
+        });
+        let start = Instant::now();
+        draw(cx);
+        let cold = start.elapsed();
+        let cold_rows = view.read_with(cx, |app, _| app.rendered_transcript_rows);
+        let start = Instant::now();
+        for _ in 0..20 { redraw(&view, cx); }
+        let warm = start.elapsed();
+        let warm_rows = view.read_with(cx, |app, _| app.rendered_transcript_rows);
+        eprintln!("cold layout {count} messages: {:.3}ms/{cold_rows} subtrees, warm mean {:.3}ms/{warm_rows} subtrees", cold.as_secs_f64()*1000.0, warm.as_secs_f64()*50.0);
+        assert_eq!(cold_rows, count);
+        assert!(warm_rows < count);
+    }
+}
+
+#[gpui::test]
 fn windowed_transcript_preserves_geometry_scrolling_edits_and_resize(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     populate(&view, cx, 90);
