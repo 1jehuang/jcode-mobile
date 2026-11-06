@@ -46,7 +46,11 @@ impl SimKeyboard {
                 None
             }
             Key::Char(c) => {
-                let out = if self.shift { c.to_uppercase().into() } else { c.clone() };
+                let out = if self.shift {
+                    c.to_uppercase().into()
+                } else {
+                    c.clone()
+                };
                 self.shift = false;
                 Some(Key::Char(out))
             }
@@ -77,9 +81,14 @@ pub fn render(
     let fn_bg: Hsla = gpui::rgb(0x464646).into();
     let accent: Hsla = gpui::rgb(0x0a84ff).into();
     let _ = t;
+    // Position disambiguates repeated Mode keys and email punctuation.
+    let key_index = std::cell::Cell::new(0usize);
     let key = |k: Key, text: SharedString, flex: f32, bg: Hsla| {
+        let index = key_index.get();
+        key_index.set(index + 1);
         let on_key = on_key.clone();
         div()
+            .debug_selector(move || format!("sim-key-{index}"))
             .flex_grow(1.)
             .flex_basis(px(flex * 32.))
             .h(px(42.))
@@ -99,7 +108,10 @@ pub fn render(
     };
     let row = || div().flex().gap(px(6.)).px(px(3.)).w_full();
 
-    let numeric = matches!(config.purpose, TextInputPurpose::OneTimeCode | TextInputPurpose::Number);
+    let numeric = matches!(
+        config.purpose,
+        TextInputPurpose::OneTimeCode | TextInputPurpose::Number
+    );
     let mut rows: Vec<gpui::Div> = Vec::new();
     // Suggestion bar: iOS offers the mailed code here for one-time-code fields.
     let suggestion = match config.purpose {
@@ -114,11 +126,17 @@ pub fn render(
         TextInputPurpose::Email => Some("you@example.com".into()),
         _ => None,
     };
-    let mut bar = div().h(px(40.)).flex().items_center().justify_center().text_size(px(15.));
+    let mut bar = div()
+        .h(px(40.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(15.));
     if let Some(fill) = fill {
         let on_key = on_key.clone();
         bar = bar.child(
             div()
+                .debug_selector(|| "sim-suggestion".into())
                 .px(px(14.))
                 .py(px(4.))
                 .rounded(px(6.))
@@ -155,7 +173,11 @@ pub fn render(
             ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
         };
         let shown = |c: char| -> SharedString {
-            if state.shift && !state.symbols { c.to_uppercase().to_string().into() } else { c.to_string().into() }
+            if state.shift && !state.symbols {
+                c.to_uppercase().to_string().into()
+            } else {
+                c.to_string().into()
+            }
         };
         for (i, r) in letters.iter().enumerate() {
             let mut d = row();
@@ -166,7 +188,16 @@ pub fn render(
                 d = d.child(if state.symbols {
                     key(Key::Mode, "ABC".into(), 1.4, fn_bg)
                 } else {
-                    key(Key::Shift, if state.shift { "⬆" } else { "⇧" }.into(), 1.4, if state.shift { gpui::white().opacity(0.9) } else { fn_bg })
+                    key(
+                        Key::Shift,
+                        if state.shift { "⬆" } else { "⇧" }.into(),
+                        1.4,
+                        if state.shift {
+                            gpui::white().opacity(0.9)
+                        } else {
+                            fn_bg
+                        },
+                    )
                 });
             }
             for c in r.chars() {
@@ -177,7 +208,12 @@ pub fn render(
             }
             rows.push(d);
         }
-        let mut last = row().child(key(Key::Mode, if state.symbols { "ABC" } else { "123" }.into(), 2.5, fn_bg));
+        let mut last = row().child(key(
+            Key::Mode,
+            if state.symbols { "ABC" } else { "123" }.into(),
+            2.5,
+            fn_bg,
+        ));
         if config.purpose == TextInputPurpose::Email {
             last = last
                 .child(key(Key::Space, "space".into(), 5., key_bg))
@@ -186,12 +222,22 @@ pub fn render(
         } else {
             last = last.child(key(Key::Space, "space".into(), 7., key_bg));
         }
-        let ret_bg = if config.input_action == TextInputAction::Unspecified { fn_bg } else { accent };
-        last = last.child(key(Key::Return, return_label(config.input_action).into(), 2.5, ret_bg));
+        let ret_bg = if config.input_action == TextInputAction::Unspecified {
+            fn_bg
+        } else {
+            accent
+        };
+        last = last.child(key(
+            Key::Return,
+            return_label(config.input_action).into(),
+            2.5,
+            ret_bg,
+        ));
         rows.push(last);
     }
 
     div()
+        .debug_selector(|| "sim-keyboard".into())
         .absolute()
         .bottom_0()
         .left_0()
@@ -216,6 +262,291 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A standalone preview host: records the renderer callback and applies only
+    // the local shift/mode reducer. It deliberately does not claim native UIKit,
+    // TextInput bridge, service, or transport coverage.
+    struct PointerHost {
+        keyboard: SimKeyboard,
+        config: TextInputConfiguration,
+        received: Vec<Key>,
+        output: Vec<Key>,
+        outside_down: usize,
+        focus: gpui::FocusHandle,
+    }
+
+    impl Render for PointerHost {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            let entity = cx.entity().downgrade();
+            let callback = Rc::new(move |key: Key, _: &mut Window, cx: &mut App| {
+                entity
+                    .update(cx, |host, cx| {
+                        host.received.push(key.clone());
+                        if let Some(output) = host.keyboard.press(&key) {
+                            host.output.push(output);
+                        }
+                        cx.notify();
+                    })
+                    .unwrap();
+            });
+            div()
+                .size_full()
+                .relative()
+                .child(div().h(px(40.)).track_focus(&self.focus))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|host, _, window, cx| {
+                        host.outside_down += 1;
+                        window.prevent_default();
+                        window.blur(cx);
+                    }),
+                )
+                .child(super::render(
+                    &self.keyboard,
+                    &self.config,
+                    20.,
+                    callback,
+                    &Theme::pure_black(),
+                ))
+        }
+    }
+
+    fn mount(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<PointerHost>, &mut gpui::VisualTestContext) {
+        let (host, cx) = cx.add_window_view(|_, cx| PointerHost {
+            keyboard: SimKeyboard::default(),
+            config: TextInputConfiguration::default(),
+            received: Vec::new(),
+            output: Vec::new(),
+            outside_down: 0,
+            focus: cx.focus_handle(),
+        });
+        cx.simulate_resize(gpui::size(px(390.), px(844.)));
+        cx.update(|window, cx| {
+            let focus = host.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        (host, cx)
+    }
+
+    fn draw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn tap(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+        draw(cx);
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        pointer(cx, bounds.center());
+    }
+
+    fn pointer(cx: &mut gpui::VisualTestContext, position: gpui::Point<gpui::Pixels>) {
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Default::default(),
+            click_count: 1,
+        });
+    }
+
+    fn assert_owned(host: &gpui::Entity<PointerHost>, cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            let host = host.read(cx);
+            assert_eq!(host.outside_down, 0, "keyboard tap escaped to blur handler");
+            assert!(
+                host.focus.is_focused(window),
+                "keyboard tap stole field focus"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn rendered_pointer_routes_every_key_in_all_layouts(cx: &mut gpui::TestAppContext) {
+        let (host, cx) = mount(cx);
+        for purpose in [
+            TextInputPurpose::Text,
+            TextInputPurpose::Email,
+            TextInputPurpose::Number,
+            TextInputPurpose::OneTimeCode,
+        ] {
+            for (symbols, shift) in [(false, false), (false, true), (true, false)] {
+                let numeric = matches!(
+                    purpose,
+                    TextInputPurpose::Number | TextInputPurpose::OneTimeCode
+                );
+                let mut expected = Vec::new();
+                if numeric {
+                    expected.extend(
+                        "1234567890"
+                            .chars()
+                            .map(|c| Key::Char(c.to_string().into())),
+                    );
+                    expected.push(Key::Backspace);
+                } else {
+                    let rows = if symbols {
+                        ["1234567890", "-/:;()$&@\"", ".,?!'"]
+                    } else {
+                        ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
+                    };
+                    for (index, row) in rows.iter().enumerate() {
+                        if index == 2 {
+                            expected.push(if symbols { Key::Mode } else { Key::Shift });
+                        }
+                        expected.extend(row.chars().map(|c| Key::Char(c.to_string().into())));
+                        if index == 2 {
+                            expected.push(Key::Backspace);
+                        }
+                    }
+                    expected.extend([Key::Mode, Key::Space]);
+                    if purpose == TextInputPurpose::Email {
+                        expected.extend([Key::Char("@".into()), Key::Char(".".into())]);
+                    }
+                    expected.push(Key::Return);
+                }
+                for (index, key) in expected.iter().enumerate() {
+                    host.update(cx, |host, cx| {
+                        host.config.purpose = purpose;
+                        host.keyboard.symbols = symbols;
+                        host.keyboard.shift = shift;
+                        host.received.clear();
+                        host.output.clear();
+                        cx.notify();
+                    });
+                    const SELECTORS: &[&str] = &[
+                        "sim-key-0",
+                        "sim-key-1",
+                        "sim-key-2",
+                        "sim-key-3",
+                        "sim-key-4",
+                        "sim-key-5",
+                        "sim-key-6",
+                        "sim-key-7",
+                        "sim-key-8",
+                        "sim-key-9",
+                        "sim-key-10",
+                        "sim-key-11",
+                        "sim-key-12",
+                        "sim-key-13",
+                        "sim-key-14",
+                        "sim-key-15",
+                        "sim-key-16",
+                        "sim-key-17",
+                        "sim-key-18",
+                        "sim-key-19",
+                        "sim-key-20",
+                        "sim-key-21",
+                        "sim-key-22",
+                        "sim-key-23",
+                        "sim-key-24",
+                        "sim-key-25",
+                        "sim-key-26",
+                        "sim-key-27",
+                        "sim-key-28",
+                        "sim-key-29",
+                        "sim-key-30",
+                        "sim-key-31",
+                        "sim-key-32",
+                    ];
+                    tap(cx, SELECTORS[index]);
+                    host.read_with(cx, |host, _| {
+                        assert_eq!(
+                            host.received,
+                            vec![key.clone()],
+                            "{purpose:?}/{symbols}/{shift}/{index}"
+                        );
+                        let output = match key {
+                            Key::Shift | Key::Mode => vec![],
+                            Key::Char(text) if shift => vec![Key::Char(text.to_uppercase().into())],
+                            key => vec![key.clone()],
+                        };
+                        assert_eq!(host.output, output);
+                        assert_eq!(
+                            host.keyboard.symbols,
+                            if *key == Key::Mode { !symbols } else { symbols }
+                        );
+                        assert_eq!(
+                            host.keyboard.shift,
+                            match key {
+                                Key::Shift => !shift,
+                                Key::Char(_) => false,
+                                _ => shift,
+                            }
+                        );
+                    });
+                    assert_owned(&host, cx);
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_shift_and_mode_transitions_survive_redraw(cx: &mut gpui::TestAppContext) {
+        let (host, cx) = mount(cx);
+        tap(cx, "sim-key-19"); // shift in letters
+        tap(cx, "sim-key-0"); // Q, consumes shift
+        tap(cx, "sim-key-0"); // q after redraw
+        tap(cx, "sim-key-28"); // bottom Mode in letters
+        tap(cx, "sim-key-0"); // 1 in symbols
+        tap(cx, "sim-key-20"); // upper ABC in symbols
+        tap(cx, "sim-key-0"); // q in letters again
+        host.read_with(cx, |host, _| {
+            assert_eq!(
+                host.output,
+                vec![
+                    Key::Char("Q".into()),
+                    Key::Char("q".into()),
+                    Key::Char("1".into()),
+                    Key::Char("q".into())
+                ]
+            );
+            assert!(!host.keyboard.shift && !host.keyboard.symbols);
+            assert_eq!(host.received.len(), 7);
+        });
+        assert_owned(&host, cx);
+    }
+
+    #[gpui::test]
+    fn rendered_suggestions_and_blank_area_preserve_focus(cx: &mut gpui::TestAppContext) {
+        let (host, cx) = mount(cx);
+        for (purpose, fill) in [
+            (TextInputPurpose::Email, "you@example.com"),
+            (TextInputPurpose::OneTimeCode, "123456"),
+        ] {
+            host.update(cx, |host, cx| {
+                host.config.purpose = purpose;
+                host.received.clear();
+                cx.notify();
+            });
+            tap(cx, "sim-suggestion");
+            host.read_with(cx, |host, _| {
+                assert_eq!(host.received, vec![Key::Char(fill.into())])
+            });
+            assert_owned(&host, cx);
+            draw(cx);
+            let bounds = cx.debug_bounds("sim-keyboard").unwrap();
+            // Bottom inset below the key rows is keyboard background, not a key.
+            pointer(cx, gpui::point(bounds.center().x, bounds.bottom() - px(8.)));
+            host.read_with(cx, |host, _| assert_eq!(host.received.len(), 1));
+            assert_owned(&host, cx);
+        }
+        // Positive control: the same pointer path outside the keyboard really
+        // does reach the ancestor and blur, so the preservation checks matter.
+        pointer(cx, gpui::point(px(10.), px(10.)));
+        cx.update(|window, cx| {
+            assert_eq!(host.read(cx).outside_down, 1);
+            assert!(!host.read(cx).focus.is_focused(window));
+        });
+    }
 
     #[test]
     fn shift_is_one_shot() {
