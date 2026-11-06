@@ -14,7 +14,12 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
-const OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+// Starting a remote process on a cold or loaded machine is not a liveness
+// probe. Keep one bounded allowance across channel open, exec, and API hello.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+// A spare is speculative, not a user-visible cold startup. Do not let an
+// abandoned refill keep an evicted master alive for the cold-start allowance.
+const SPARE_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_COMMAND: &str = "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; export PATH; exec jcode --no-update api --stdio";
 
@@ -94,6 +99,17 @@ impl PreparedSsh {
     }
 
     pub(crate) fn open_client(&self) -> Result<JcodeClient> {
+        self.open_client_timeout(OPEN_TIMEOUT)
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.0.ssh.is_closed()
+    }
+
+    /// A caller may use a shorter budget for a speculative cached attempt.
+    /// The budget applies only when no usable prepared channel is available.
+    /// Timing out a channel does not imply that the shared master is dead.
+    pub(crate) fn open_client_timeout(&self, timeout: Duration) -> Result<JcodeClient> {
         let spare = self.0.state.lock().unwrap().spare.take();
         let client = match spare {
             Some((created, client))
@@ -103,7 +119,7 @@ impl PreparedSsh {
             {
                 Ok(client)
             }
-            _ => self.0.ssh.open_client(),
+            _ => self.0.ssh.open_client_timeout(timeout),
         }?;
         self.refill();
         Ok(client)
@@ -124,7 +140,7 @@ impl PreparedSsh {
         let spawn = std::thread::Builder::new()
             .name("jcode-cloud-api-spare".into())
             .spawn(move || {
-                let client = ssh.open_client();
+                let client = ssh.open_client_timeout(SPARE_OPEN_TIMEOUT);
                 if let Some(owner) = owner.upgrade() {
                     let mut state = owner.state.lock().unwrap();
                     state.filling = false;
@@ -421,7 +437,8 @@ impl CloudSsh {
     }
 
     /// Open a fresh, independently attached `jcode api --stdio` channel.
-    /// Channel creation, exec and API hello share a two-second deadline.
+    /// Channel creation, exec and API hello share a 15-second deadline, allowing
+    /// cold process startup. This excludes authentication and session attach.
     pub fn open_client(&self) -> Result<JcodeClient> {
         self.open_client_timeout(OPEN_TIMEOUT)
     }
@@ -611,6 +628,7 @@ mod tests {
         withhold_first_hello: bool,
         first_channel: Option<russh::ChannelId>,
         ping_delay: Duration,
+        hello_delay: Duration,
         inspection_output: Option<Vec<u8>>,
     }
 
@@ -704,6 +722,7 @@ mod tests {
                         if self.withhold_first_hello && self.first_channel == Some(channel) {
                             continue;
                         }
+                        tokio::time::sleep(self.hello_delay).await;
                         frame(
                             session,
                             channel,
@@ -781,6 +800,20 @@ mod tests {
             ping_delay: Duration,
             inspection_output: Option<Vec<u8>>,
         ) -> (Self, CloudTarget, CloudSshKey) {
+            Self::start_with_options(
+                withhold_first_hello,
+                ping_delay,
+                inspection_output,
+                Duration::ZERO,
+            )
+        }
+
+        fn start_with_options(
+            withhold_first_hello: bool,
+            ping_delay: Duration,
+            inspection_output: Option<Vec<u8>>,
+            hello_delay: Duration,
+        ) -> (Self, CloudTarget, CloudSshKey) {
             let host = CloudSshKey::generate("host").unwrap();
             let key = CloudSshKey::generate("test-client").unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -801,6 +834,7 @@ mod tests {
                 withhold_first_hello,
                 first_channel: None,
                 ping_delay,
+                hello_delay,
                 inspection_output,
             };
             let (stop, stopped) = mpsc::channel();
@@ -849,6 +883,50 @@ mod tests {
                 .expect("SSH master leaked");
             self.thread.join().unwrap();
         }
+    }
+
+    #[test]
+    fn cold_api_hello_can_exceed_cached_probe_budget_without_reauthentication() {
+        let (server, target, key) = Server::start_with_options(
+            false,
+            Duration::ZERO,
+            None,
+            Duration::from_millis(2200),
+        );
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        // Avoid a background spare so this measures exactly one cold process.
+        prepared.0.state.lock().unwrap().filling = true;
+        let started = Instant::now();
+        let client = prepared.open_client().unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        client.ping().unwrap();
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 1);
+        drop(client);
+        drop(prepared);
+        server.finish();
+    }
+
+    #[test]
+    fn short_prepared_probe_timeout_preserves_master_for_cold_retry() {
+        let (server, target, key) = Server::start(true, Duration::ZERO);
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        prepared.0.state.lock().unwrap().filling = true;
+        let started = Instant::now();
+        let error = prepared
+            .open_client_timeout(Duration::from_millis(150))
+            .err()
+            .expect("withheld hello must exhaust probe budget");
+        assert_eq!(error.kind, ErrorKind::StartupTimeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!prepared.is_closed());
+        let client = prepared.open_client().unwrap();
+        client.ping().unwrap();
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 2);
+        drop(client);
+        drop(prepared);
+        server.finish();
     }
 
     #[test]
@@ -938,7 +1016,7 @@ mod tests {
         }
         // Stop automatic refill to prove taking a ready spare opens no channel.
         prepared.0.state.lock().unwrap().filling = true;
-        let second = prepared.open_client().unwrap();
+        let second = prepared.open_client_timeout(Duration::ZERO).unwrap();
         assert_eq!(server.counts.channels.load(Ordering::Relaxed), 2);
         assert!(prepared.0.state.lock().unwrap().spare.is_none());
         second.attach_session("second").unwrap();
