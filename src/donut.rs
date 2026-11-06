@@ -4,8 +4,11 @@
 
 use std::time::Instant;
 
-use gpui::{App, Bounds, Hsla, Pixels, Window, canvas, point, prelude::*, px, size};
 use crate::donut_field::{DonutOptions, render};
+use gpui::{
+    App, Bounds, Hsla, MouseButton, Pixels, Point, RenderOnce, Window, canvas, div, point,
+    prelude::*, px, size,
+};
 
 /// Luminance field resolution (site: 96 to 152 adaptive).
 const GRID: usize = 96;
@@ -26,7 +29,78 @@ fn sample(lum: &[f32], gx: f32, gy: f32) -> f32 {
         + at(x0 + 1, y0 + 1) * fx * fy
 }
 
+#[derive(Default)]
+struct Rotation {
+    last: Option<Point<Pixels>>,
+    tilt: f64,
+    spin: f64,
+}
+
+impl Rotation {
+    fn drag_to(&mut self, position: Point<Pixels>, side: f32) {
+        if let Some(last) = self.last {
+            let scale = std::f64::consts::TAU / side.max(1.) as f64;
+            self.spin += f32::from(position.x - last.x) as f64 * scale;
+            self.tilt += f32::from(position.y - last.y) as f64 * scale;
+            self.last = Some(position);
+        }
+    }
+}
+
+#[derive(IntoElement)]
+struct InteractiveDonut {
+    side: f32,
+    ink: Hsla,
+    started: Instant,
+}
+
+impl RenderOnce for InteractiveDonut {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self { side, ink, started } = self;
+        let rotation =
+            window.use_keyed_state("hero-donut-rotation", cx, |_, _| Rotation::default());
+        let tilt = rotation.read(cx).tilt;
+        let spin = rotation.read(cx).spin;
+        let down = rotation.clone();
+        let movement = rotation.clone();
+        let up = rotation.clone();
+        div()
+            .id("interactive-hero-donut")
+            .size(px(side))
+            .flex_none()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                down.update(cx, |state, cx| {
+                    state.last = Some(event.position);
+                    cx.notify();
+                });
+                cx.stop_propagation();
+            })
+            .on_mouse_move(move |event, _, cx| {
+                movement.update(cx, |state, cx| {
+                    if !event.dragging() {
+                        state.last = None;
+                    } else if state.last.is_some() {
+                        state.drag_to(event.position, side);
+                        cx.notify();
+                    }
+                });
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                up.update(cx, |state, _| state.last = None);
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                rotation.update(cx, |state, _| state.last = None);
+            })
+            .child(donut_canvas(side, ink, started, tilt, spin))
+    }
+}
+
 pub fn spinning_donut(side: f32, ink: Hsla, started: Instant) -> impl IntoElement {
+    InteractiveDonut { side, ink, started }
+}
+
+fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
@@ -37,8 +111,8 @@ pub fn spinning_donut(side: f32, ink: Hsla, started: Instant) -> impl IntoElemen
                 DonutOptions {
                     columns: GRID,
                     rows: GRID,
-                    tilt: 1.0 + (t * 0.4).sin() * 0.25,
-                    spin: t * 0.7,
+                    tilt: 1.0 + (t * 0.4).sin() * 0.25 + tilt,
+                    spin: t * 0.7 + spin,
                     steps: 48,
                     refine: true,
                     sharp: false,
@@ -80,4 +154,45 @@ pub fn spinning_donut(side: f32, ink: Hsla, started: Instant) -> impl IntoElemen
     )
     .size(px(side))
     .flex_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movement_without_press_does_not_rotate() {
+        let mut rotation = Rotation::default();
+        rotation.drag_to(point(px(70.), px(35.)), 140.);
+        assert_eq!((rotation.tilt, rotation.spin), (0., 0.));
+        assert!(rotation.last.is_none());
+    }
+
+    #[test]
+    fn drag_rotates_both_axes_and_tracks_incremental_motion() {
+        let origin = point(px(10.), px(20.));
+        let mut rotation = Rotation {
+            last: Some(origin),
+            ..Default::default()
+        };
+        rotation.drag_to(point(px(80.), px(55.)), 140.);
+        assert!((rotation.spin - std::f64::consts::PI).abs() < 1e-10);
+        assert!((rotation.tilt - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        rotation.drag_to(origin, 140.);
+        assert!(rotation.spin.abs() < 1e-10);
+        assert!(rotation.tilt.abs() < 1e-10);
+    }
+
+    #[test]
+    fn release_preserves_orientation_and_ignores_further_movement() {
+        let mut rotation = Rotation {
+            last: Some(point(px(0.), px(0.))),
+            ..Default::default()
+        };
+        rotation.drag_to(point(px(20.), px(30.)), 140.);
+        let orientation = (rotation.tilt, rotation.spin);
+        rotation.last = None;
+        rotation.drag_to(point(px(100.), px(100.)), 140.);
+        assert_eq!((rotation.tilt, rotation.spin), orientation);
+    }
 }
