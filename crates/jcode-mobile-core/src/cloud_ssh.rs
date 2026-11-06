@@ -17,6 +17,7 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 // Starting a remote process on a cold or loaded machine is not a liveness
 // probe. Keep one bounded allowance across channel open, exec, and API hello.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
 // A spare is speculative, not a user-visible cold startup. Do not let an
 // abandoned refill keep an evicted master alive for the cold-start allowance.
 const SPARE_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -364,7 +365,16 @@ impl CloudSsh {
                                     let result = tokio::time::timeout_at(
                                         tokio::time::Instant::from_std(deadline),
                                         async {
-                                            let channel = session.channel_open_session().await
+                                            // Opening a channel requires only a live SSH peer,
+                                            // not remote process startup. A stale mobile socket
+                                            // must not consume the cold API hello allowance.
+                                            let channel = tokio::time::timeout(
+                                                CHANNEL_OPEN_TIMEOUT,
+                                                session.channel_open_session(),
+                                            ).await.map_err(|_| Error::new(
+                                                ErrorKind::Disconnected,
+                                                "SSH peer did not respond while opening an API channel",
+                                            ))?
                                                 .map_err(|e| failed(format!("SSH channel open failed: {e}")))?;
                                             channel.exec(true, REMOTE_COMMAND).await
                                                 .map_err(|e| failed(format!("SSH API exec failed: {e}")))?;
@@ -438,7 +448,8 @@ impl CloudSsh {
 
     /// Open a fresh, independently attached `jcode api --stdio` channel.
     /// Channel creation, exec and API hello share a 15-second deadline, allowing
-    /// cold process startup. This excludes authentication and session attach.
+    /// cold process startup. Channel establishment itself is capped at two
+    /// seconds to detect a stale peer. Authentication and attach are separate.
     pub fn open_client(&self) -> Result<JcodeClient> {
         self.open_client_timeout(OPEN_TIMEOUT)
     }
@@ -629,6 +640,8 @@ mod tests {
         first_channel: Option<russh::ChannelId>,
         ping_delay: Duration,
         hello_delay: Duration,
+        withhold_channel_open: bool,
+        pending_channels: Vec<russh::server::ChannelOpenHandle>,
         inspection_output: Option<Vec<u8>>,
     }
 
@@ -674,6 +687,12 @@ mod tests {
         ) -> std::result::Result<(), Self::Error> {
             self.counts.channels.fetch_add(1, Ordering::Relaxed);
             self.first_channel.get_or_insert(channel.id());
+            if self.withhold_channel_open {
+                // Retain the reply until the connection closes, simulating a
+                // peer that authenticated but stopped acknowledging channels.
+                self.pending_channels.push(reply);
+                return Ok(());
+            }
             reply.accept().await;
             Ok(())
         }
@@ -805,6 +824,7 @@ mod tests {
                 ping_delay,
                 inspection_output,
                 Duration::ZERO,
+                false,
             )
         }
 
@@ -813,6 +833,7 @@ mod tests {
             ping_delay: Duration,
             inspection_output: Option<Vec<u8>>,
             hello_delay: Duration,
+            withhold_channel_open: bool,
         ) -> (Self, CloudTarget, CloudSshKey) {
             let host = CloudSshKey::generate("host").unwrap();
             let key = CloudSshKey::generate("test-client").unwrap();
@@ -835,6 +856,8 @@ mod tests {
                 first_channel: None,
                 ping_delay,
                 hello_delay,
+                withhold_channel_open,
+                pending_channels: Vec::new(),
                 inspection_output,
             };
             let (stop, stopped) = mpsc::channel();
@@ -892,6 +915,7 @@ mod tests {
             Duration::ZERO,
             None,
             Duration::from_millis(2200),
+            false,
         );
         let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
         // Avoid a background spare so this measures exactly one cold process.
@@ -904,6 +928,22 @@ mod tests {
         assert_eq!(server.counts.channels.load(Ordering::Relaxed), 1);
         drop(client);
         drop(prepared);
+        server.finish();
+    }
+
+    #[test]
+    fn stale_peer_channel_open_does_not_consume_cold_api_budget() {
+        let (server, target, key) = Server::start_with_options(
+            false, Duration::ZERO, None, Duration::ZERO, true,
+        );
+        let master = CloudSsh::connect(target, key).unwrap();
+        let started = Instant::now();
+        let error = master.open_client().err().expect("stale peer must time out");
+        assert_eq!(error.kind, ErrorKind::Disconnected);
+        assert!(started.elapsed() >= CHANNEL_OPEN_TIMEOUT);
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        drop(master);
         server.finish();
     }
 
