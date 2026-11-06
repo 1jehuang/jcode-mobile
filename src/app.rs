@@ -123,6 +123,8 @@ pub struct MobileApp {
     recent_dirs_asked: Option<String>,
     /// Directory sheet opened from the composer's location label.
     dir_picker: bool,
+    /// The directory sheet offers a new session rather than moving this tab.
+    dir_picker_new_session: bool,
     dir_input: Entity<TextInput>,
     /// Horizontal swipe between tabs, like the desktop workspace pull.
     swipe: crate::swipe::Swipe,
@@ -315,6 +317,7 @@ impl MobileApp {
             feel: Default::default(),
             recent_dirs_asked: None,
             dir_picker: false,
+            dir_picker_new_session: false,
             dir_input,
             swipe: Default::default(),
             spinner_step: 0,
@@ -1296,10 +1299,14 @@ impl MobileApp {
         let width = self.content_width();
         let (prev, next) = self.tab_neighbors();
         let now = std::time::Instant::now();
+        let offer_new = self.account.is_some() && self.swipe.new_session_preview(next.is_some()) == Some(1.);
         if let crate::swipe::Release::Switch(dir) = self.swipe.release(width, prev.is_some(), next.is_some(), now) {
             if let Some(id) = if dir < 0 { prev } else { next } {
                 self.focus_tab(id, cx);
             }
+        }
+        if offer_new {
+            self.offer_new_session(cx);
         }
         cx.notify();
     }
@@ -1318,6 +1325,7 @@ impl MobileApp {
             window.request_animation_frame();
         }
         let inner = self.render_chat_inner(t, window, cx);
+        let new_session_progress = self.account.as_ref().and_then(|_| self.swipe.new_session_preview(next.is_some()));
         div()
             .id("chat-swipe")
             .flex_1()
@@ -1325,6 +1333,10 @@ impl MobileApp {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .when_some(new_session_progress, |d, progress| {
+                d.child(label(if progress >= 1. { "Release to choose a directory for a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
+                    .px(px(16.)).py(px(8.)))
+            })
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
                 if ev.touch_phase == gpui::TouchPhase::Cancelled {
                     this.swipe.cancel(this.content_width(), std::time::Instant::now());

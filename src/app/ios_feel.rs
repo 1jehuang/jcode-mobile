@@ -71,14 +71,15 @@ impl MobileApp {
         Scene {
             pushed: self.screen == Screen::Settings,
             sheet_open: self.model_picker && chat,
-            at_top,
+            at_top: at_top && !self.dir_picker,
             dictate: cfg!(target_os = "ios") && chat && !self.offline
                 && self.account.is_some() && !self.voice.busy && self.voice.recording.is_none()
-                && !self.model_picker && self.tab_menu.is_none() && self.feel.menu.is_none()
+                && !self.model_picker && !self.dir_picker && self.tab_menu.is_none() && self.feel.menu.is_none()
                 && self.feel.selection.is_none() && self.feel.rename.is_none()
                 && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5,
             menus: chat
                 && !self.model_picker
+                && !self.dir_picker
                 && self.tab_menu.is_none()
                 && self.feel.menu.is_none()
                 && self.feel.selection.is_none()

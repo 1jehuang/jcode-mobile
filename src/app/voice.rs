@@ -29,7 +29,7 @@ impl MobileApp {
     fn scene_allows_voice(&self) -> bool {
         self.screen == Screen::Chat && !self.offline && self.account.is_some()
             && !self.voice.busy && self.voice.recording.is_none()
-            && !self.model_picker && self.tab_menu.is_none()
+            && !self.model_picker && !self.dir_picker && self.tab_menu.is_none()
     }
 
     fn finish_dictation(&mut self, generation: u64, tab: u64, result: Result<String, String>, cx: &mut Context<Self>) {

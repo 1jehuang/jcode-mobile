@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 /// Distance (px) of finger travel that counts as a committed swipe.
 pub const COMMIT: f32 = 120.0;
+/// Creating a session requires continuing beyond an ordinary tab swipe.
+pub const NEW_SESSION_COMMIT: f32 = COMMIT * 2.0;
 /// How long the slide-in takes after a commit, or the snap-back after a cancel.
 pub const SETTLE: Duration = Duration::from_millis(160);
 /// No wheel/touch event for this long ends the gesture (trackpads without phases).
@@ -45,6 +47,14 @@ pub enum Release {
 }
 
 impl Swipe {
+    /// The virtual panel after the last tab offers creation, never at the
+    /// opposite edge or while vertical scrolling. Use the same content-motion
+    /// convention as tab navigation: leftward travel reveals the panel right.
+    pub fn new_session_preview(&self, can_next: bool) -> Option<f32> {
+        (self.active && !can_next && self.dx < -COMMIT)
+            .then(|| ((-self.dx - COMMIT) / (NEW_SESSION_COMMIT - COMMIT)).clamp(0.0, 1.0))
+    }
+
     /// Cancel recognition without ever committing navigation. Keep a bounded
     /// snap-back animation, but discard travel and direction lock so a late
     /// release (or the idle-end handler) cannot switch tabs.
@@ -139,6 +149,27 @@ impl Swipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_session_requires_continued_travel_at_next_edge() {
+        let now = Instant::now();
+        let mut s = Swipe::default();
+        s.feed(-COMMIT, 0., now);
+        assert_eq!(s.new_session_preview(false), None);
+        s.feed(-60., 0., now);
+        assert_eq!(s.new_session_preview(false), Some(0.5));
+        assert_eq!(s.new_session_preview(true), None);
+        s.feed(-60., 0., now);
+        assert_eq!(s.new_session_preview(false), Some(1.));
+        s.cancel(390., now);
+        assert_eq!(s.new_session_preview(false), None);
+        s.feed(NEW_SESSION_COMMIT, 0., now);
+        assert_eq!(s.new_session_preview(false), None);
+        s.release(390., false, false, now);
+        s.feed(0., 30., now);
+        s.feed(-NEW_SESSION_COMMIT, 0., now);
+        assert_eq!(s.new_session_preview(false), None);
+    }
+
 
     // Fixed PRNG, intentionally dependency-free and reproducible across platforms.
     fn next(seed: &mut u64) -> u32 {

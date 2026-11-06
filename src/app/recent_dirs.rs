@@ -37,6 +37,7 @@ impl MobileApp {
 
     /// Open the directory sheet from the composer's location label.
     pub(super) fn open_dir_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dir_picker_new_session = false;
         self.ensure_recent_dirs();
         let current = self.session.working_dir.clone().unwrap_or_default();
         self.dir_input.update(cx, |t, cx| t.set_text(current, cx));
@@ -45,14 +46,30 @@ impl MobileApp {
         cx.notify();
     }
 
+    /// Offer a new tab without allocating a session or disturbing this one.
+    pub(super) fn offer_new_session(&mut self, cx: &mut Context<Self>) {
+        self.cancel_voice();
+        self.feel.g.cancel();
+        self.ensure_recent_dirs();
+        let current = self.session.working_dir.clone().unwrap_or_default();
+        self.dir_input.update(cx, |t, cx| t.set_text(current, cx));
+        self.dir_picker_new_session = true;
+        self.dir_picker = true;
+        cx.notify();
+    }
+
     /// Move to `dir`. A session's working dir is fixed once it starts, so an
     /// empty tab restarts there and a tab with history opens a new tab instead
     /// of discarding the conversation.
     pub(super) fn change_dir(&mut self, dir: String, cx: &mut Context<Self>) {
-        self.dir_picker = false;
         let dir = dir.trim().to_string();
         if dir.is_empty() {
             cx.notify();
+            return;
+        }
+        self.dir_picker = false;
+        if std::mem::take(&mut self.dir_picker_new_session) {
+            self.new_tab_in_dir(Some(dir), cx);
             return;
         }
         let same = self.session.working_dir.as_deref().map(|d| d.trim_end_matches('/')) == Some(dir.trim_end_matches('/'));
@@ -79,7 +96,9 @@ impl MobileApp {
                     .on_click(cx.listener(move |this, _, _, cx| this.change_dir(dir.clone(), cx))),
             );
         }
-        let note = if self.session.transcript.is_empty() {
+        let note = if self.dir_picker_new_session {
+            "Creates a new session. This conversation stays put."
+        } else if self.session.transcript.is_empty() {
             "Restarts this tab in the chosen directory."
         } else {
             "Opens a new tab there. This conversation stays put."
@@ -92,6 +111,7 @@ impl MobileApp {
             .bg(gpui::black().opacity(0.5))
             .child(div().id("dir-dismiss").flex_1().on_click(cx.listener(|this, _, _, cx| {
                 this.dir_picker = false;
+                this.dir_picker_new_session = false;
                 cx.notify()
             })))
             .child(
@@ -107,7 +127,7 @@ impl MobileApp {
                     .pt(px(8.))
                     .pb(px(12.))
                     .child(div().w_full().flex().justify_center().child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.text_muted)))
-                    .child(super::label("Directory", t.text_strong, 16.).px(px(16.)).pt(px(8.)))
+                    .child(super::label(if self.dir_picker_new_session { "New session · Choose directory" } else { "Directory" }, t.text_strong, 16.).px(px(16.)).pt(px(8.)))
                     .child(
                         div()
                             .mx(px(12.))
@@ -130,7 +150,7 @@ impl MobileApp {
                                     .rounded(px(10.))
                                     .bg(t.surface)
                                     .cursor_pointer()
-                                    .child(super::label("Go", t.text_strong, 13.))
+                                    .child(super::label(if self.dir_picker_new_session { "Create" } else { "Go" }, t.text_strong, 13.))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let dir = this.dir_input.read(cx).text().to_string();
                                         this.change_dir(dir, cx)
@@ -272,6 +292,43 @@ fn recent_dirs(sessions: &[SessionInfo]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn edge_offer_preserves_tab_until_directory_confirmed(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(super::super::SafeArea { top: 20., bottom: 0. }, window, cx)
+        });
+        view.update(cx, |app, cx| {
+            app.account = Some(jcode_mobile_core::Account {
+                api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
+            });
+            let original = app.active_tab;
+            app.session.working_dir = Some("/repo".into());
+            app.composer.update(cx, |input, cx| input.set_text("Keep my draft", cx));
+            app.swipe.feed(-crate::swipe::COMMIT, 0., std::time::Instant::now());
+            app.end_swipe(cx);
+            assert!(!app.dir_picker);
+            app.swipe.feed(-crate::swipe::NEW_SESSION_COMMIT, 0., std::time::Instant::now());
+            app.end_swipe(cx);
+            assert!(app.dir_picker && app.dir_picker_new_session);
+            assert_eq!(app.active_tab, original);
+            assert_eq!(app.tab_order.len(), 1);
+            assert_eq!(app.composer.read(cx).text(), "Keep my draft");
+            app.change_dir("  ".into(), cx);
+            assert!(app.dir_picker, "invalid paths leave the offer open");
+            // Choosing the same repo must still create a fresh session, even
+            // when the current tab has no transcript yet.
+            app.change_dir(" /repo ".into(), cx);
+            assert!(!app.dir_picker && !app.dir_picker_new_session);
+            assert_ne!(app.active_tab, original);
+            assert_eq!(app.tab_order.len(), 2);
+            assert_eq!(app.session.working_dir.as_deref(), Some("/repo"));
+            assert!(app.connection.is_none());
+            app.focus_tab(original, cx);
+            assert_eq!(app.composer.read(cx).text(), "Keep my draft");
+        });
+    }
 
     #[test]
     fn suggestions_prioritize_live_then_activity_and_hide_ineligible_sessions() {
