@@ -102,6 +102,15 @@ fn email_auth_outcomes_retry_cancel_and_stale_success_are_isolated(cx: &mut Test
         assert_eq!(app.login_token.as_deref(), Some("fixture-token"));
         assert!(app.focus_code);
     });
+    // The injected completion requests code focus on the next render. Let that
+    // focus initialize the preview keyboard, then settle its inset before the
+    // real raw touch down/up so the target cannot slide away between them.
+    // This fixture tests auth outcomes, not the keyboard's entrance animation.
+    draw(cx);
+    view.update(cx, |app, cx| {
+        app.inset_anim = None;
+        cx.notify();
+    });
     draw(cx);
     tap(cx, "use-other-email");
     view.update(cx, |app, cx| {
