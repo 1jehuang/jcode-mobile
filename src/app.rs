@@ -27,6 +27,7 @@ mod synced_sessions;
 mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
+mod panel_preview;
 mod voice;
 mod cloud_machine;
 #[cfg(test)]
@@ -1321,6 +1322,11 @@ impl MobileApp {
         }
         let (prev, next) = self.tab_neighbors();
         let (offset, settling) = self.swipe.offset(width, prev.is_some(), next.is_some(), now);
+        let neighbor = if offset < 0. { next } else if offset > 0. { prev } else { None };
+        // Enlarge the restrained nudge into a useful peek, including the same
+        // geometry during cancellation so the two panels snap back together.
+        let offset = if neighbor.is_some() { (offset * 6.).clamp(-width * 0.8, width * 0.8) } else { offset };
+        let preview = neighbor.and_then(|id| self.render_panel_preview(id, t));
         if settling || self.swipe.active {
             window.request_animation_frame();
         }
@@ -1328,6 +1334,7 @@ impl MobileApp {
         let new_session_progress = self.account.as_ref().and_then(|_| self.swipe.new_session_preview(next.is_some()));
         div()
             .id("chat-swipe")
+            .relative()
             .flex_1()
             .min_h_0()
             .flex()
@@ -1364,6 +1371,13 @@ impl MobileApp {
                     .flex_col()
                     .child(inner),
             )
+            .when_some(preview, |d, preview| {
+                d.child(div().absolute().top_0().bottom_0()
+                    .left(px(if offset < 0. { width + offset } else { -width + offset }))
+                    .w(px(width)).overflow_hidden().bg(t.background)
+                    .border_l_1().border_color(t.border)
+                    .child(preview))
+            })
             .into_any_element()
     }
 
