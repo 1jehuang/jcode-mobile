@@ -67,9 +67,19 @@ Receipts:
 - Integrated check: `20261106-024703275-1159701`.
 - App regression suite: `20261106-024707363-1160353`, 142 passed,
   zero failed, two ignored benchmarks. Benchmarks are not behavioral coverage.
-- Final lint: `20261106-025039316-197087-pre`, success with existing warnings.
+- Final lint: `20261106-025444073-1226367`, explicit top-level
+  `JUSTRUST_BUILDD_PREBUILD=0 justrust clippy --tests`, success with existing
+  warnings. The earlier exact-source prebuild also passed.
 - Final measured-height key regressions: `20261106-025059472-1197510`,
   four passed, zero failed.
+- Full headless environment matrix: task `153022kk55`, exit zero, 317.69 s.
+  Every dark/light, normal/reduced-motion, 1.0/1.6-scale cell passed all
+  276 behavioral tests with zero failures and zero filtered tests, totaling
+  2,208 passing executions. Eight ignored tests per cell are seven opt-in
+  benchmarks and one inventory dump, not behavioral passes. First/final
+  receipts: `20261106-024913084-1183937` and
+  `20261106-025352472-1220505`.
+- Shared core: `20261106-025152571-1205014`, 55 passed, zero failed.
 
 ## Reproduce
 
