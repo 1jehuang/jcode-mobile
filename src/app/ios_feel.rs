@@ -438,6 +438,10 @@ impl MobileApp {
                     let e = e.clone();
                     let claim = h
                         .update(cx, |this, cx| {
+                            // Onboarding owns its hero drag, not the chat gesture stack.
+                            if this.screen == Screen::SignIn {
+                                return false;
+                            }
                             this.sync_gestures();
                             if e.phase == TouchPhase::Cancelled {
                                 this.feel.g.cancel();

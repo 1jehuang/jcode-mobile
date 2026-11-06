@@ -11,9 +11,10 @@ use gpui::{
 };
 
 /// Luminance field resolution (site: 96 to 152 adaptive).
-const GRID: usize = 96;
-/// Halftone screen density across the canvas (the brand mark uses 50).
-const CELLS: f32 = 50.0;
+const GRID: usize = 144;
+/// Halftone density tuned for the 140-point onboarding hero. Wider spacing
+/// keeps the dots separate instead of forming a shimmering checkerboard.
+const CELLS: f32 = 32.0;
 
 fn sample(lum: &[f32], gx: f32, gy: f32) -> f32 {
     let g = GRID as f32;
@@ -37,6 +38,21 @@ struct Rotation {
 }
 
 impl Rotation {
+    fn touch_drag(&mut self, event: &gpui::TouchDragEvent, side: f32) {
+        if event.phase == gpui::TouchPhase::Started {
+            self.last = Some(event.start_position);
+        }
+        if event.phase != gpui::TouchPhase::Cancelled {
+            self.drag_to(event.position, side);
+        }
+        if matches!(
+            event.phase,
+            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+        ) {
+            self.last = None;
+        }
+    }
+
     fn drag_to(&mut self, position: Point<Pixels>, side: f32) {
         if let Some(last) = self.last {
             let scale = std::f64::consts::TAU / side.max(1.) as f64;
@@ -64,8 +80,11 @@ impl RenderOnce for InteractiveDonut {
         let down = rotation.clone();
         let movement = rotation.clone();
         let up = rotation.clone();
+        let touch = rotation.clone();
         div()
             .id("interactive-hero-donut")
+            .debug_selector(|| "interactive-hero-donut".into())
+            .relative()
             .size(px(side))
             .flex_none()
             .cursor_pointer()
@@ -96,6 +115,37 @@ impl RenderOnce for InteractiveDonut {
                 rotation.update(cx, |state, _| state.last = None);
             })
             .child(donut_canvas(side, ink, started, tilt, spin))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let rotation = touch.clone();
+                        window.on_mouse_event(
+                            move |event: &gpui::TouchDragEvent, phase, window, cx| {
+                                if phase != gpui::DispatchPhase::Bubble
+                                    || !bounds.contains(&event.start_position)
+                                {
+                                    return;
+                                }
+                                rotation.update(cx, |state, cx| {
+                                    if event.phase == gpui::TouchPhase::Started {
+                                        window.blur(cx);
+                                        window.dismiss_virtual_keyboard();
+                                    }
+                                    state.touch_drag(event, side);
+                                    cx.notify();
+                                });
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            },
+                        );
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(side)),
+            )
     }
 }
 
@@ -139,7 +189,7 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
                     if v <= 0.04 {
                         continue;
                     }
-                    let r = v.powf(0.85) * s * 0.62;
+                    let r = v.powf(0.85) * s * 0.48;
                     window.paint_quad(
                         gpui::fill(
                             Bounds::new(
@@ -162,6 +212,51 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touch_drag_rotates_from_contact_origin_and_cancels_without_jumping() {
+        use gpui::{TouchDragEvent, TouchPhase};
+        let mut rotation = Rotation::default();
+        let mut event = TouchDragEvent {
+            phase: TouchPhase::Started,
+            start_position: point(px(10.), px(20.)),
+            position: point(px(45.), px(55.)),
+        };
+        rotation.touch_drag(&event, 140.);
+        assert!((rotation.spin - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!((rotation.tilt - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        event.phase = TouchPhase::Moved;
+        event.position = point(px(80.), px(90.));
+        rotation.touch_drag(&event, 140.);
+        assert!((rotation.spin - std::f64::consts::PI).abs() < 1e-10);
+        let orientation = (rotation.tilt, rotation.spin);
+        event.phase = TouchPhase::Cancelled;
+        event.position = point(px(400.), px(400.));
+        rotation.touch_drag(&event, 140.);
+        assert_eq!((rotation.tilt, rotation.spin), orientation);
+        assert!(rotation.last.is_none());
+        event.phase = TouchPhase::Moved;
+        rotation.touch_drag(&event, 140.);
+        assert_eq!((rotation.tilt, rotation.spin), orientation);
+    }
+
+    #[test]
+    fn touch_release_applies_final_position_and_ends_drag() {
+        use gpui::{TouchDragEvent, TouchPhase};
+        let mut rotation = Rotation::default();
+        let mut event = TouchDragEvent {
+            phase: TouchPhase::Started,
+            start_position: point(px(0.), px(0.)),
+            position: point(px(10.), px(10.)),
+        };
+        rotation.touch_drag(&event, 140.);
+        event.phase = TouchPhase::Ended;
+        event.position = point(px(70.), px(35.));
+        rotation.touch_drag(&event, 140.);
+        assert!((rotation.spin - std::f64::consts::PI).abs() < 1e-10);
+        assert!((rotation.tilt - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!(rotation.last.is_none());
+    }
 
     #[test]
     fn movement_without_press_does_not_rotate() {
