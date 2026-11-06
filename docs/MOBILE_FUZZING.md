@@ -210,6 +210,35 @@ Assertions compare independent simple models where practical and check state and
 boundary invariants. Finite, deterministic campaigns can find regressions, not
 prove the absence of bugs or cover every gesture/action interleaving.
 
+### Native acceptance still required
+
+Use an isolated test account on an iPhone or supported iOS simulator, never a
+production account for destructive actions. Keep screenshots, device/OS version,
+configuration, and failure steps with the test revision. The remaining checklist is:
+
+- Complete and cancel each supported email/Apple/browser login flow, including
+  switching flows while a response is pending and relaunching after sign-out.
+- Type with the actual software keyboard, Unicode IMEs, autocorrection, hardware
+  keys and selection handles. Rotate during editing and confirm sheet actions
+  remain reachable with the keyboard and large accessibility text.
+- Exercise VoiceOver activation/focus and native copy/share sheets. Verify safe
+  areas, clipped content, animations and actual haptic feedback visually/on hardware.
+- Deny then grant microphone permission, start/release/lock/cancel a recording,
+  interrupt/background it, and verify successful transcription cannot overwrite a
+  newly typed draft or arrive in another tab. Verify the recording time limit.
+- Use an authorized test service to disconnect/reconnect during streaming, send,
+  stop, retry, model/directory changes, remote fork and session continuation.
+  Verify server acknowledgements, not just local optimistic intent.
+- Deliver actual cold/warm deep links and APNs notifications/replies, switch tabs
+  during connection, and check exactly-once routing without lost drafts.
+- Verify real Git inspection/cloud inventory errors and timeout recovery, native
+  badge/Live Activity updates, persistence, and an explicitly authorized disposable
+  account deletion. Offline fixtures intentionally do not perform these operations.
+
+These are **pending manual/integration checks**, not recorded passes. The macOS
+iOS monkey workflow and scripts can supply additional native random input, but
+random taps alone do not establish the semantic outcomes above.
+
 This is **not actual iOS acceptance testing**. UIKit text interaction, OS keyboard
 and autocorrect behavior, real IME integration, haptic hardware, accessibility
 services, device timing, GPU rendering, and screenshot appearance still require
