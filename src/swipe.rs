@@ -102,10 +102,12 @@ impl Swipe {
         }
         // Content moves with the finger: dragging left (dx < 0) reveals the next tab.
         if dx <= -COMMIT && can_next {
-            self.settle = Some((resist(width, width), now));
+            // The drag already provides motion. Do not slide the newly
+            // focused panel back in from the opposite side after switching.
+            self.settle = None;
             Release::Switch(1)
         } else if dx >= COMMIT && can_prev {
-            self.settle = Some((resist(-width, width), now));
+            self.settle = None;
             Release::Switch(-1)
         } else {
             let edge = (dx > 0.0 && !can_prev) || (dx < 0.0 && !can_next);
@@ -279,15 +281,24 @@ mod tests {
         assert!(s.feed(-30.0, 0.0, now));
         s.feed(-100.0, 0.0, now);
         assert!(matches!(s.release(390.0, true, true, now), Release::Switch(1)));
-        // New panel enters subtly rather than crossing the whole screen.
-        let (o, moving) = s.offset(390.0, true, true, now);
-        if crate::system::reduce_motion() {
-            assert_eq!((o, moving), (0.0, false));
-        } else {
-            assert!(moving && o > 0.0 && o <= 48.0);
-        }
+        // A committed switch must not start a second panel animation.
+        assert_eq!(s.offset(390.0, true, true, now), (0.0, false));
         let (o, moving) = s.offset(390.0, true, true, now + SETTLE);
         assert!(!moving && o == 0.0);
+    }
+
+    #[test]
+    fn committed_swipes_in_either_direction_have_no_followup_motion() {
+        let now = Instant::now();
+        for (dx, direction) in [(-COMMIT, 1), (COMMIT, -1)] {
+            let mut s = Swipe::default();
+            assert!(s.feed(dx, 0., now));
+            assert!(s.offset(390., true, true, now).0.abs() > 0.);
+            assert!(matches!(s.release(390., true, true, now), Release::Switch(d) if d == direction));
+            for ms in [0, 16, 80, 160, 200] {
+                assert_eq!(s.offset(390., true, true, now + Duration::from_millis(ms)), (0., false));
+            }
+        }
     }
 
     #[test]
