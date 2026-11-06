@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub const COMMIT: f32 = 120.0;
 /// Creating a session requires continuing beyond an ordinary tab swipe.
 pub const NEW_SESSION_COMMIT: f32 = COMMIT * 2.0;
-/// How long the slide-in takes after a commit, or the snap-back after a cancel.
+/// How long the snap-back takes after a canceled swipe.
 pub const SETTLE: Duration = Duration::from_millis(160);
 /// No wheel/touch event for this long ends the gesture (trackpads without phases).
 pub const IDLE_END: Duration = Duration::from_millis(160);
@@ -53,6 +53,22 @@ impl Swipe {
     pub fn new_session_preview(&self, can_next: bool) -> Option<f32> {
         (self.active && !can_next && self.dx < -COMMIT)
             .then(|| ((-self.dx - COMMIT) / (NEW_SESSION_COMMIT - COMMIT)).clamp(0.0, 1.0))
+    }
+
+    /// Destination direction and progress toward committing, only while dragging.
+    /// Missing neighbors and vertical scrolling never advertise navigation.
+    pub fn preview(&self, can_prev: bool, can_next: bool) -> Option<(i32, f32)> {
+        if !self.active {
+            return None;
+        }
+        let direction = if self.dx < 0.0 && can_next {
+            1
+        } else if self.dx > 0.0 && can_prev {
+            -1
+        } else {
+            return None;
+        };
+        Some((direction, (self.dx.abs() / COMMIT).clamp(0.0, 1.0)))
     }
 
     /// Cancel recognition without ever committing navigation. Keep a bounded
@@ -149,6 +165,7 @@ impl Swipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn new_session_requires_continued_travel_at_next_edge() {
         let now = Instant::now();
@@ -170,6 +187,24 @@ mod tests {
         assert_eq!(s.new_session_preview(false), None);
     }
 
+    #[test]
+    fn tab_preview_tracks_direction_threshold_and_cancellation() {
+        let now = Instant::now();
+        let mut s = Swipe::default();
+        assert_eq!(s.preview(true, true), None);
+        s.feed(-60., 0., now);
+        assert_eq!(s.preview(true, true), Some((1, 0.5)));
+        assert_eq!(s.preview(true, false), None);
+        s.feed(-180., 0., now);
+        assert_eq!(s.preview(true, true), Some((1, 1.)));
+        s.feed(300., 0., now);
+        assert_eq!(s.preview(true, true), Some((-1, 0.5)));
+        assert_eq!(s.preview(false, true), None);
+        s.cancel(390., now);
+        assert_eq!(s.preview(true, true), None);
+        s.feed(0., 30., now);
+        assert_eq!(s.preview(true, true), None);
+    }
 
     // Fixed PRNG, intentionally dependency-free and reproducible across platforms.
     fn next(seed: &mut u64) -> u32 {

@@ -141,6 +141,7 @@ impl MobileApp {
             // Voice has its own held/locked lifecycle, separate from reconnect.
             dictate: false,
             menus: chat
+                && !self.git_info.open
                 && !self.model_picker
                 && !self.dir_picker
                 && self.tab_menu.is_none()
@@ -446,6 +447,8 @@ impl MobileApp {
                     }
                     let (p, b) = (e.position, e.button);
                     h.update(cx, |this, cx| {
+                        if b == MouseButton::Left && this.git_down(p) { return; }
+                        if this.git_info.open { return; }
                         this.sync_gestures();
                         match b {
                             MouseButton::Left => this.feel.g.down(p, false),
@@ -468,6 +471,8 @@ impl MobileApp {
                     let p = e.position;
                     let active = h
                         .update(cx, |this, cx| {
+                            if this.git_move(p, cx) { return true; }
+                            if this.git_info.open { return false; }
                             this.feel.g.moved(p);
                             this.feel_scrub_tabs(cx);
                             let d = this.feel.g.dragging();
@@ -486,7 +491,11 @@ impl MobileApp {
                     if phase != DispatchPhase::Capture || e.button != MouseButton::Left {
                         return;
                     }
-                    let swallow = h.update(cx, |this, cx| this.feel_up(window, cx)).unwrap_or(false);
+                    let swallow = h.update(cx, |this, cx| {
+                        if this.git_up(false, cx) { return true; }
+                        if this.git_info.open { return false; }
+                        this.feel_up(window, cx)
+                    }).unwrap_or(false);
                     if swallow {
                         cx.stop_propagation();
                     }
@@ -502,6 +511,7 @@ impl MobileApp {
                     let p = e.position;
                     let consumed = h
                         .update(cx, |this, cx| {
+                            if this.git_info.open { return false; }
                             this.sync_gestures();
                             if this.feel_voice_wheel(e, cx) {
                                 return true;
@@ -539,6 +549,17 @@ impl MobileApp {
                     let e = e.clone();
                     let claim = h
                         .update(cx, |this, cx| {
+                            if this.git_info.open { return false; }
+                            if e.phase == TouchPhase::Started && this.git_down(e.start_position) {
+                                this.git_move(e.position, cx);
+                                return true;
+                            }
+                            if this.git_move(e.position, cx) {
+                                if matches!(e.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                                    this.git_up(e.phase == TouchPhase::Cancelled, cx);
+                                }
+                                return true;
+                            }
                             // Onboarding owns its hero drag, not the chat gesture stack.
                             if this.screen == Screen::SignIn {
                                 return false;

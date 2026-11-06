@@ -3,11 +3,13 @@ use super::a11y::A11yExt as _;
 use super::{MobileApp, Screen};
 use crate::haptics::{self, Haptic};
 use crate::theme::Theme;
-use gpui::{Context, SharedString, div, prelude::*, px};
+use gpui::{Context, SharedString, div, prelude::*, px, relative};
 use jcode_mobile_core::{
     Account,
     mobile_sync::{self, Command, SyncedSession},
 };
+
+const SESSION_PAGE_SIZE: usize = 5;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -19,6 +21,16 @@ pub(super) struct State {
     uncertain_submission: bool,
     polling: Option<String>,
     error: Option<String>,
+    /// Additional pages explicitly requested in the drawer.
+    visible_pages: usize,
+}
+
+impl State {
+    fn visible_limit(&self) -> usize {
+        self.visible_pages
+            .saturating_add(1)
+            .saturating_mul(SESSION_PAGE_SIZE)
+    }
 }
 
 fn same_account(current: Option<&Account>, expected: &Account) -> bool {
@@ -50,11 +62,84 @@ impl State {
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_sessions_reveal_five_at_a_time() {
+        let mut state = State::default();
+        assert_eq!(state.visible_limit(), 5);
+        state.visible_pages += 1;
+        assert_eq!(state.visible_limit(), 10);
+        state.visible_pages = usize::MAX;
+        assert_eq!(state.visible_limit(), usize::MAX);
+    }
+
+    #[gpui::test]
+    fn local_sidebar_discloses_more_and_searches_hidden_sessions(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = MobileApp::new_offline(
+                super::super::SafeArea {
+                    top: 20.,
+                    bottom: 0.,
+                },
+                window,
+                cx,
+            );
+            app.screen = Screen::Chat;
+            app.device = Some((390., 844.));
+            app.drawer_open = true;
+            app.drawer_t = 1.;
+            app.synced.sessions = (0..12)
+                .map(|i| {
+                    serde_json::from_value(serde_json::json!({
+                "session_id": format!("local-{i}"), "source": "local", "title": format!("Work {i}")
+            })).unwrap()
+                })
+                .collect();
+            app
+        });
+        cx.simulate_resize(gpui::size(px(390.), px(844.)));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("drawer-local-session-local-4").is_some());
+        assert!(cx.debug_bounds("drawer-local-session-local-5").is_none());
+        let more = cx.debug_bounds("drawer-local-see-more").unwrap();
+        cx.simulate_click(more.center(), gpui::Modifiers::default());
+        view.update(cx, |app, _| assert_eq!(app.synced.visible_limit(), 10));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("drawer-local-session-local-9").is_some());
+        assert!(cx.debug_bounds("drawer-local-session-local-10").is_none());
+        view.update(cx, |app, cx| {
+            app.drawer_search
+                .update(cx, |input, cx| input.set_text("Work 11", cx));
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("drawer-local-session-local-11").is_some());
+        assert!(cx.debug_bounds("drawer-local-see-more").is_none());
+        let row = cx.debug_bounds("drawer-local-session-local-11").unwrap();
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        view.update(cx, |app, _| {
+            assert_eq!(app.synced.selected.as_deref(), Some("local-11"))
+        });
+    }
+
     #[gpui::test]
     fn unavailable_continuation_and_refresh_stay_silent(cx: &mut gpui::TestAppContext) {
         cx.update(super::super::init);
         let (view, cx) = cx.add_window_view(|window, cx| {
-            MobileApp::new_offline(super::super::SafeArea { top: 20., bottom: 0. }, window, cx)
+            MobileApp::new_offline(
+                super::super::SafeArea {
+                    top: 20.,
+                    bottom: 0.,
+                },
+                window,
+                cx,
+            )
         });
         view.update(cx, |app, cx| {
             let (_, feedback) = haptics::capture(|| {
@@ -99,7 +184,9 @@ mod tests {
 
 impl MobileApp {
     pub(super) fn refresh_synced_sessions(&mut self, cx: &mut Context<Self>) {
-        if self.offline { return; }
+        if self.offline {
+            return;
+        }
         if self.synced.loading {
             return;
         }
@@ -153,7 +240,9 @@ impl MobileApp {
     }
 
     pub(super) fn continue_synced_in_cloud(&mut self, cx: &mut Context<Self>) {
-        if self.offline { return; }
+        if self.offline {
+            return;
+        }
         if self.synced.loading
             || self.synced.submitting
             || self.synced.uncertain_submission
@@ -222,7 +311,9 @@ impl MobileApp {
     }
 
     fn poll_transfer(&mut self, command: Command, account: Account, cx: &mut Context<Self>) {
-        if self.offline { return; }
+        if self.offline {
+            return;
+        }
         if self.synced.polling.is_some() {
             return;
         }
@@ -326,14 +417,11 @@ impl MobileApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let query = self.drawer_search.read(cx).text().trim().to_lowercase();
-        let mut section = div().flex().flex_col().px(px(10.)).gap(px(2.));
-        section = section.child(
-            div()
-                .pt(px(5.))
-                .text_size(crate::system::fs(11.))
-                .text_color(t.text_muted)
-                .child("Synced from your computers"),
-        );
+        let mut section = div().flex().flex_col();
+        section = section.child(super::sidebar::section_label(
+            "Synced from your computers",
+            t,
+        ));
         if self.synced.loading {
             section = section.child(
                 div()
@@ -353,14 +441,26 @@ impl MobileApp {
                     .child(error.clone()),
             );
         }
-        for session in self.synced.sessions.iter().filter(|s| {
-            query.is_empty()
-                || s.label().to_lowercase().contains(&query)
-                || s.session_id.to_lowercase().contains(&query)
-                || s.host
-                    .as_deref()
-                    .is_some_and(|h| h.to_lowercase().contains(&query))
-        }) {
+        let matching: Vec<_> = self
+            .synced
+            .sessions
+            .iter()
+            .filter(|s| {
+                query.is_empty()
+                    || s.label().to_lowercase().contains(&query)
+                    || s.session_id.to_lowercase().contains(&query)
+                    || s.host
+                        .as_deref()
+                        .is_some_and(|h| h.to_lowercase().contains(&query))
+            })
+            .collect();
+        // Search includes every local session, including those not yet revealed.
+        let limit = if query.is_empty() {
+            self.synced.visible_limit()
+        } else {
+            matching.len()
+        };
+        for session in matching.iter().take(limit) {
             let sid = session.session_id.clone();
             let selected = self.synced.selected.as_ref() == Some(&sid);
             let latest = self
@@ -374,23 +474,51 @@ impl MobileApp {
                 || self.synced.loading
                 || latest.is_some_and(|c| matches!(c.status.as_str(), "queued" | "running"));
             let mut row = div()
+                .id(SharedString::from(format!("drawer-local-session-{sid}")))
+                .debug_selector({
+                    let sid = sid.clone();
+                    move || format!("drawer-local-session-{sid}")
+                })
+                .mx(px(8.))
+                .min_h(px(super::sidebar::SESSION_ROW_MIN))
                 .flex()
                 .flex_col()
+                .justify_center()
                 .gap(px(1.))
-                .rounded(px(8.))
-                .bg(t.surface)
-                .px(px(8.))
-                .py(px(4.))
+                .rounded(px(10.))
+                .bg(if selected { t.surface } else { t.raised })
+                .active(|el| el.bg(t.surface))
+                .cursor_pointer()
+                .px(px(10.))
+                .py(px(3.))
+                .on_click(cx.listener({
+                    let sid = sid.clone();
+                    move |this, _, _, cx| {
+                        if this.synced.selected.as_ref() != Some(&sid) {
+                            this.synced.selected = Some(sid.clone());
+                            haptics::play(Haptic::Selection);
+                            this.transfer_input
+                                .update(cx, |input, cx| input.set_text("", cx));
+                            cx.notify();
+                        }
+                    }
+                }))
                 .child(
                     div()
+                        .pl(px(12.))
+                        .min_w_0()
                         .truncate()
                         .text_size(crate::system::fs(13.))
-                        .text_color(t.text_strong)
+                        .line_height(relative(1.2))
+                        .text_color(if selected { t.text_strong } else { t.text })
                         .child(session.label().to_string()),
                 )
                 .child(
                     div()
-                        .text_size(crate::system::fs(11.))
+                        .pl(px(12.))
+                        .truncate()
+                        .text_size(crate::system::fs(10.5))
+                        .line_height(relative(1.15))
                         .text_color(t.text_muted)
                         .child(format!(
                             "Local · {}",
@@ -419,6 +547,7 @@ impl MobileApp {
                         .text_color(t.accent)
                         .child("Open cloud continuation")
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
                             this.screen = Screen::Chat;
                             this.drawer_open_session(destination.clone(), cx);
                         })),
@@ -439,35 +568,60 @@ impl MobileApp {
                 row = row.child(div().text_size(crate::system::fs(12.)).text_color(t.text_secondary).child("Creates a new cloud session from synced text. Local files and running tools are not moved. The original stays intact."))
                     .child(self.transfer_input.clone());
             }
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!("transfer-{sid}")))
-                    .a11y_text_button()
-                    .min_h(px(if selected { 44. } else { 26. }))
-                    .text_size(crate::system::fs(12.))
-                    .cursor_pointer()
-                    .text_color(if pending { t.text_muted } else { t.accent })
-                    .child(if pending {
-                        "Continuing in cloud…"
-                    } else {
-                        "Continue in cloud"
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if pending {
-                            return;
-                        }
-                        if this.synced.selected.as_ref() == Some(&sid) {
-                            this.continue_synced_in_cloud(cx);
+            if selected || pending {
+                row = row.child(
+                    div()
+                        .id(SharedString::from(format!("transfer-{sid}")))
+                        .a11y_text_button()
+                        .min_h(px(if selected { 44. } else { 26. }))
+                        .text_size(crate::system::fs(12.))
+                        .cursor_pointer()
+                        .text_color(if pending { t.text_muted } else { t.accent })
+                        .child(if pending {
+                            "Continuing in cloud…"
                         } else {
-                            this.synced.selected = Some(sid.clone());
-                            haptics::play(Haptic::Selection);
-                            this.transfer_input
-                                .update(cx, |input, cx| input.set_text("", cx));
-                        }
+                            "Continue in cloud"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if pending {
+                                return;
+                            }
+                            if this.synced.selected.as_ref() == Some(&sid) {
+                                this.continue_synced_in_cloud(cx);
+                            } else {
+                                this.synced.selected = Some(sid.clone());
+                                haptics::play(Haptic::Selection);
+                                this.transfer_input
+                                    .update(cx, |input, cx| input.set_text("", cx));
+                            }
+                            cx.notify();
+                        })),
+                );
+            }
+            section = section.child(row);
+        }
+        if matching.len() > limit {
+            section = section.child(
+                div()
+                    .id("drawer-local-see-more")
+                    .a11y_text_button()
+                    .debug_selector(|| "drawer-local-see-more".into())
+                    .mx(px(8.))
+                    .px(px(22.))
+                    .min_h(px(44.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(crate::system::fs(12.))
+                    .text_color(t.accent)
+                    .child(format!("See more ({})", matching.len() - limit))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.synced.visible_pages = this.synced.visible_pages.saturating_add(1);
+                        haptics::play(Haptic::Selection);
                         cx.notify();
                     })),
             );
-            section = section.child(row);
         }
         section
     }

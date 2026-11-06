@@ -18,7 +18,7 @@ const MAX_WIDTH: f32 = 340.;
 /// Apple HIG minimum touch target.
 const ROW_MIN: f32 = 44.;
 /// Dense list rows, independent of the primary action touch targets.
-const SESSION_ROW_MIN: f32 = 38.;
+pub(super) const SESSION_ROW_MIN: f32 = 38.;
 const TAB_ROW_MIN: f32 = 32.;
 const GROUP_ROW_MIN: f32 = 28.;
 /// Drag-to-close travel (share of drawer width) that commits the close.
@@ -636,7 +636,7 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-fn section_label(text: &'static str, t: &Theme) -> impl IntoElement {
+pub(super) fn section_label(text: &'static str, t: &Theme) -> impl IntoElement {
     div()
         .px(px(16.))
         .pt(px(5.))

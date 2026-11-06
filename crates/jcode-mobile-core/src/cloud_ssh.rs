@@ -160,6 +160,7 @@ impl std::fmt::Debug for CloudSsh {
 
 enum Command {
     Inspect {
+        command: String,
         reply: mpsc::Sender<std::result::Result<Vec<u8>, String>>,
     },
     Open {
@@ -300,7 +301,7 @@ impl CloudSsh {
                 loop {
                     tokio::select! {
                         request = requests.recv() => match request {
-                            Some(Command::Inspect { reply }) => {
+                            Some(Command::Inspect { command, reply }) => {
                                 let session = session.clone();
                                 tokio::spawn(async move {
                                     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
@@ -308,7 +309,7 @@ impl CloudSsh {
                                         let mut channel = tokio::time::timeout_at(deadline, session.channel_open_session())
                                             .await.map_err(|_| ())?.map_err(|_| ())?;
                                         let result = tokio::time::timeout_at(deadline, async {
-                                            channel.exec(true, crate::cloud_machine::INSPECTION_COMMAND).await.map_err(|_| ())?;
+                                            channel.exec(true, command.as_bytes()).await.map_err(|_| ())?;
                                             let mut output = Vec::new();
                                             let mut received = 0usize;
                                             let mut success = false;
@@ -403,8 +404,17 @@ impl CloudSsh {
 
     /// Execute only the built-in read-only inspection, never caller-supplied shell.
     pub(crate) fn inspect_machine(&self) -> std::result::Result<Vec<u8>, String> {
+        self.inspect_bounded(crate::cloud_machine::INSPECTION_COMMAND.to_string())
+    }
+
+    pub(crate) fn inspect_git(&self, working_dir: &str) -> std::result::Result<Vec<u8>, String> {
+        self.inspect_bounded(crate::git_info::inspection_command(working_dir)?)
+    }
+
+    // Only built-in inspection builders may supply commands.
+    fn inspect_bounded(&self, command: String) -> std::result::Result<Vec<u8>, String> {
         let (reply, result) = mpsc::channel();
-        self.0.commands.send(Command::Inspect { reply })
+        self.0.commands.send(Command::Inspect { command, reply })
             .map_err(|_| "Machine inspection connection closed".to_string())?;
         result.recv_timeout(Duration::from_secs(9))
             .map_err(|_| "Machine inspection failed or timed out".to_string())?

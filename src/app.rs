@@ -31,6 +31,7 @@ mod ios_feel;
 mod panel_preview;
 mod voice;
 mod cloud_machine;
+mod git_info;
 #[cfg(test)]
 mod interaction_fuzz;
 #[cfg(test)]
@@ -87,6 +88,7 @@ pub struct MobileApp {
     started: std::time::Instant,
     composer: Entity<TextInput>,
     voice: voice::VoiceState,
+    git_info: git_info::GitState,
     cloud_machine: cloud_machine::MachineState,
     /// Desktop preview's simulated software keyboard state.
     sim_kb: crate::sim_keyboard::SimKeyboard,
@@ -301,6 +303,7 @@ impl MobileApp {
             kb_config: Default::default(),
             composer,
             voice: voice::VoiceState::default(),
+            git_info: git_info::GitState::default(),
             cloud_machine: cloud_machine::MachineState::default(),
             active_tab: 0,
             next_tab: 1,
@@ -492,6 +495,7 @@ impl MobileApp {
     fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
         if self.offline { return; }
         haptics::play(Haptic::Success);
+        self.git_info = git_info::GitState::default();
         self.cloud_machine = cloud_machine::MachineState::default();
         if let Some(c) = self.connection.take() {
             c.stop();
@@ -855,6 +859,7 @@ impl MobileApp {
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         if self.account.is_some() { haptics::play(Haptic::Rigid); }
+        self.git_info = git_info::GitState::default();
         self.cloud_machine = cloud_machine::MachineState::default();
         self.cancel_voice();
         if !self.offline {
@@ -1393,6 +1398,7 @@ impl MobileApp {
                     .border_l_1().border_color(t.border)
                     .child(preview))
             })
+            .when(self.git_info.open, |d| d.child(self.render_git_panel(t, cx)))
             .into_any_element()
     }
 
@@ -1552,6 +1558,7 @@ impl MobileApp {
             .flex_col()
             .size_full()
             .child(self.render_header(t, cx))
+            .child(self.render_git_handle(t, cx))
             .when(!empty && !self.feel_reconnect_visible() && !matches!(self.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
                 d.child(div().px(px(14.)).py(px(6.)).border_b_1().border_color(t.border)
                     .child(self.connection_status(t)))
@@ -1779,17 +1786,6 @@ impl MobileApp {
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
-                    .when(cfg!(target_os = "ios"), |d| d.child(
-                        round_button("microphone", if self.voice.recording.is_some() { "■" } else if self.voice.busy { "…" } else { "🎙" },
-                            if self.voice.recording.is_some() { t.error } else { t.text_strong }, !self.voice.busy, t)
-                            .a11y_button(if self.voice.recording.is_some() { "Stop recording and transcribe" } else { "Dictate message" })
-                            .when(!self.voice.busy, |d| d.on_click(cx.listener(|this, _, _, cx| {
-                                if !this.offline && !this.voice.busy && this.account.is_some() {
-                                    haptics::play(Haptic::Light);
-                                }
-                                this.toggle_voice(cx);
-                            })))
-                    ))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")

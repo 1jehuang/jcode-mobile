@@ -11,6 +11,7 @@ pub mod connection;
 pub mod crash;
 pub mod credentials;
 pub mod gateway;
+pub mod git_info;
 pub mod routes;
 pub mod voice;
 pub mod session;
