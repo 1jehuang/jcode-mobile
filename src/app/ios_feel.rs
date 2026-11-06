@@ -158,22 +158,20 @@ impl MobileApp {
         self.feel.g.begin_back();
     }
 
+    /// The pull indicator owns connection feedback until it has settled away.
+    pub(super) fn feel_reconnect_visible(&self) -> bool {
+        self.feel.g.refreshing.is_some() || self.feel.g.pull > 0.5
+    }
+
     /// The transcript area (empty or not): records bounds for pull to refresh,
     /// shifts content down while pulling and shows the refresh indicator.
     pub(super) fn feel_transcript(&self, body: AnyElement, t: &Theme) -> AnyElement {
         let pull = self.feel.g.pull;
         let refreshing = self.feel.g.refreshing.is_some();
         let armed = pull >= crate::gestures::PULL_TRIGGER || refreshing;
-        let show = pull > 0.5;
-        let progress = (pull / crate::gestures::PULL_TRIGGER).min(1.);
-        let spin = self.started.elapsed().as_secs_f32();
-        let glyph = if refreshing {
-            super::spinner_glyph((spin * 10.) as usize)
-        } else if armed {
-            "↻"
-        } else {
-            "↓"
-        };
+        let show = pull > 0.5 || refreshing;
+        let progress = (pull / crate::gestures::PULL_TRIGGER).clamp(0., 1.);
+        let finished = refreshing && self.session.phase == ConnectionPhase::Connected;
         div()
             .relative()
             .flex_1()
@@ -198,19 +196,18 @@ impl MobileApp {
                         .child(
                             div()
                                 .size(px(26.))
-                                .rounded_full()
+                                .flex_none()
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .bg(t.surface_elevated)
-                                .border_1()
-                                .border_color(if armed { t.border_focus } else { t.border })
-                                .text_color(if armed { t.text_strong } else { t.text_muted })
-                                .text_size(px(13.))
-                                .child(glyph),
+                                .child(self.status_orb.clone()),
                         )
                         .child(label(
-                            if refreshing {
+                            if finished {
+                                "Connected"
+                            } else if refreshing && matches!(self.session.phase, ConnectionPhase::Failed { .. }) {
+                                "Couldn't reconnect"
+                            } else if refreshing {
                                 "Reconnecting…"
                             } else if armed {
                                 "Release to reconnect"
@@ -778,8 +775,9 @@ impl MobileApp {
         let button = |id: &'static str, text: &'static str, strong: bool| {
             div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .flex_1()
-                .h(px(40.))
+                .h(px(44.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -790,17 +788,23 @@ impl MobileApp {
                 .child(label(text, t.text_strong, 14.))
         };
         div()
+            .id("rename-overlay")
             .absolute()
             .inset_0()
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(140.))
+            .p(px(12.))
+            .overflow_y_scroll()
             .bg(gpui::black().opacity(0.45))
             .child(
                 div()
                     .id("rename-card")
+                    .debug_selector(|| "rename-card".into())
                     .w(px(300.))
+                    .max_w_full()
+                    .flex_none()
+                    .my_auto()
                     .p(px(16.))
                     .flex()
                     .flex_col()

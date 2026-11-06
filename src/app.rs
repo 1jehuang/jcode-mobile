@@ -626,6 +626,7 @@ impl MobileApp {
         let row = |key: &'static str, text: &'static str, color: Hsla, enabled: bool| {
             div()
                 .id(key)
+                .debug_selector(move || key.into())
                 .px(px(12.))
                 .py(px(12.))
                 .rounded(px(10.))
@@ -683,7 +684,7 @@ impl MobileApp {
             .flex()
             .flex_col()
             .bg(gpui::black().opacity(0.5))
-            .child(div().id("tm-dismiss").flex_1().on_click(cx.listener(move |this, _, _, cx| close(this, cx))))
+            .child(div().id("tm-dismiss").debug_selector(|| "tm-dismiss".into()).flex_1().on_click(cx.listener(move |this, _, _, cx| close(this, cx))))
             .child(
                 div()
                     .flex()
