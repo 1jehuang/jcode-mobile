@@ -26,6 +26,23 @@ pub(super) struct State {
 }
 
 impl State {
+    /// Refresh content in place. Server activity ordering must not move a row
+    /// out from under the user's finger or change the overview scroll anchor.
+    fn replace_sessions(&mut self, sessions: Vec<SyncedSession>) {
+        let order: std::collections::HashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.session_id.clone(), i))
+            .collect();
+        let mut sessions: Vec<_> = sessions
+            .into_iter()
+            .filter(SyncedSession::can_transfer)
+            .collect();
+        sessions.sort_by_key(|s| order.get(&s.session_id).copied().unwrap_or(usize::MAX));
+        self.sessions = sessions;
+    }
+
     fn visible_limit(&self) -> usize {
         self.visible_pages
             .saturating_add(1)
@@ -62,16 +79,83 @@ impl State {
 mod tests {
     use super::*;
 
+    #[test]
+    fn refresh_preserves_existing_row_order_and_updates_content() {
+        let mut state = State::fixture();
+        let mut refreshed = state.sessions.clone();
+        refreshed.reverse();
+        refreshed[2].title = Some("Updated work".into());
+        state.replace_sessions(refreshed);
+        assert_eq!(
+            state
+                .sessions
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["local-work", "local-pending", "local-done"]
+        );
+        assert_eq!(state.sessions[0].label(), "Updated work");
+    }
+
     #[gpui::test]
-    fn continuation_controls_hit_test_offline_busy_uncertain_and_completed(cx: &mut gpui::TestAppContext) {
-        use super::super::navigation_coverage::{mount, drawer, tap};
+    fn refresh_and_error_leave_synced_row_bounds_unchanged(cx: &mut gpui::TestAppContext) {
+        use super::super::navigation_coverage::{drawer, mount};
+        let (view, cx) = mount(cx);
+        view.update(cx, |app, cx| {
+            app.synced = State::fixture();
+            app.synced.selected = None;
+            app.synced.commands.clear();
+            for i in 0..9 {
+                app.synced.sessions.push(serde_json::from_value(serde_json::json!({
+                    "session_id": format!("extra-{i}"), "source": "local", "title": format!("Extra {i}")
+                })).unwrap());
+            }
+            app.synced.visible_pages = 1;
+            cx.notify();
+        });
+        drawer(&view, cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let overview = cx.debug_bounds("drawer-overview").unwrap();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: overview.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-70.))),
+            touch_phase: gpui::TouchPhase::Moved,
+            modifiers: gpui::Modifiers::default(),
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let selectors = [
+            "drawer-local-session-local-work",
+            "drawer-local-session-local-pending",
+            "drawer-local-session-local-done",
+        ];
+        let before = selectors.map(|s| cx.debug_bounds(s).unwrap());
+        for (loading, error) in [(true, None), (false, Some("A long refresh error that should never wrap and move the computer rows below it".to_string())), (false, None)] {
+            view.update(cx, |app, cx| {
+                app.synced.loading = loading;
+                app.synced.error = error;
+                cx.notify();
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            for (selector, bounds) in selectors.into_iter().zip(before) {
+                assert_eq!(cx.debug_bounds(selector).unwrap(), bounds, "{selector} moved during refresh");
+            }
+            assert!(cx.debug_bounds("transfer-local-work").is_none(), "refresh must not insert continuation controls into unselected rows");
+        }
+    }
+
+    #[gpui::test]
+    fn continuation_controls_hit_test_offline_busy_uncertain_and_completed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::super::navigation_coverage::{drawer, mount, tap};
         let (view, cx) = mount(cx);
         view.update(cx, |app, cx| {
             app.synced = State::fixture();
             app.synced.sessions.truncate(1);
             app.synced.sessions[0].last_message_preview = None;
             app.synced.commands.clear();
-            app.transfer_input.update(cx, |input, cx| input.set_text("Continue fixture", cx));
+            app.transfer_input
+                .update(cx, |input, cx| input.set_text("Continue fixture", cx));
             cx.notify();
         });
         drawer(&view, cx);
@@ -88,7 +172,10 @@ mod tests {
                 cx.notify();
             });
             let (_, feedback) = haptics::capture(|| tap(cx, "transfer-local-work"));
-            assert!(feedback.is_empty(), "offline continuation {state} must not submit");
+            assert!(
+                feedback.is_empty(),
+                "offline continuation {state} must not submit"
+            );
             view.read_with(cx, |app, cx| {
                 assert_eq!(app.tab_order, [0]);
                 assert_eq!(app.transfer_input.read(cx).text(), "Continue fixture");
@@ -108,7 +195,10 @@ mod tests {
         view.read_with(cx, |app, _| {
             assert_eq!(app.tab_order.len(), 2);
             assert!(!app.drawer_open);
-            assert_eq!(app.synced.sessions[0].session_id, "local-work", "local original stays intact");
+            assert_eq!(
+                app.synced.sessions[0].session_id, "local-work",
+                "local original stays intact"
+            );
             assert!(app.connection.is_none());
         });
     }
@@ -288,10 +378,7 @@ impl MobileApp {
                 this.synced.loading = false;
                 match result {
                     Ok((sessions, commands)) => {
-                        this.synced.sessions = sessions
-                            .into_iter()
-                            .filter(SyncedSession::can_transfer)
-                            .collect();
+                        this.synced.replace_sessions(sessions);
                         this.synced.commands = commands;
                         this.synced.uncertain_submission = false;
                         if let Some(command) = this
@@ -494,30 +581,48 @@ impl MobileApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let query = self.drawer_search.read(cx).text().trim().to_lowercase();
-        let mut section = div().flex().flex_col();
+        let mut section = div().flex_none().flex().flex_col();
         section = section.child(super::sidebar::section_label(
             "Synced from your computers",
             t,
         ));
-        if self.synced.loading {
-            section = section.child(
-                div()
-                    .text_color(t.text_muted)
-                    .child("Loading synced sessions…"),
-            );
-        }
-        if let Some(error) = &self.synced.error {
-            section = section.child(
-                div()
-                    .text_size(crate::system::fs(12.))
-                    .text_color(if error == mobile_sync::SYNC_UNAVAILABLE {
-                        t.text_muted
-                    } else {
+        // A single reserved status line prevents loading and error transitions
+        // from pushing every computer row (and the cloud sections below it).
+        let status = self.synced.error.clone().unwrap_or_else(|| {
+            if self.synced.loading {
+                if self.synced.sessions.is_empty() {
+                    "Loading synced sessions…"
+                } else {
+                    "Refreshing synced sessions…"
+                }
+                .into()
+            } else {
+                String::new()
+            }
+        });
+        section = section.child(
+            div()
+                .id("drawer-local-status")
+                .debug_selector(|| "drawer-local-status".into())
+                .flex_none()
+                .h(px(20.))
+                .mx(px(16.))
+                .truncate()
+                .text_size(crate::system::fs(12.))
+                .text_color(
+                    if self
+                        .synced
+                        .error
+                        .as_deref()
+                        .is_some_and(|e| e != mobile_sync::SYNC_UNAVAILABLE)
+                    {
                         t.error
-                    })
-                    .child(error.clone()),
-            );
-        }
+                    } else {
+                        t.text_muted
+                    },
+                )
+                .child(status),
+        );
         let matching: Vec<_> = self
             .synced
             .sessions
@@ -546,9 +651,8 @@ impl MobileApp {
                 .iter()
                 .find(|c| c.kind == "transfer" && c.session_id.as_ref() == Some(&sid));
             let destination = latest.and_then(|c| c.destination(&sid).ok().flatten());
-            let pending = self.synced.submitting
-                || self.synced.uncertain_submission
-                || self.synced.loading
+            let pending = (selected
+                && (self.synced.submitting || self.synced.uncertain_submission))
                 || latest.is_some_and(|c| matches!(c.status.as_str(), "queued" | "running"));
             let mut row = div()
                 .id(SharedString::from(format!("drawer-local-session-{sid}")))
@@ -557,6 +661,7 @@ impl MobileApp {
                     move || format!("drawer-local-session-{sid}")
                 })
                 .mx(px(8.))
+                .flex_none()
                 .min_h(px(super::sidebar::SESSION_ROW_MIN))
                 .flex()
                 .flex_col()
@@ -617,7 +722,10 @@ impl MobileApp {
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("open-transfer-{sid}")))
-                        .debug_selector({ let sid = sid.clone(); move || format!("open-transfer-{sid}") })
+                        .debug_selector({
+                            let sid = sid.clone();
+                            move || format!("open-transfer-{sid}")
+                        })
                         .a11y_text_button()
                         .min_h(px(28.))
                         .text_size(crate::system::fs(12.))
@@ -650,7 +758,10 @@ impl MobileApp {
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("transfer-{sid}")))
-                        .debug_selector({ let sid = sid.clone(); move || format!("transfer-{sid}") })
+                        .debug_selector({
+                            let sid = sid.clone();
+                            move || format!("transfer-{sid}")
+                        })
                         .a11y_text_button()
                         .min_h(px(if selected { 44. } else { 26. }))
                         .text_size(crate::system::fs(12.))
@@ -663,7 +774,7 @@ impl MobileApp {
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            if pending {
+                            if pending || this.synced.loading {
                                 return;
                             }
                             if this.synced.selected.as_ref() == Some(&sid) {
