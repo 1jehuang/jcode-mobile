@@ -4,6 +4,10 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{Bounds, Pixels, Point};
 use jcode_mobile_core::git_info::{self, GitSnapshot};
 
+#[cfg(test)]
+#[path = "git_info_tests.rs"]
+mod tests;
+
 const TRIGGER: f32 = 48.;
 
 #[derive(Default)]
@@ -68,8 +72,9 @@ impl MobileApp {
         self.git_info.snapshot = None;
         self.git_info.error = None;
         self.git_info.loading = false;
-        self.git_info.generation += 1;
-        let generation = self.git_info.generation;
+        static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let generation = NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.git_info.generation = generation;
         let Some(directory) = self.session.working_dir.clone() else {
             self.git_info.error = Some("Choose a session directory to inspect its Git repository.".into());
             return;
@@ -141,7 +146,8 @@ impl MobileApp {
                     .when_some(state.error.clone(), |d, error| d.child(label(error, t.error, 12.)))
                     .when_some(state.snapshot.as_ref(), |mut d, snapshot| {
                         for (title, text) in [("Repository", snapshot.root.as_str()), ("Branch", snapshot.branch.as_str()),
-                            ("Working tree", snapshot.status.as_str()), ("Recent commits", snapshot.recent_commits.as_str())] {
+                            ("Working tree", if snapshot.status.is_empty() { "Clean working tree" } else { snapshot.status.as_str() }),
+                            ("Recent commits", if snapshot.recent_commits.is_empty() { "No commits yet" } else { snapshot.recent_commits.as_str() })] {
                             d = d.child(label(title, t.text_strong, 13.))
                                 .child(label(text.to_owned(), t.text_secondary, 12.));
                         }
