@@ -62,6 +62,57 @@ impl State {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn continuation_controls_hit_test_offline_busy_uncertain_and_completed(cx: &mut gpui::TestAppContext) {
+        use super::super::navigation_coverage::{mount, drawer, tap};
+        let (view, cx) = mount(cx);
+        view.update(cx, |app, cx| {
+            app.synced = State::fixture();
+            app.synced.sessions.truncate(1);
+            app.synced.sessions[0].last_message_preview = None;
+            app.synced.commands.clear();
+            app.transfer_input.update(cx, |input, cx| input.set_text("Continue fixture", cx));
+            cx.notify();
+        });
+        drawer(&view, cx);
+        for state in ["ready", "loading", "submitting", "uncertain", "pending"] {
+            view.update(cx, |app, cx| {
+                app.synced.loading = state == "loading";
+                app.synced.submitting = state == "submitting";
+                app.synced.uncertain_submission = state == "uncertain";
+                app.synced.commands = if state == "pending" {
+                    serde_json::from_value(serde_json::json!([
+                        {"command_id":"pending", "kind":"transfer", "session_id":"local-work", "status":"running"}
+                    ])).unwrap()
+                } else { vec![] };
+                cx.notify();
+            });
+            let (_, feedback) = haptics::capture(|| tap(cx, "transfer-local-work"));
+            assert!(feedback.is_empty(), "offline continuation {state} must not submit");
+            view.read_with(cx, |app, cx| {
+                assert_eq!(app.tab_order, [0]);
+                assert_eq!(app.transfer_input.read(cx).text(), "Continue fixture");
+                assert!(app.connection.is_none());
+            });
+        }
+        view.update(cx, |app, cx| {
+            app.synced.loading = false;
+            app.synced.submitting = false;
+            app.synced.uncertain_submission = false;
+            app.synced.commands = serde_json::from_value(serde_json::json!([
+                {"command_id":"done", "kind":"transfer", "session_id":"local-work", "status":"done", "result_session_id":"cloud-fixture"}
+            ])).unwrap();
+            cx.notify();
+        });
+        tap(cx, "open-transfer-local-work");
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.tab_order.len(), 2);
+            assert!(!app.drawer_open);
+            assert_eq!(app.synced.sessions[0].session_id, "local-work", "local original stays intact");
+            assert!(app.connection.is_none());
+        });
+    }
+
     #[test]
     fn local_sessions_reveal_five_at_a_time() {
         let mut state = State::default();
@@ -540,6 +591,7 @@ impl MobileApp {
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("open-transfer-{sid}")))
+                        .debug_selector({ let sid = sid.clone(); move || format!("open-transfer-{sid}") })
                         .a11y_text_button()
                         .min_h(px(28.))
                         .text_size(crate::system::fs(12.))
@@ -572,6 +624,7 @@ impl MobileApp {
                 row = row.child(
                     div()
                         .id(SharedString::from(format!("transfer-{sid}")))
+                        .debug_selector({ let sid = sid.clone(); move || format!("transfer-{sid}") })
                         .a11y_text_button()
                         .min_h(px(if selected { 44. } else { 26. }))
                         .text_size(crate::system::fs(12.))

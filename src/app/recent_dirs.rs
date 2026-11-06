@@ -100,6 +100,7 @@ impl MobileApp {
             let (name, parent) = crate::labels::cloud_location(Some(&dir));
             rows = rows.child(
                 super::picker_row(("dir", i), name, parent.unwrap_or_default(), selected, true, t)
+                    .debug_selector(move || format!("dir-row-{i}"))
                     .on_click(cx.listener(move |this, _, _, cx| this.change_dir(dir.clone(), cx))),
             );
         }
@@ -116,7 +117,7 @@ impl MobileApp {
             .flex()
             .flex_col()
             .bg(gpui::black().opacity(0.5))
-            .child(div().id("dir-dismiss").flex_1().on_click(cx.listener(|this, _, _, cx| {
+            .child(div().id("dir-dismiss").debug_selector(|| "dir-dismiss".into()).flex_1().on_click(cx.listener(|this, _, _, cx| {
                 this.dir_picker = false;
                 this.dir_picker_new_session = false;
                 cx.notify()
@@ -152,6 +153,7 @@ impl MobileApp {
                             .child(
                                 div()
                                     .id("dir-go")
+                                    .debug_selector(|| "dir-go".into())
                                     .px(px(10.))
                                     .py(px(6.))
                                     .rounded(px(10.))
@@ -189,6 +191,7 @@ impl MobileApp {
         }
         let mut col = div()
             .id("start-suggestions")
+            .debug_selector(|| "start-suggestions".into())
             .min_h_0()
             .max_h(px(360.))
             .overflow_y_scroll()
@@ -207,6 +210,7 @@ impl MobileApp {
             col = col.child(
                 div()
                     .id(("suggested-session", i))
+                    .debug_selector(move || format!("suggested-session-{i}"))
                     .a11y_button(format!("{action} {title}"))
                     .flex_none()
                     .min_h(px(44.))
@@ -236,6 +240,7 @@ impl MobileApp {
             col = col.child(
                 div()
                     .id(("recent-dir", i))
+                    .debug_selector(move || format!("recent-dir-{i}"))
                     .flex_none()
                     .h(px(44.))
                     .px(px(12.))

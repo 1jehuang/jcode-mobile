@@ -127,6 +127,7 @@ impl MobileApp {
         let x = -width * (1. - p);
         let scrim = div()
             .id("drawer-scrim")
+            .debug_selector(|| "drawer-scrim".into())
             .absolute()
             .inset_0()
             .bg(gpui::black().opacity(0.45 * p))
@@ -317,6 +318,7 @@ impl MobileApp {
             col = col.child(
                 div()
                     .id(("drawer-tab", id))
+                    .debug_selector(move || format!("drawer-tab-{id}"))
                     .mx(px(8.))
                     .min_h(px(TAB_ROW_MIN))
                     .pl(px(12.))
@@ -348,6 +350,7 @@ impl MobileApp {
                         // Match the compact tab row while keeping a wide target.
                         div()
                             .id(("drawer-tab-close", id)).a11y_button("Close tab")
+                            .debug_selector(move || format!("drawer-tab-close-{id}"))
                             .flex_none()
                             .w(px(ROW_MIN))
                             .h(px(TAB_ROW_MIN))
@@ -415,6 +418,7 @@ impl MobileApp {
             let edits = s.edit_stats.as_ref().filter(|e| e.added + e.removed > 0).cloned();
             div()
                 .id(gpui::SharedString::from(format!("drawer-session-{}", s.session_id)))
+                .debug_selector({ let sid = s.session_id.clone(); move || format!("drawer-session-{sid}") })
                 .mx(px(8.))
                 .min_h(px(SESSION_ROW_MIN))
                 .px(px(10.))
@@ -548,6 +552,7 @@ impl MobileApp {
                         // Compact directory action, with a wide horizontal target.
                         div()
                             .id(gpui::SharedString::from(format!("drawer-new-in-{}", dir.as_deref().unwrap_or(""))))
+                            .debug_selector({ let dir = dir.clone(); move || format!("drawer-new-in-{}", dir.as_deref().unwrap_or("")) })
                             .flex_none()
                             .w(px(ROW_MIN))
                             .h(px(GROUP_ROW_MIN))
