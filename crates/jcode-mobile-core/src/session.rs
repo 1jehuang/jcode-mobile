@@ -5,6 +5,38 @@
 use jcode_sdk::{ApiEvent, HistoryMessage, TurnStopReason};
 use std::collections::{HashMap, HashSet};
 
+/// Keep useful prose, not Markdown layout, in the small banner preview.
+fn notification_preview(text: &str, limit: usize) -> String {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("```") {
+            continue;
+        }
+        let line = line.trim_start_matches('#').trim_start();
+        let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
+        let line = line.replace("**", "").replace('`', "");
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !line.is_empty() && !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    let text = lines.join(" · ");
+    if text.chars().count() <= limit {
+        return text;
+    }
+    let prefix: String = text.chars().take(limit.saturating_sub(1)).collect();
+    // Avoid a dangling half-word, but don't discard most of a long token.
+    let end = if text.chars().nth(limit.saturating_sub(1)).is_some_and(char::is_whitespace) {
+        prefix.len()
+    } else {
+        prefix.rfind(char::is_whitespace)
+            .filter(|&end| prefix[end..].chars().count() <= 24)
+            .unwrap_or(prefix.len())
+    };
+    format!("{}…", prefix[..end].trim_end_matches([' ', '·']))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionPhase {
     Disconnected,
@@ -260,22 +292,24 @@ impl SessionState {
     }
 
     fn alert(&mut self, body: impl Into<String>) {
-        let title = self.session_title.clone().unwrap_or_else(|| "jcode".into());
-        let mut body: String = body.into();
-        if body.chars().count() > 180 {
-            body = body.chars().take(179).collect::<String>() + "…";
-        }
+        let title = self.session_title.as_deref().map(str::trim)
+            .filter(|title| !title.is_empty()).unwrap_or("jcode").to_owned();
+        let body = notification_preview(&body.into(), 180);
         let session_id = self.session_id.clone();
-        self.alerts.push(Alert { title, body, session_id });
+        let alert = Alert { title, body, session_id };
+        if self.alerts.last() != Some(&alert) {
+            self.alerts.push(alert);
+        }
     }
 
     fn last_reply_preview(&self) -> String {
         self.transcript
             .iter()
             .rev()
+            .take_while(|e| e.role != Role::User || e.is_queued)
             .find(|e| e.role == Role::Assistant && !e.text.trim().is_empty())
-            .map(|e| e.text.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_else(|| "Finished".into())
+            .map(|e| e.text.clone())
+            .unwrap_or_else(|| "Finished without a text response".into())
     }
 
     fn turn_over(&mut self) {
@@ -578,6 +612,49 @@ mod tests {
     }
     fn sid() -> String {
         "s".into()
+    }
+
+    #[test]
+    fn notification_preview_removes_layout_and_repeated_lines() {
+        assert_eq!(notification_preview("## Fixed login\n\n- **Tests:** `12 passed`\n- **Tests:** `12 passed`", 180),
+            "Fixed login · Tests: 12 passed");
+        let preview = notification_preview(&"界".repeat(200), 180);
+        assert_eq!(preview.chars().count(), 180);
+        assert!(preview.ends_with('…'));
+        assert_eq!(notification_preview("one two three four", 14), "one two three…");
+    }
+
+    #[test]
+    fn notifications_do_not_reuse_previous_turn_reply() {
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserSentMessage("first".into()));
+        ev(&mut s, E::TextDelta { session_id: sid(), text: "Old result".into(), message_id: None });
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        s.apply_intent(LocalIntent::UserSentMessage("second".into()));
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        assert_eq!(s.alerts[1].body, "Finished without a text response");
+    }
+
+    #[test]
+    fn queued_followup_does_not_hide_current_result() {
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserSentMessage("first".into()));
+        ev(&mut s, E::TextDelta { session_id: sid(), text: "Current result".into(), message_id: None });
+        s.apply_intent(LocalIntent::UserQueuedInterrupt("next".into()));
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        assert_eq!(s.alerts[0].body, "Current result");
+    }
+
+    #[test]
+    fn pending_duplicate_alerts_are_coalesced() {
+        let mut s = SessionState { session_title: Some("  ".into()), ..Default::default() };
+        s.alert("Same update");
+        s.alert("Same update");
+        assert_eq!(s.alerts.len(), 1);
+        assert_eq!(s.alerts[0].title, "jcode");
+        s.alerts.clear();
+        s.alert("Same update");
+        assert_eq!(s.alerts.len(), 1, "a later event must still be deliverable");
     }
 
     #[test]
