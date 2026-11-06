@@ -3,6 +3,28 @@ use super::*;
 use gpui::TestAppContext;
 
 #[gpui::test]
+fn fork_option_replaces_duplicate_and_cannot_create_offline_tabs(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx)
+    });
+    view.update(cx, |app, cx| {
+        app.screen = Screen::Chat;
+        app.tab_menu = Some(app.active_tab);
+        app.session.session_id = Some("source".into());
+        let order = app.tab_order.clone();
+        app.fork_tab(app.active_tab, cx);
+        assert_eq!(app.tab_order, order);
+        assert_eq!(app.session.session_id.as_deref(), Some("source"));
+        assert!(app.connection.is_none());
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("tm-fork").is_some());
+    assert!(cx.debug_bounds("tm-dup").is_none());
+}
+
+#[gpui::test]
 fn pull_reconnect_owns_status_until_indicator_settles(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {

@@ -41,6 +41,9 @@ pub struct Config {
     pub max_reconnect_attempts: Option<u32>,
     pub base_backoff: Duration,
     pub working_dir: Option<String>,
+    /// Create an independent fork of this session on the first connection.
+    /// Once created, reconnects attach to the fork rather than forking again.
+    pub fork_from: Option<String>,
 }
 
 impl Config {
@@ -56,6 +59,7 @@ impl Config {
             max_reconnect_attempts: None,
             base_backoff: Duration::from_secs(1),
             working_dir: None,
+            fork_from: None,
         }
     }
 }
@@ -236,13 +240,32 @@ fn run(
     emit: impl Fn(ConnectionOutput),
 ) {
     let phase = |p| emit(ConnectionOutput::Phase(p));
+    let mut fork_from = config.fork_from.clone();
     let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false });
     let mut attempt: u32 = 0;
     loop {
         phase(if attempt == 0 { ConnectionPhase::Connecting } else { ConnectionPhase::Reconnecting { attempt } });
         let outcome = open(&config, &inbox, &emit).map_err(classify).and_then(|client| {
-            let session = attach(&client, target_session.as_deref(), config.working_dir.clone())
-                .map_err(classify)?;
+            if let Some(source) = fork_from.as_deref() {
+                // Attach exactly the requested source. Never fall back to a new
+                // empty session when the source no longer exists.
+                client.attach_session(source).map_err(classify)?;
+                let fork = client.fork_session(source).map_err(|e| {
+                    // A lost response may still have created a fork. Do not
+                    // replay a non-idempotent request and create duplicates.
+                    Failure::Fatal(format!("Could not fork session: {}", e.message))
+                })?;
+                target_session = Some(fork.session_id);
+                fork_from = None;
+                let session = client.attach_session(target_session.as_deref().unwrap()).map_err(classify)?;
+                return Ok((client, session));
+            }
+            let session = if config.fork_from.is_some() {
+                // A fork must never silently become a blank conversation.
+                client.attach_session(target_session.as_deref().unwrap()).map_err(classify)?
+            } else {
+                attach(&client, target_session.as_deref(), config.working_dir.clone()).map_err(classify)?
+            };
             Ok((client, session))
         });
         if inbox.lock().unwrap().stopped {
@@ -453,6 +476,72 @@ mod tests {
         // Round-trip through the real frame type so the fake stays honest.
         let frame: ServerFrame = serde_json::from_value(v).unwrap();
         writeln!(w, "{}", serde_json::to_string(&frame).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn forks_source_into_distinct_session_and_does_not_replay_failed_forks() {
+        for fail in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (record, requests) = mpsc::channel();
+            let (shutdown, socket) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (s, _) = listener.accept().unwrap();
+                shutdown.send(s.try_clone().unwrap()).unwrap();
+                let mut w = s.try_clone().unwrap();
+                for line in BufReader::new(s).lines() {
+                    let req: Value = serde_json::from_str(&line.unwrap()).unwrap();
+                    record.send(req.clone()).unwrap();
+                    let id = req["id"].as_u64();
+                    match req["req"].as_str().unwrap() {
+                        "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                        "attach_session" => reply(&mut w, id, json!({"ev":"attached","session":{"session_id":req["session_id"],"status":"idle"}})),
+                        "fork_session" if fail => reply(&mut w, id, json!({"ev":"error","code":"internal","message":"Cannot fork"})),
+                        "fork_session" => {
+                            assert_eq!(req["session_id"], "source");
+                            reply(&mut w, id, json!({"ev":"session_forked","session":{"session_id":"fork","status":"idle"}}));
+                        }
+                        "get_history" => {
+                            assert_eq!(req["session_id"], "fork");
+                            reply(&mut w, id, json!({"ev":"history","session_id":"fork","messages":[{"role":"assistant","content":"Inherited conversation"}]}));
+                        }
+                        "create_session" => panic!("Fork must not create a blank session"),
+                        _ => reply(&mut w, id, json!({"ev":"error","code":"unknown_request","message":"no"})),
+                    }
+                }
+            });
+            let factory: TransportFactory = Arc::new(move || {
+                Ok(Box::new(Tcp(TcpStream::connect(addr).unwrap())) as Box<dyn Transport>)
+            });
+            let mut config = Config::custom(factory);
+            config.fork_from = Some("source".into());
+            config.base_backoff = Duration::from_millis(1);
+            let (connection, output) = Connection::start_with_channel(config, None);
+            loop {
+                let event = output.recv_timeout(Duration::from_secs(5)).unwrap();
+                match event {
+                    ConnectionOutput::Phase(ConnectionPhase::Failed { reason }) => {
+                        assert!(fail && reason.contains("Could not fork session"));
+                        break;
+                    }
+                    ConnectionOutput::Event(ApiEvent::History { session_id, .. }) => {
+                        assert!(!fail);
+                        assert_eq!(session_id, "fork");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            connection.stop();
+            socket.recv_timeout(Duration::from_secs(5)).unwrap()
+                .shutdown(std::net::Shutdown::Both).unwrap();
+            server.join().unwrap();
+            let requests: Vec<_> = requests.try_iter().collect();
+            assert_eq!(requests.iter().filter(|r| r["req"] == "fork_session").count(), 1);
+            let attached: Vec<_> = requests.iter().filter(|r| r["req"] == "attach_session")
+                .map(|r| r["session_id"].as_str().unwrap()).collect();
+            assert_eq!(attached, if fail { vec!["source"] } else { vec!["source", "fork"] });
+        }
     }
 
     /// Fake harness: hello, create_session, snapshot, then one streamed turn.

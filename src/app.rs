@@ -497,11 +497,16 @@ impl MobileApp {
     }
 
     fn start_connection_in(&mut self, resume: Option<String>, working_dir: Option<String>, cx: &mut Context<Self>) {
+        self.start_connection_target(resume, working_dir, None, cx);
+    }
+
+    fn start_connection_target(&mut self, resume: Option<String>, working_dir: Option<String>, fork_from: Option<String>, cx: &mut Context<Self>) {
         self.cancel_voice();
         if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         let mut config = Config::cloud(account);
         config.working_dir = working_dir;
+        config.fork_from = fork_from;
         config.max_reconnect_attempts = Some(6);
         let (tx, rx) = unbounded();
         let conn = Connection::start(config, resume, move |o| {
@@ -608,6 +613,7 @@ impl MobileApp {
         let title = s.and_then(|s| s.session_title.clone()).unwrap_or_else(|| "New session".into());
         let session_id = s.and_then(|s| s.session_id.clone());
         let many = self.tab_order.len() > 1;
+        let can_fork = self.account.is_some() && !self.offline && session_id.is_some();
         let row = |key: &'static str, text: &'static str, color: Hsla, enabled: bool| {
             div()
                 .id(key)
@@ -643,9 +649,10 @@ impl MobileApp {
             .child(row("tm-rename", "Rename", t.text, true).on_click(cx.listener(move |this, _, _, cx| {
                 this.feel_rename_tab(id, cx)
             })))
-            .child(row("tm-dup", "Duplicate", t.text, true).on_click(cx.listener(move |this, _, _, cx| {
-                this.duplicate_tab(id, cx)
-            })))
+            .child(row("tm-fork", "Fork session", if can_fork { t.text } else { t.text_muted }, can_fork)
+                .when(can_fork, |d| d.on_click(cx.listener(move |this, _, _, cx| {
+                    this.fork_tab(id, cx)
+                }))))
             .child(row("tm-others", "Close other tabs", t.text, many).when(many, |d| {
                 d.on_click(cx.listener(move |this, _, _, cx| {
                     close(this, cx);

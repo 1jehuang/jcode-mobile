@@ -573,7 +573,6 @@ impl MobileApp {
         let id = self.tab_order[index];
         if id != self.active_tab {
             self.focus_tab(id, cx);
-            haptics::play(Haptic::Selection);
         }
     }
 
@@ -816,17 +815,13 @@ impl MobileApp {
         cx.notify();
     }
 
-    /// Tab sheet "Duplicate": a new tab attached to the same session.
-    pub(super) fn duplicate_tab(&mut self, id: u64, cx: &mut Context<Self>) {
-        let sid = self.tab_session(id).and_then(|s| s.session_id.clone());
-        self.tab_menu = None;
-        let Some(sid) = sid else {
-            self.new_tab(cx);
-            return;
-        };
-        if self.account.is_none() {
+    /// Fork the source conversation into an independent session in a new tab.
+    pub(super) fn fork_tab(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.account.is_none() || self.offline {
             return;
         }
+        let Some(sid) = self.tab_session(id).and_then(|s| s.session_id.clone()) else { return };
+        self.tab_menu = None;
         let new = self.next_tab;
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == id).map_or(self.tab_order.len(), |i| i + 1);
@@ -836,7 +831,7 @@ impl MobileApp {
         self.active_tab = new;
         self.session = Default::default();
         self.session.session_title = title;
-        self.start_connection(Some(sid), cx);
+        self.start_connection_target(None, None, Some(sid), cx);
         haptics::play(Haptic::Light);
         cx.notify();
     }
