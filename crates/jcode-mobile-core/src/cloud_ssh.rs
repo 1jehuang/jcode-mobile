@@ -10,7 +10,7 @@ use jcode_sdk::cloud::CloudTarget;
 use jcode_sdk::{ConnectOptions, Error, ErrorKind, JcodeClient, Result, Transport};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -65,6 +65,79 @@ impl std::fmt::Debug for CloudSshKey {
 /// Cloneable ownership of one authenticated connection, not an attached session.
 #[derive(Clone)]
 pub struct CloudSsh(Arc<Master>);
+
+/// A single unattached, handshaken API channel per cached SSH master.
+/// Taking a spare transfers ownership, never shares a session between tabs.
+/// Refilling is best-effort and never delays a foreground connection.
+#[derive(Clone)]
+pub(crate) struct PreparedSsh(Arc<PreparedInner>);
+
+struct PreparedInner {
+    ssh: CloudSsh,
+    state: Mutex<PreparedState>,
+}
+
+#[derive(Default)]
+struct PreparedState {
+    spare: Option<(Instant, JcodeClient)>,
+    filling: bool,
+}
+
+const SPARE_MAX_AGE: Duration = Duration::from_secs(30);
+
+impl PreparedSsh {
+    pub(crate) fn new(ssh: CloudSsh) -> Self {
+        Self(Arc::new(PreparedInner {
+            ssh,
+            state: Mutex::new(PreparedState::default()),
+        }))
+    }
+
+    pub(crate) fn open_client(&self) -> Result<JcodeClient> {
+        let spare = self.0.state.lock().unwrap().spare.take();
+        let client = match spare {
+            Some((created, client))
+                if created.elapsed() < SPARE_MAX_AGE
+                    && !client.is_closed()
+                    && !self.0.ssh.is_closed() =>
+            {
+                Ok(client)
+            }
+            _ => self.0.ssh.open_client(),
+        }?;
+        self.refill();
+        Ok(client)
+    }
+
+    fn refill(&self) {
+        {
+            let mut state = self.0.state.lock().unwrap();
+            if state.filling || state.spare.is_some() || self.0.ssh.is_closed() {
+                return;
+            }
+            state.filling = true;
+        }
+        // Do not retain the cache owner in the worker. Sign-out or cache
+        // eviction drops the spare immediately and discards late refills.
+        let owner = Arc::downgrade(&self.0);
+        let ssh = self.0.ssh.clone();
+        let spawn = std::thread::Builder::new()
+            .name("jcode-cloud-api-spare".into())
+            .spawn(move || {
+                let client = ssh.open_client();
+                if let Some(owner) = owner.upgrade() {
+                    let mut state = owner.state.lock().unwrap();
+                    state.filling = false;
+                    if let Ok(client) = client {
+                        state.spare = Some((Instant::now(), client));
+                    }
+                }
+            });
+        if spawn.is_err() {
+            self.0.state.lock().unwrap().filling = false;
+        }
+    }
+}
 
 struct Master {
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
@@ -726,6 +799,82 @@ mod tests {
         drop(events);
         drop(second);
         drop(third);
+        server.finish();
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !condition() {
+            assert!(
+                Instant::now() < deadline,
+                "SSH background work did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn prepared_channel_is_single_use_bounded_and_independent() {
+        let (server, target, key) = Server::start(false, Duration::ZERO);
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        let first = prepared.open_client().unwrap();
+        first.attach_session("first").unwrap();
+        wait_until(|| prepared.0.state.lock().unwrap().spare.is_some());
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 2);
+        for _ in 0..10 {
+            prepared.refill();
+        }
+        // Stop automatic refill to prove taking a ready spare opens no channel.
+        prepared.0.state.lock().unwrap().filling = true;
+        let second = prepared.open_client().unwrap();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 2);
+        assert!(prepared.0.state.lock().unwrap().spare.is_none());
+        second.attach_session("second").unwrap();
+        assert_eq!(first.get_history("first").unwrap()[0].content, "first");
+        assert_eq!(second.get_history("second").unwrap()[0].content, "second");
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        drop(prepared);
+        first.ping().unwrap();
+        second.ping().unwrap();
+        drop(first);
+        drop(second);
+        server.finish();
+    }
+
+    #[test]
+    fn expired_prepared_channel_is_replaced_and_eviction_keeps_active_client_alive() {
+        let (server, target, key) = Server::start(false, Duration::ZERO);
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        let first = prepared.open_client().unwrap();
+        wait_until(|| prepared.0.state.lock().unwrap().spare.is_some());
+        {
+            let mut state = prepared.0.state.lock().unwrap();
+            state.spare.as_mut().unwrap().0 = Instant::now() - SPARE_MAX_AGE;
+            state.filling = true;
+        }
+        let second = prepared.open_client().unwrap();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 3);
+        drop(prepared);
+        drop(second);
+        first.ping().unwrap();
+        drop(first);
+        server.finish();
+    }
+
+    #[test]
+    fn blocked_refill_never_blocks_foreground_or_retains_evicted_cache() {
+        let (server, target, key) = Server::start(true, Duration::ZERO);
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        prepared.refill();
+        wait_until(|| server.counts.channels.load(Ordering::Relaxed) == 1);
+        let client = prepared.open_client().unwrap();
+        client.ping().unwrap();
+        assert!(prepared.0.state.lock().unwrap().filling);
+        let owner = Arc::downgrade(&prepared.0);
+        drop(prepared);
+        assert!(owner.upgrade().is_none(), "refill retained evicted cache");
+        client.ping().unwrap();
+        drop(client);
         server.finish();
     }
 

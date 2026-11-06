@@ -23,7 +23,7 @@ impl<T: Clone> WarmTarget<T> {
     }
 }
 
-type CachedSsh = WarmTarget<crate::cloud_ssh::CloudSsh>;
+type CachedSsh = WarmTarget<crate::cloud_ssh::PreparedSsh>;
 static WARM_TARGET: OnceLock<Mutex<Option<CachedSsh>>> = OnceLock::new();
 static COLD_CONNECT: Mutex<()> = Mutex::new(());
 const TARGET_TTL: Duration = Duration::from_secs(5 * 60);
@@ -278,7 +278,7 @@ pub fn connect(
     let target = cloud.wait_for_host(account, key.public_openssh(), progress, cancelled)?;
     check_cancelled()?;
     progress("Connecting to your Jcode Cloud machine…");
-    let ssh = crate::cloud_ssh::CloudSsh::connect(target, key)?;
+    let ssh = crate::cloud_ssh::PreparedSsh::new(crate::cloud_ssh::CloudSsh::connect(target, key)?);
     check_cancelled()?;
     let client = ssh.open_client()?;
     check_cancelled()?;
