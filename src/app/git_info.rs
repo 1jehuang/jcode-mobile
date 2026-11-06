@@ -361,6 +361,7 @@ impl MobileApp {
     pub(super) fn render_git_panel(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.git_info;
         div()
+            .occlude()
             .absolute()
             .inset_0()
             .flex()

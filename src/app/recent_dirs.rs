@@ -112,6 +112,7 @@ impl MobileApp {
             "Opens a new tab there. This conversation stays put."
         };
         div()
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -170,6 +171,7 @@ impl MobileApp {
                     .child(
                         div()
                             .id("dir-list")
+                            .debug_selector(|| "dir-list".into())
                             .flex_1()
                             .overflow_y_scroll()
                             .px(px(12.))
