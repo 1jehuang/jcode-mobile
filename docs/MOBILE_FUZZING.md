@@ -156,6 +156,51 @@ the count difference. The final process receipt is
 
 Receipts describe finite test coverage, not an absence-of-bugs guarantee.
 
+## Reviewed surface inventory and stateful journeys
+
+`docs/MOBILE_INTERACTION_COVERAGE.md` is the human checklist and
+`docs/MOBILE_INTERACTION_COVERAGE.json` maps discovered renderer/event/control
+owners to named regression tests, explicit gaps, or native-device requirements.
+The normal suite includes `production_event_inventory_matches_reviewed_coverage_ledger`,
+which detects structural drift and stale test references. This is not semantic
+coverage measurement: an unchanged callback signature can still change behavior.
+Use the checklist notes rather than interpreting a mapped row as exhaustive coverage.
+
+The expanded offline suites cover authentication callback races, account linking,
+settings/logout, directory/model pickers, drawer/tab actions, composer send/queue/stop,
+transcript controls, message selection/retry/rename, and mocked Git, voice, deep-link,
+and push lifecycles. Real provider, transport, permission, and OS behavior remains
+explicitly excluded where fixtures inject outcomes. To run individual families:
+
+```sh
+scripts/mobile-fuzz.sh account_coverage
+scripts/mobile-fuzz.sh navigation_coverage
+scripts/mobile-fuzz.sh composer_coverage
+scripts/mobile-fuzz.sh overlay_coverage
+scripts/mobile-fuzz.sh coverage_inventory
+scripts/mobile-fuzz.sh journey_fuzz -- --nocapture
+scripts/mobile-fuzz.sh dump_interaction_coverage_inventory -- --ignored --nocapture
+```
+
+The stateful journey test runs four fixed seeds through 256 handler actions each,
+without resetting application state between actions. Its independent tab/draft/pending
+prompt model checks Unicode edits, tab creation/switch/close, queued prompts, local sends,
+logout and stale authentication, cancellation and responsive layouts. These are direct
+handler/model journeys with rendered frames, not 1,024 additional raw-touch gestures.
+The separate raw campaign and focused hit-tested workflows cover event routing.
+
+On November 6, 2026 (Pacific time), an independent raw corpus also passed:
+
+```sh
+JCODE_MOBILE_FUZZ_SEED=42 JCODE_MOBILE_FUZZ_SEEDS=8 JCODE_MOBILE_FUZZ_STEPS=256 \
+  scripts/mobile-fuzz.sh deterministic_raw_touch_campaigns -- --nocapture
+```
+
+Seeds 42 through 49 completed another **2,048 cases, 3,056 contacts, and 9,192
+raw touch events**. Receipt: `20261106-012249698-362106`, 108.62 seconds of tests.
+This corpus exercises the raw campaign's eight surfaces, not every newly inventoried
+service/overlay path. The focused regression suites cover those additional paths.
+
 ## What a passing run means
 
 The suite exercises Rust widget handlers, raw synthetic touch/event routing,

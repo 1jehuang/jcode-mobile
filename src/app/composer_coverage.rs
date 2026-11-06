@@ -17,6 +17,37 @@ fn entry(id: u64, text: &str) -> TranscriptEntry {
 }
 
 #[gpui::test]
+fn header_new_session_is_inert_without_account_and_parks_existing_draft(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.account = None;
+        app.composer
+            .update(cx, |input, cx| input.set_text("Keep header draft 👩🏽‍💻", cx));
+        cx.notify();
+    });
+    tap(cx, "new-session");
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.tab_order.len(), 1);
+        assert_eq!(app.composer.read(cx).text(), "Keep header draft 👩🏽‍💻");
+    });
+    view.update(cx, |app, cx| {
+        app.account = Some(super::account_coverage::account());
+        cx.notify();
+    });
+    tap(cx, "new-session");
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.tab_order.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert!(app.composer.read(cx).text().is_empty());
+        assert!(app.connection.is_none());
+    });
+    tap(cx, "tab-0");
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.composer.read(cx).text(), "Keep header draft 👩🏽‍💻");
+    });
+}
+
+#[gpui::test]
 fn composer_send_disabled_for_disconnected_missing_session_and_blank_input(
     cx: &mut TestAppContext,
 ) {
@@ -283,20 +314,25 @@ fn metadata_picker_actions_preserve_each_tabs_unsent_draft(cx: &mut TestAppConte
             .update(cx, |input, cx| input.set_text("Second tab draft", cx));
         cx.notify();
     });
-    tap(cx, "pill-model");
-    draw(cx);
-    view.update(cx, |app, cx| {
-        assert!(app.model_picker);
-        app.feel.g.sheet_y = 0.;
-        app.feel.g.edge_x = 0.;
-        cx.notify();
-    });
-    tap(cx, "model-row-bare-0");
-    view.read_with(cx, |app, cx| {
-        assert!(!app.model_picker);
-        assert_eq!(app.composer.read(cx).text(), "Second tab draft");
-        assert!(app.session.transcript.is_empty());
-    });
+    for selector in ["pill-model", "pill-account"] {
+        tap(cx, selector);
+        draw(cx);
+        view.update(cx, |app, cx| {
+            assert!(
+                app.model_picker,
+                "metadata control {selector} must open the picker"
+            );
+            app.feel.g.sheet_y = 0.;
+            app.feel.g.edge_x = 0.;
+            cx.notify();
+        });
+        tap(cx, "model-row-bare-0");
+        view.read_with(cx, |app, cx| {
+            assert!(!app.model_picker);
+            assert_eq!(app.composer.read(cx).text(), "Second tab draft");
+            assert!(app.session.transcript.is_empty());
+        });
+    }
     tap(cx, "location");
     tap(cx, "dir-dismiss");
     tap(cx, "tab-0");
