@@ -107,6 +107,7 @@ impl MobileApp {
     }
 
     fn apple_sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if self.signing_in {
             return;
         }
@@ -139,6 +140,7 @@ impl MobileApp {
 
     /// Settings row: "Link existing Jcode account" for Apple accounts.
     pub(super) fn render_apple_link(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.offline { return None; }
         let account = self.account.clone()?;
         if self.apple_link.is_none() && !is_unlinked_apple_account(&account) {
             return None;

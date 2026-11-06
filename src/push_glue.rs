@@ -47,6 +47,7 @@ impl MobileApp {
     /// Register the current APNs token with the signed-in account. Called on
     /// token arrival and after sign-in.
     pub(super) fn register_push(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         let (Some(account), Some(token)) = (self.account.clone(), self.push_token.clone()) else {
             return;
         };
@@ -67,6 +68,7 @@ impl MobileApp {
 
     /// Forget the token server-side (sign-out). Fire and forget.
     pub(super) fn unregister_push(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         let (Some(account), Some(token)) = (self.account.clone(), self.push_token.clone()) else {
             return;
         };

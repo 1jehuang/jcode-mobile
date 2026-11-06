@@ -68,6 +68,7 @@ mod tests {
 
 impl MobileApp {
     pub(super) fn refresh_synced_sessions(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if self.synced.loading {
             return;
         }
@@ -121,6 +122,7 @@ impl MobileApp {
     }
 
     pub(super) fn continue_synced_in_cloud(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if self.synced.loading
             || self.synced.submitting
             || self.synced.uncertain_submission
@@ -187,6 +189,7 @@ impl MobileApp {
     }
 
     fn poll_transfer(&mut self, command: Command, account: Account, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if self.synced.polling.is_some() {
             return;
         }

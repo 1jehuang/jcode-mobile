@@ -27,6 +27,10 @@ mod synced_sessions;
 mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
+#[cfg(test)]
+mod interaction_fuzz;
+#[cfg(test)]
+mod offline_tests;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -46,6 +50,8 @@ enum Screen {
 }
 
 pub struct MobileApp {
+    /// Test instances never read credentials, connect, or change persistent state.
+    offline: bool,
     /// Soft keyboard currently covers the bottom of the screen.
     keyboard_up: bool,
     screen: Screen,
@@ -141,6 +147,7 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let offline = cfg!(test);
         use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration, TextInputPurpose};
         let email = cx.new(|cx| {
             let mut t = TextInput::new("you@example.com", cx);
@@ -250,10 +257,11 @@ impl MobileApp {
 
         let store = AccountStore::default_location();
         // Dev convenience: JCODE_MOBILE_USE_CLI_ACCOUNT=1 reuses the jcode CLI login.
-        let account = store.load().or_else(|| {
+        let account = (!offline).then(|| store.load().or_else(|| {
             std::env::var_os("JCODE_MOBILE_USE_CLI_ACCOUNT").and_then(|_| cloud::account_from_jcode_config())
-        });
+        })).flatten();
         let mut app = Self {
+            offline,
             screen: Screen::SignIn,
             safe,
             device: None,
@@ -318,8 +326,10 @@ impl MobileApp {
             transfer_input,
             apple_link: None,
         };
-        app.install_push(cx);
-        app.install_deep_links(cx);
+        if !offline {
+            app.install_push(cx);
+            app.install_deep_links(cx);
+        }
         // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
         if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {
             app.composer.update(cx, |c, cx| c.set_text(draft, cx));
@@ -336,10 +346,16 @@ impl MobileApp {
         app
     }
 
+    #[cfg(test)]
+    fn new_offline(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new(safe, window, cx)
+    }
+
     // MARK: actions
 
     /// Email step mails a code; code step exchanges it for an account key.
     fn sign_in_step(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if self.signing_in {
             return;
         }
@@ -394,6 +410,7 @@ impl MobileApp {
     /// "Continue with Google": opens jcode.sh/account (Google sign-in) in the
     /// system browser and polls the device flow until it is approved.
     fn google_sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if let Some(c) = self.browser_login.take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
             cx.notify();
@@ -447,6 +464,7 @@ impl MobileApp {
     }
 
     fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
+        if self.offline { return; }
         if let Some(c) = self.connection.take() {
             c.stop();
         }
@@ -466,6 +484,7 @@ impl MobileApp {
     }
 
     fn start_connection_in(&mut self, resume: Option<String>, working_dir: Option<String>, cx: &mut Context<Self>) {
+        if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         let mut config = Config::cloud(account);
         config.working_dir = working_dir;
@@ -730,6 +749,7 @@ impl MobileApp {
     }
 
     fn send(&self, build: impl FnOnce(u64) -> Request) {
+        if self.offline { return; }
         if let Some(c) = &self.connection {
             c.send(build);
         }
@@ -741,7 +761,9 @@ impl MobileApp {
             return;
         }
         static ASKED: std::sync::Once = std::sync::Once::new();
-        ASKED.call_once(crate::notify::request_permission);
+        if !self.offline {
+            ASKED.call_once(crate::notify::request_permission);
+        }
         if self.session.is_processing {
             self.session.apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
             self.send(|id| Request::SoftInterrupt { id, content: text, urgent: false });
@@ -763,6 +785,7 @@ impl MobileApp {
 
     /// First tap arms, second tap deletes the account server-side, then signs out.
     fn delete_account_tap(&mut self, cx: &mut Context<Self>) {
+        if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         match self.delete_step {
             0 => self.delete_step = 1,
@@ -790,7 +813,9 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
-        ios_system::forget_index();
+        if !self.offline {
+            ios_system::forget_index();
+        }
         self.unregister_push(cx);
         if let Some(c) = self.connection.take() {
             c.stop();
@@ -802,7 +827,9 @@ impl MobileApp {
         }
         self.tab_order = vec![self.active_tab];
         self.tab_motion.clear();
-        self.store.clear();
+        if !self.offline {
+            self.store.clear();
+        }
         self.account = None;
         self.synced = Default::default();
         self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
