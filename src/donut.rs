@@ -75,78 +75,88 @@ impl RenderOnce for InteractiveDonut {
         let Self { side, ink, started } = self;
         let rotation =
             window.use_keyed_state("hero-donut-rotation", cx, |_, _| Rotation::default());
-        let tilt = rotation.read(cx).tilt;
-        let spin = rotation.read(cx).spin;
-        let down = rotation.clone();
-        let movement = rotation.clone();
-        let up = rotation.clone();
-        let touch = rotation.clone();
-        div()
-            .id("interactive-hero-donut")
-            .debug_selector(|| "interactive-hero-donut".into())
-            .relative()
-            .size(px(side))
-            .flex_none()
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                // The hero is outside the form even when it captures a drag.
-                window.blur(cx);
-                window.dismiss_virtual_keyboard();
-                down.update(cx, |state, cx| {
-                    state.last = Some(event.position);
-                    cx.notify();
-                });
-                cx.stop_propagation();
-            })
-            .on_mouse_move(move |event, _, cx| {
-                movement.update(cx, |state, cx| {
-                    if !event.dragging() {
-                        state.last = None;
-                    } else if state.last.is_some() {
-                        state.drag_to(event.position, side);
-                        cx.notify();
-                    }
-                });
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                up.update(cx, |state, _| state.last = None);
-            })
-            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
-                rotation.update(cx, |state, _| state.last = None);
-            })
-            .child(donut_canvas(side, ink, started, tilt, spin))
-            .child(
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, window, _| {
-                        let rotation = touch.clone();
-                        window.on_mouse_event(
-                            move |event: &gpui::TouchDragEvent, phase, window, cx| {
-                                if phase != gpui::DispatchPhase::Bubble
-                                    || !bounds.contains(&event.start_position)
-                                {
-                                    return;
-                                }
-                                rotation.update(cx, |state, cx| {
-                                    if event.phase == gpui::TouchPhase::Started {
-                                        window.blur(cx);
-                                        window.dismiss_virtual_keyboard();
-                                    }
-                                    state.touch_drag(event, side);
-                                    cx.notify();
-                                });
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            },
-                        );
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(side)),
-            )
+        interactive_donut(side, ink, started, rotation, cx)
     }
+}
+
+fn interactive_donut(
+    side: f32,
+    ink: Hsla,
+    started: Instant,
+    rotation: gpui::Entity<Rotation>,
+    cx: &App,
+) -> impl IntoElement {
+    let tilt = rotation.read(cx).tilt;
+    let spin = rotation.read(cx).spin;
+    let down = rotation.clone();
+    let movement = rotation.clone();
+    let up = rotation.clone();
+    let touch = rotation.clone();
+    div()
+        .id("interactive-hero-donut")
+        .debug_selector(|| "interactive-hero-donut".into())
+        .relative()
+        .size(px(side))
+        .flex_none()
+        .cursor_pointer()
+        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+            // The hero is outside the form even when it captures a drag.
+            window.blur(cx);
+            window.dismiss_virtual_keyboard();
+            down.update(cx, |state, cx| {
+                state.last = Some(event.position);
+                cx.notify();
+            });
+            cx.stop_propagation();
+        })
+        .on_mouse_move(move |event, _, cx| {
+            movement.update(cx, |state, cx| {
+                if !event.dragging() {
+                    state.last = None;
+                } else if state.last.is_some() {
+                    state.drag_to(event.position, side);
+                    cx.notify();
+                }
+            });
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            up.update(cx, |state, _| state.last = None);
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            rotation.update(cx, |state, _| state.last = None);
+        })
+        .child(donut_canvas(side, ink, started, tilt, spin))
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let rotation = touch.clone();
+                    window.on_mouse_event(
+                        move |event: &gpui::TouchDragEvent, phase, window, cx| {
+                            if phase != gpui::DispatchPhase::Bubble
+                                || !bounds.contains(&event.start_position)
+                            {
+                                return;
+                            }
+                            rotation.update(cx, |state, cx| {
+                                if event.phase == gpui::TouchPhase::Started {
+                                    window.blur(cx);
+                                    window.dismiss_virtual_keyboard();
+                                }
+                                state.touch_drag(event, side);
+                                cx.notify();
+                            });
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        },
+                    );
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size(px(side)),
+        )
 }
 
 pub fn spinning_donut(side: f32, ink: Hsla, started: Instant) -> impl IntoElement {
@@ -212,6 +222,66 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DonutFixture {
+        rotation: gpui::Entity<Rotation>,
+    }
+
+    impl gpui::Render for DonutFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            interactive_donut(
+                140.,
+                gpui::white(),
+                Instant::now(),
+                self.rotation.clone(),
+                cx,
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn raw_touch_rotates_the_rendered_donut(cx: &mut gpui::TestAppContext) {
+        use gpui::{PlatformInput, TouchEvent, TouchId, TouchPhase};
+        let (view, cx) = cx.add_window_view(|_, cx| DonutFixture {
+            rotation: cx.new(|_| Rotation::default()),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let bounds = cx
+            .debug_bounds("interactive-hero-donut")
+            .expect("donut hit target");
+        let start = bounds.center();
+        let end = start + point(px(35.), px(20.));
+        for (phase, position) in [
+            (TouchPhase::Started, start),
+            (TouchPhase::Moved, end),
+            (TouchPhase::Ended, end),
+        ] {
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::Touch(TouchEvent {
+                        id: TouchId(1),
+                        phase,
+                        position,
+                        predicted_position: None,
+                        force: None,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            });
+        }
+        view.read_with(cx, |view, cx| {
+            let rotation = view.rotation.read(cx);
+            assert!(rotation.spin.abs() > 0.5, "raw touch must rotate the hero");
+            assert!(
+                rotation.tilt.abs() > 0.3,
+                "vertical drag must tilt the hero"
+            );
+            assert!(rotation.last.is_none(), "release must end the drag");
+        });
+    }
 
     #[test]
     fn touch_drag_rotates_from_contact_origin_and_cancels_without_jumping() {
