@@ -8,6 +8,7 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::hash::{Hash, Hasher};
 
 use gpui::{App, Pixels, px};
 
@@ -96,22 +97,58 @@ pub fn take_spotlight_opens() -> Vec<String> {
     std::mem::take(&mut *SPOTLIGHT_OPEN.lock().unwrap())
 }
 
-/// Index session titles in Spotlight (replaces the previous set).
-pub fn index_sessions(sessions: &[(String, String, Option<String>)]) {
-    use std::hash::{Hash, Hasher};
-    static LAST: Mutex<u64> = Mutex::new(0);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    sessions.hash(&mut h);
-    let hash = h.finish();
-    let mut last = LAST.lock().unwrap();
-    if *last == hash {
-        return;
+#[derive(Default)]
+struct IndexCache(Option<u64>);
+
+impl IndexCache {
+    fn changed(&mut self, hash: u64) -> bool {
+        if self.0 == Some(hash) { return false; }
+        self.0 = Some(hash);
+        true
     }
-    *last = hash;
-    imp::index(sessions);
+
+    fn prepare<T>(&mut self, hash: u64, build: impl FnOnce() -> T) -> Option<T> {
+        self.changed(hash).then(build)
+    }
+}
+
+static INDEX_CACHE: Mutex<IndexCache> = Mutex::new(IndexCache(None));
+// In-flight delete completions must not restore records after sign-out or a
+// newer account/list replacement.
+static INDEX_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn index_fingerprint<'a>(owner: impl Hash, sessions: impl IntoIterator<Item = (&'a str, Option<&'a str>, Option<&'a str>)>) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    owner.hash(&mut h);
+    let mut count = 0usize;
+    for session in sessions {
+        session.hash(&mut h);
+        count += 1;
+    }
+    count.hash(&mut h);
+    h.finish()
+}
+
+/// Hash borrowed source metadata each frame, allocating titles and records only
+/// when it changes. `owner` includes entity identity and authentication epoch.
+/// Empty lists are replacements too, so deleted sessions cannot remain indexed.
+pub fn index_sessions<'a>(
+    owner: impl Hash,
+    sessions: impl IntoIterator<Item = (&'a str, Option<&'a str>, Option<&'a str>)>,
+    build: impl FnOnce() -> Vec<(String, String, Option<String>)>,
+) {
+    let hash = index_fingerprint(owner, sessions);
+    let mut cache = INDEX_CACHE.lock().unwrap();
+    if let Some(sessions) = cache.prepare(hash, build) {
+        INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+        imp::index(&sessions);
+    }
 }
 
 pub fn clear_index() {
+    let mut cache = INDEX_CACHE.lock().unwrap();
+    cache.0 = None;
+    INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
     imp::clear_index();
 }
 
@@ -291,7 +328,14 @@ mod imp {
             let index: *mut AnyObject = msg_send![index_cls, defaultSearchableIndex];
             let domains = NSArray::from_retained_slice(&[NSString::from_str(DOMAIN)]);
             // Replace the domain wholesale so deleted sessions disappear.
+            let generation = super::INDEX_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
             let done = RcBlock::new(move |_err: *mut AnyObject| {
+                // Serialize the generation check and submission with clear_index.
+                // Otherwise sign-out could land between these two operations.
+                let _cache = super::INDEX_CACHE.lock().unwrap();
+                if super::INDEX_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+                    return;
+                }
                 let index: *mut AnyObject = msg_send![objc2::class!(CSSearchableIndex), defaultSearchableIndex];
                 let _: () = msg_send![index, indexSearchableItems: &*array, completionHandler: std::ptr::null::<AnyObject>()];
             });
@@ -325,6 +369,71 @@ pub fn poll(cx: &mut App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spotlight_unchanged_metadata_does_not_build_records() {
+        let mut cache = IndexCache::default();
+        let records = [("session_one_123", Some("Title"), Some("/project"))];
+        let hash = index_fingerprint((1u64, 1u64), records);
+        assert_eq!(cache.prepare(hash, || 1), Some(1));
+        for _ in 0..100 {
+            assert_eq!(cache.prepare(hash, || panic!("unchanged metadata rebuilt")), None::<()>);
+        }
+        // Clear must permit exactly the same list to be indexed after login.
+        cache.0 = None;
+        assert_eq!(cache.prepare(hash, || 2), Some(2));
+        // Zero is a valid fingerprint, not an uninitialized sentinel.
+        assert!(IndexCache::default().changed(0));
+    }
+
+    #[test]
+    fn spotlight_invalidates_for_all_metadata_and_account_changes() {
+        let owner = (1u64, 1u64);
+        let records = [("id", Some("Title"), Some("/project"))];
+        let original = index_fingerprint(owner, records);
+        for changed in [
+            [("other-id", Some("Title"), Some("/project"))],
+            [("id", Some("Renamed"), Some("/project"))],
+            [("id", None, Some("/project"))],
+            [("id", Some("Title"), Some("/other-project"))],
+            [("id", Some("Title"), None)],
+        ] {
+            assert_ne!(original, index_fingerprint(owner, changed));
+        }
+        assert_ne!(original, index_fingerprint((2u64, 1u64), records));
+        assert_ne!(original, index_fingerprint((1u64, 2u64), records));
+        let empty = index_fingerprint(owner, []);
+        let mut cache = IndexCache(Some(original));
+        assert_eq!(cache.prepare(empty, Vec::<()>::new), Some(vec![]));
+        assert_eq!(cache.prepare(empty, || panic!("empty replacement repeated")), None::<()>);
+        assert_ne!(empty, index_fingerprint((1u64, 2u64), []));
+    }
+
+    #[test]
+    #[ignore = "manual Spotlight preparation timing comparison"]
+    fn benchmark_spotlight_unchanged_preparation() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let records: Vec<_> = (0..1000).map(|n| (
+            format!("session_project_{n}"), format!("Project session {n}"), Some("/workspace/project".to_owned()),
+        )).collect();
+        let start = Instant::now();
+        for _ in 0..1000 {
+            let cloned = black_box(&records).clone();
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            cloned.hash(&mut hash);
+            black_box(hash.finish());
+        }
+        let cloned = start.elapsed();
+        let start = Instant::now();
+        let mut cache = IndexCache::default();
+        for _ in 0..1000 {
+            let hash = index_fingerprint((1u64, 1u64), black_box(&records).iter()
+                .map(|(id, title, dir)| (id.as_str(), Some(title.as_str()), dir.as_deref())));
+            black_box(cache.prepare(hash, || records.clone()));
+        }
+        eprintln!("1000 sessions x 1000 frames: cloned={cloned:?}, borrowed={:?}", start.elapsed());
+    }
 
     #[test]
     fn categories_scale_monotonically() {

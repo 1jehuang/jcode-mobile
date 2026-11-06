@@ -23,8 +23,9 @@ impl MobileApp {
         let content = (if w >= WIDE_MIN && self.account.is_some() { w - SIDEBAR_WIDTH } else { w } - bezel).max(1.);
         CONTENT_WIDTH.store(content.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let changed = system::poll(cx);
-        static SYNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if changed || !SYNCED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        // Setters are idempotent. Synchronize every entity, including newly
+        // parked orbs, rather than a process-global "already synced" flag.
+        {
             let reduce = system::reduce_motion();
             let theme = if system::is_light() {
                 gpui_thinking_orbs::OrbTheme::Light
@@ -38,22 +39,22 @@ impl MobileApp {
                     o.set_theme(theme, cx);
                 });
             }
-            window.refresh();
         }
+        if changed { window.refresh(); }
         for id in system::take_spotlight_opens() {
             self.open_session(id, None, cx);
         }
         if self.account.is_some() {
-            let items: Vec<(String, String, Option<String>)> = self
-                .session
-                .session_list
-                .iter()
-                .filter(|s| s.parent_session_id.is_none())
-                .map(|s| (s.session_id.clone(), super::sidebar::session_title(s), s.working_dir.clone()))
-                .collect();
-            if !items.is_empty() {
-                system::index_sessions(&items);
-            }
+            system::index_sessions(
+                (cx.entity_id(), self.auth_generation),
+                self.session.session_list.iter()
+                    .filter(|s| s.parent_session_id.is_none())
+                    .map(|s| (s.session_id.as_str(), s.title.as_deref(), s.working_dir.as_deref())),
+                || self.session.session_list.iter()
+                    .filter(|s| s.parent_session_id.is_none())
+                    .map(|s| (s.session_id.clone(), super::sidebar::session_title(s), s.working_dir.clone()))
+                    .collect(),
+            );
         }
     }
 
