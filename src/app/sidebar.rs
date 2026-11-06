@@ -373,7 +373,8 @@ impl MobileApp {
     pub(super) fn render_session_list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.session.session_id.clone();
         let open: Vec<String> = self.parked.iter().filter_map(|p| p.session.session_id.clone()).collect();
-        let mut list = div().id("drawer-overview").flex_none().max_h(relative(0.4))
+        let mut list = div().id("drawer-overview")
+            .debug_selector(|| "drawer-overview".into()).flex_none().max_h(relative(0.4))
             .overflow_y_scroll().flex().flex_col().pb(px(8.));
         list = list.child(self.render_synced_sessions(t, cx));
         // Any tab's list will do; the active one may not have fetched yet.

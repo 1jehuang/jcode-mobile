@@ -2040,6 +2040,9 @@ impl MobileApp {
         }
         let empty = routes.is_empty() && self.session.available_models.is_empty();
         div()
+            // The modal owns its whole backdrop. Otherwise a row can close
+            // the sheet and the same click can reopen it via metadata below.
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -2082,6 +2085,7 @@ impl MobileApp {
                     .child(
                         div()
                             .id("picker-list")
+                            .debug_selector(|| "model-picker-list".into())
                             .flex_1()
                             .overflow_y_scroll()
                             .px(px(12.))

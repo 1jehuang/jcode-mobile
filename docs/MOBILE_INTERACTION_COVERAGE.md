@@ -12,7 +12,7 @@ Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
 The reviewed snapshot records **65 owners, 111 static event-call sites, and
-147 control/helper-family sites**. Of those owners, 57 have named, explicitly
+149 control/helper-family sites**. Of those owners, 57 have named, explicitly
 partial regression evidence and 8 are gap-only. These are inventory counts,
 not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
 as `partial` or `gap_only`.

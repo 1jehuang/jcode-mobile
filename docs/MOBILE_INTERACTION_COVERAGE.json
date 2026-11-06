@@ -209,14 +209,16 @@
     {
       "controls": {
         "debug_selector:literal:model-dismiss": 1,
+        "debug_selector:literal:model-picker-list": 1,
         "id:literal:picker-dismiss": 1,
         "id:literal:picker-list": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered model selection, same choice, scrim dismiss and unavailable/available route rows are hit-tested against local fixture state.",
+          "note": "Rendered model selection, same choice, scrim dismiss and unavailable/available routes are hit-tested. The metadata regression asserts a reachable row overlaps underlying account metadata at large text and closes without click-through reopening.",
           "tests": [
+            "src/app/composer_coverage.rs::metadata_picker_actions_preserve_each_tabs_unsent_draft",
             "src/app/navigation_coverage.rs::model_picker_bare_selection_same_selection_and_dismiss_hit_test",
             "src/app/navigation_coverage.rs::model_picker_unavailable_route_is_inert_and_available_route_selects"
           ]
@@ -1248,6 +1250,7 @@
         "debug_selector:dynamic:block": 2,
         "debug_selector:dynamic:header_selector": 1,
         "debug_selector:dynamic:sessions_selector": 1,
+        "debug_selector:literal:drawer-overview": 1,
         "debug_selector:literal:drawer-sessions": 1,
         "id:literal:drawer-overview": 1,
         "id:literal:drawer-sessions": 1,
@@ -1260,8 +1263,9 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered dynamic directory headers, new-in-directory buttons and session rows are tested for grouping, search and propagation isolation.",
+          "note": "Rendered dynamic directory headers, new-in-directory buttons and session rows cover grouping, search and propagation isolation. Local pagination is reached by actual wheel scrolling inside the recorded overview clip, including large text.",
           "tests": [
+            "src/app/synced_sessions.rs::tests::local_sidebar_discloses_more_and_searches_hidden_sessions",
             "src/app/navigation_coverage.rs::drawer_directory_groups_and_search_hit_test",
             "src/app/navigation_coverage.rs::drawer_directory_new_button_does_not_toggle_group"
           ]
@@ -1733,7 +1737,7 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 147,
+    "control_site_count": 149,
     "event_site_count": 111,
     "owner_count": 65
   }
