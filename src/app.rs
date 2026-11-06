@@ -904,8 +904,7 @@ fn spinner_glyph(step: usize) -> &'static str {
 impl MobileApp {
     fn render_sign_in(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let code_step = self.login_token.is_some();
-        // The keyboard's return key ("next"/"go") submits, so there is no
-        // action button: only a status line under the field.
+        // Keep an explicit action: the iOS number pad has no return key.
         let status: Option<String> = match (code_step, self.signing_in) {
             (false, true) => Some("Sending a code…".into()),
             (true, true) => Some("Signing in…".into()),
@@ -922,6 +921,7 @@ impl MobileApp {
         div()
             .id("sign-in")
             .size_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .px(px(20.))
@@ -936,10 +936,15 @@ impl MobileApp {
                     .justify_center()
                     .gap(px(18.))
                     .child(crate::donut::spinning_donut(140., t.text_strong, self.started))
-                    .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).line_height(crate::system::fs(30.))),
+                    .child(label("Sign in to Jcode Cloud", t.text_strong, 22.).w_full().min_w_0().whitespace_normal().text_center().line_height(crate::system::fs(30.))),
             )
             .child(
                 div()
+                    .id("sign-in-form")
+                    .w_full()
+                    .min_w_0()
+                    .max_h_full()
+                    .overflow_y_scroll()
                     .flex_none()
                     .flex()
                     .flex_col()
@@ -990,13 +995,30 @@ impl MobileApp {
                         )
                     })
                     .child(if code_step { self.code.clone() } else { self.email.clone() })
+                    .child(
+                        outline_button(
+                            "submit-sign-in",
+                            if self.signing_in {
+                                if code_step { "Signing in…" } else { "Sending code…" }
+                            } else if code_step {
+                                "Verify code"
+                            } else {
+                                "Send code"
+                            },
+                            !self.signing_in,
+                            t,
+                        )
+                        .a11y_text_button()
+                        .flex_none()
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_in_step(cx))),
+                    )
                     .when_some(status, |d, s| {
                         let row = if self.signing_in {
                             orb_row(&self.status_orb, s, t.text_secondary)
                         } else {
-                            div().child(label(s, t.text_secondary, 13.))
+                            div().child(label(s, t.text_secondary, 13.).w_full().min_w_0().whitespace_normal().text_center())
                         };
-                        d.child(row.w_full().flex().justify_center())
+                        d.child(row.w_full().min_w_0().flex().justify_center())
                     })
                     .when(code_step && !self.signing_in, |d| {
                         d.child(
@@ -2197,9 +2219,22 @@ mod monkey_tests {
             _ => {}
         };
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
-        for screen in [Screen::SignIn, Screen::Chat, Screen::Settings, Screen::Chat] {
+        for (screen, code_step) in [
+            (Screen::SignIn, false),
+            (Screen::SignIn, true),
+            (Screen::Chat, false),
+            (Screen::Settings, false),
+            (Screen::Chat, false),
+        ] {
             view.update(cx, |app, cx| {
                 app.screen = screen;
+                app.login_token = code_step.then(|| "offline-test-token".to_string());
+                if code_step {
+                    app.email.update(cx, |input, cx| {
+                        input.set_text("a-long-email-address-for-narrow-phone-layout@example.com", cx)
+                    });
+                    app.focus_code = true;
+                }
                 cx.notify();
             });
             cx.run_until_parked();
