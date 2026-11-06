@@ -52,6 +52,7 @@ impl MobileApp {
             .child(outline_button("inspect-cloud-machine", if state.loading { "Checking cloud machine…" } else { "Refresh cloud machine" }, self.account.is_some() && !state.loading, t)
                 .on_click(cx.listener(|this, _, _, cx| this.inspect_cloud_machine(cx))));
         if let Some(snapshot) = &state.snapshot {
+            section = section.child(label("Last successful inspection", t.text_muted, 11.));
             let rows = [
                 ("Home directory", snapshot.home.clone()),
                 (
@@ -66,7 +67,7 @@ impl MobileApp {
                 (
                     "GitHub access",
                     if snapshot.github_authenticated {
-                        "Authenticated now"
+                        "Authenticated at refresh"
                     } else {
                         "Not authenticated / unavailable"
                     }
