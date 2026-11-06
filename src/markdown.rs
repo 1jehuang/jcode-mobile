@@ -83,7 +83,9 @@ impl ParsedMarkdown {
 // overhead allowances) and entry count. Oversized replies render without retention.
 const CACHE_BYTES: usize = 2 * 1024 * 1024;
 const CACHE_ENTRIES: usize = 128;
-const MAX_CACHED_SOURCE: usize = 64 * 1024;
+// Large unchanged replies still benefit from reuse. The total allocation budget,
+// not just this source limit, governs admission, including span-heavy documents.
+const MAX_CACHED_SOURCE: usize = CACHE_BYTES / 4;
 
 #[derive(Default)]
 struct ParseCache {
@@ -269,6 +271,129 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chunked_inline_matches_scalar_reference() {
+        fn check(source: &str) {
+            assert_eq!(
+                parse_inline(source),
+                parse_inline_impl::<false>(source),
+                "{source:?}"
+            );
+        }
+        // Exhaustive short combinations exercise adjacent runs and escaped markers.
+        let tokens = [
+            "a", "é", "中", "🦀", "*", "**", "***", "`", "``", "\\", " ", "\n",
+        ];
+        for a in tokens {
+            for b in tokens {
+                for c in tokens {
+                    for d in tokens {
+                        check(&[a, b, c, d].concat());
+                    }
+                }
+            }
+        }
+        // Longer deterministic mixtures exercise nesting and code skipping.
+        let mut seed = 0x431b_782a_u64;
+        for _ in 0..4_000 {
+            let mut source = String::new();
+            for _ in 0..80 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                source.push_str(tokens[(seed >> 32) as usize % tokens.len()]);
+            }
+            check(&source);
+        }
+        for _ in 0..100 {
+            let mut source = String::from("````` unmatched ");
+            for _ in 0..1_200 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                source.push_str(tokens[(seed >> 32) as usize % tokens.len()]);
+            }
+            check(&source);
+        }
+        for source in [
+            "**é *中 `🦀*`* tail**".repeat(100),
+            "\\*\\`é\\中 trailing\\".repeat(100),
+            "* ".repeat(1_000),
+            (1..100).map(|n| format!("{}é ", "`".repeat(n))).collect(),
+            format!(
+                "`````{} **é `x*y`** \\`z` *a ``é`` b* `tail",
+                "plain é ".repeat(300)
+            ),
+            format!("*`````{}* **a `x`** ``two``", "plain é ".repeat(300)),
+        ] {
+            check(&source);
+            for end in (0..source.len())
+                .step_by(37)
+                .filter(|end| source.is_char_boundary(*end))
+            {
+                check(&source[..end]);
+            }
+        }
+    }
+
+    /// Parsing-only timings in milliseconds per operation, including allocating output.
+    /// Run with --release -- --ignored --nocapture and compare on the same machine.
+    #[test]
+    #[ignore = "before/after inline workload microbenchmark"]
+    fn benchmark_inline_workloads() {
+        use std::{hint::black_box, time::Instant};
+        let prose = "Plain English with UTF-8 é 中 🦀 and no formatting. ".repeat(6_000);
+        let mixed = "A **bold** and *italic é* paragraph with `literal * code` and \\* escapes. "
+            .repeat(3_000);
+        let unmatched = (1..250)
+            .map(|n| format!("{}é ", "`".repeat(n)))
+            .collect::<String>();
+        for (label, source, iterations) in [
+            ("plain-large", prose.as_str(), 100),
+            ("mixed-large", mixed.as_str(), 100),
+            ("unmatched-backticks", unmatched.as_str(), 50),
+            (
+                "unmatched-emphasis",
+                "* long plain unmatched é text",
+                10_000,
+            ),
+        ] {
+            assert_eq!(parse_inline(source), parse_inline_impl::<false>(source));
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(parse_inline_impl::<false>(black_box(source)));
+            }
+            let before = start.elapsed().as_secs_f64() * 1_000. / iterations as f64;
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(parse_inline(black_box(source)));
+            }
+            let after = start.elapsed().as_secs_f64() * 1_000. / iterations as f64;
+            eprintln!(
+                "{label}: {} bytes, before {before:.6} ms/op, after {after:.6} ms/op",
+                source.len()
+            );
+        }
+        let start = Instant::now();
+        for end in (1_024..=mixed.len()).step_by(1_024) {
+            let end = (end..=mixed.len())
+                .find(|end| mixed.is_char_boundary(*end))
+                .unwrap();
+            black_box(parse_inline_impl::<false>(black_box(&mixed[..end])));
+        }
+        let before = start.elapsed().as_secs_f64() * 1_000.;
+        let start = Instant::now();
+        for end in (1_024..=mixed.len()).step_by(1_024) {
+            let end = (end..=mixed.len())
+                .find(|end| mixed.is_char_boundary(*end))
+                .unwrap();
+            black_box(parse_inline(black_box(&mixed[..end])));
+        }
+        let after = start.elapsed().as_secs_f64() * 1_000.;
+        let operations = mixed.len() / 1_024;
+        eprintln!(
+            "streaming mixed 1KiB updates: {operations} prefixes, before {:.6} ms/op, after {:.6} ms/op",
+            before / operations as f64,
+            after / operations as f64
+        );
+    }
+
+    #[test]
     fn block_formatting_preserves_existing_semantics() {
         let parsed = parse_markdown(
             "  first  \r\n\tsecond\n\n ### **é** ##  \n - `x`\n * *y*\n 007) z\n2026. literal\n3.5 literal\n ```rust\n  **raw**\n\tcode\n ```closing\nlast\nline\n```\nunclosed\n",
@@ -355,30 +480,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cache_reuses_large_replies_within_the_same_byte_budget() {
+        let mut cache = ParseCache::default();
+        let source = "é plain reply ".repeat(20_000);
+        assert!(source.len() > 64 * 1024);
+        let first = cache.get(&source);
+        assert!(Arc::ptr_eq(&first, &cache.get(&source)));
+        assert_eq!(*first, parse_markdown(&source));
+        for n in 0..20 {
+            let source = format!("{n} {}", "a".repeat(200_000));
+            cache.get(&source);
+            assert!(cache.bytes <= CACHE_BYTES);
+        }
+    }
+
     /// Run: justrust test -p jcode-mobile markdown::tests::benchmark_parse_cache --release -- --ignored --nocapture
     /// Reports parsing only, not GPUI layout/paint. No timing assertion on shared runners.
     #[test]
     #[ignore = "reproducible parsing microbenchmark"]
     fn benchmark_parse_cache() {
         use std::{hint::black_box, time::Instant};
-        let src = "# Heading\n\nA **bold** and *italic* é paragraph with `code`.\n- item\n12) ordered\n```rust\nfn main() {}\n```\n\n".repeat(40);
-        let iterations = 2_000;
-        assert_eq!(*cached_parse(&src), parse_markdown(&src));
-        let start = Instant::now();
-        for _ in 0..iterations {
-            black_box(parse_markdown(black_box(&src)));
+        for (label, src, iterations) in [
+            ("small", "# Heading\n\nA **bold** and *italic* é paragraph with `code`.\n- item\n12) ordered\n```rust\nfn main() {}\n```\n\n".repeat(40), 2_000),
+            ("large-plain", "Plain English with UTF-8 é 中 🦀 and no formatting. ".repeat(6_000), 100),
+            ("large-mixed", "A **bold** and *italic é* paragraph with `code`. ".repeat(5_000), 100),
+        ] {
+            assert_eq!(*cached_parse(&src), parse_markdown(&src));
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(parse_markdown(black_box(&src)));
+            }
+            let uncached = start.elapsed();
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(cached_parse(black_box(&src)));
+            }
+            let cached = start.elapsed();
+            eprintln!(
+                "markdown {label}: {iterations} iterations, {} source bytes, cold {:.6} ms/op, warm {:.6} ms/op",
+                src.len(),
+                uncached.as_secs_f64() * 1_000. / iterations as f64,
+                cached.as_secs_f64() * 1_000. / iterations as f64,
+            );
         }
-        let uncached = start.elapsed();
-        let start = Instant::now();
-        for _ in 0..iterations {
-            black_box(cached_parse(black_box(&src)));
-        }
-        let cached = start.elapsed();
-        eprintln!(
-            "markdown parsing: {iterations} iterations, {} source bytes, uncached {uncached:?}, cached {cached:?}, ratio {:.2}x",
-            src.len(),
-            uncached.as_secs_f64() / cached.as_secs_f64()
-        );
     }
 
     #[test]
@@ -471,6 +616,21 @@ struct InlineStyle {
 }
 
 fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)>) {
+    parse_inline_impl::<true>(src)
+}
+
+// The scalar path is retained as a differential oracle in tests. Const specialization
+// removes it from the production parser.
+fn parse_inline_impl<const CHUNKED: bool>(
+    src: &str,
+) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)>) {
+    struct CodeSearch<'a> {
+        root: &'a str,
+        // Built only after a failed long search. Ordinary prose and matched code
+        // keep the allocation-free search, while adversarial distinct fence lengths
+        // cannot repeatedly scan the remaining document. Never retained in the cache.
+        runs: Option<std::collections::HashMap<usize, Vec<usize>>>,
+    }
     fn append(
         out: &mut String,
         spans: &mut Vec<(std::ops::Range<usize>, InlineStyle)>,
@@ -488,7 +648,11 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
             spans.push((start..out.len(), style));
         }
     }
-    fn closing(src: &str, marker: &str) -> Option<usize> {
+    fn closing<const CHUNKED: bool>(
+        src: &str,
+        marker: &str,
+        code: &mut CodeSearch<'_>,
+    ) -> Option<usize> {
         let mut i = 0;
         while i < src.len() {
             let rest = &src[i..];
@@ -503,7 +667,7 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
             if rest.starts_with('`') && marker != "`" {
                 let count = rest.bytes().take_while(|b| *b == b'`').count();
                 let fence = &rest[..count];
-                if let Some(end) = code_end(&rest[count..], fence) {
+                if let Some(end) = code_end::<CHUNKED>(&rest[count..], fence, code) {
                     i += count + end + count;
                     continue;
                 }
@@ -520,11 +684,29 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
                     i
                 });
             }
-            i += rest.chars().next().unwrap().len_utf8();
+            i += if CHUNKED {
+                // ASCII marker bytes cannot occur inside a UTF-8 scalar.
+                rest.as_bytes()[1..]
+                    .iter()
+                    .position(|b| matches!(b, b'\\' | b'`' | b'*'))
+                    .map_or(rest.len(), |next| next + 1)
+            } else {
+                rest.chars().next().unwrap().len_utf8()
+            };
         }
         None
     }
-    fn code_end(src: &str, fence: &str) -> Option<usize> {
+    fn code_end<const CHUNKED: bool>(
+        src: &str,
+        fence: &str,
+        code: &mut CodeSearch<'_>,
+    ) -> Option<usize> {
+        if CHUNKED && let Some(runs) = &code.runs {
+            let start = src.as_ptr() as usize - code.root.as_ptr() as usize;
+            let candidates = runs.get(&fence.len())?;
+            let next = *candidates.get(candidates.partition_point(|offset| *offset < start))?;
+            return (next + fence.len() <= start + src.len()).then_some(next - start);
+        }
         let mut offset = 0;
         while let Some(pos) = src[offset..].find('`') {
             let start = offset + pos;
@@ -534,14 +716,29 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
             }
             offset = start + count;
         }
+        if CHUNKED && src.len() > 1_024 {
+            let mut runs = std::collections::HashMap::<usize, Vec<usize>>::new();
+            let mut offset = 0;
+            while let Some(pos) = code.root[offset..].find('`') {
+                let start = offset + pos;
+                let count = code.root[start..]
+                    .bytes()
+                    .take_while(|b| *b == b'`')
+                    .count();
+                runs.entry(count).or_default().push(start);
+                offset = start + count;
+            }
+            code.runs = Some(runs);
+        }
         None
     }
-    fn parse(
+    fn parse<const CHUNKED: bool>(
         mut src: &str,
         style: InlineStyle,
         depth: usize,
         out: &mut String,
         spans: &mut Vec<(std::ops::Range<usize>, InlineStyle)>,
+        code: &mut CodeSearch<'_>,
     ) {
         while !src.is_empty() {
             if let Some(rest) = src.strip_prefix('\\')
@@ -554,7 +751,7 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
             }
             if src.starts_with('`') {
                 let count = src.bytes().take_while(|b| *b == b'`').count();
-                if let Some(end) = code_end(&src[count..], &src[..count]) {
+                if let Some(end) = code_end::<CHUNKED>(&src[count..], &src[..count], code) {
                     let content = src[count..count + end].replace('\n', " ");
                     let content = if content.starts_with(' ')
                         && content.ends_with(' ')
@@ -589,7 +786,9 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
             };
             if depth < 32
                 && src.starts_with(marker)
-                && let Some(end) = closing(&src[marker.len()..], marker)
+                // A whitespace opener can never format, regardless of its closer.
+                && (!CHUNKED || !src[marker.len()..].starts_with(char::is_whitespace))
+                && let Some(end) = closing::<CHUNKED>(&src[marker.len()..], marker, code)
                 && end > 0
                 && !src[marker.len()..].starts_with(char::is_whitespace)
                 && !src[..marker.len() + end].ends_with(char::is_whitespace)
@@ -609,24 +808,45 @@ fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)
                         ..style
                     },
                 };
-                parse(
+                parse::<CHUNKED>(
                     &src[marker.len()..marker.len() + end],
                     nested,
                     depth + 1,
                     out,
                     spans,
+                    code,
                 );
                 src = &src[marker.len() + end + marker.len()..];
                 continue;
             }
-            let c = src.chars().next().unwrap();
-            append(out, spans, &src[..c.len_utf8()], style);
-            src = &src[c.len_utf8()..];
+            let count = if CHUNKED {
+                // Consume the current literal scalar plus the entire following plain
+                // run. Stop only at ASCII syntax, preserving byte-based span ranges.
+                src.as_bytes()[1..]
+                    .iter()
+                    .position(|b| matches!(b, b'\\' | b'`' | b'*'))
+                    .map_or(src.len(), |next| next + 1)
+            } else {
+                src.chars().next().unwrap().len_utf8()
+            };
+            append(out, spans, &src[..count], style);
+            src = &src[count..];
         }
     }
     let mut out = String::with_capacity(src.len());
     let mut spans = vec![];
-    parse(src, InlineStyle::default(), 0, &mut out, &mut spans);
+    let mut code = CodeSearch {
+        root: src,
+        runs: None,
+    };
+    parse::<CHUNKED>(
+        src,
+        InlineStyle::default(),
+        0,
+        &mut out,
+        &mut spans,
+        &mut code,
+    );
     (out, spans)
 }
 
