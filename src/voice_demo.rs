@@ -61,6 +61,16 @@ impl VoiceDemo {
         steps
     }
 
+    /// Reduced motion keeps the scripted state accurate on explicit redraws,
+    /// but does not pump animation frames or animate the recognizer's spring.
+    fn preview_frame(&mut self, elapsed: f64, reduce_motion: bool) -> bool {
+        self.advance(elapsed);
+        if reduce_motion {
+            self.gesture.snap_to_target();
+        }
+        !reduce_motion
+    }
+
     fn step(&mut self, elapsed: f32, dt: f32) {
         let cycle = (elapsed / 9.) as i32;
         let local = elapsed % 9.;
@@ -118,8 +128,10 @@ impl VoiceDemo {
 impl Render for VoiceDemo {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let elapsed = self.started.elapsed().as_secs_f64();
-        self.advance(elapsed);
-        window.request_animation_frame();
+        let reduce_motion = crate::system::reduce_motion();
+        if self.preview_frame(elapsed, reduce_motion) {
+            window.request_animation_frame();
+        }
         let t = Theme::pure_black();
         let locked_cycle = self.cycle % 2 == 1;
         div().size_full().flex().flex_col().bg(t.background)
@@ -141,7 +153,7 @@ impl Render for VoiceDemo {
                     .child("Rhythmic activity preview, not measured audio.\nNo microphone access. No network requests."))
                 .child(div().mt(px(20.)).text_size(px(11.)).text_color(t.ok)
                     .child(format!("SIMULATED / {}", self.phase.label()))))
-            .child(voice_visual::render(self.gesture.pull, self.phase, elapsed as f32, false, &t))
+            .child(voice_visual::render(self.gesture.pull, self.phase, elapsed as f32, reduce_motion, &t))
             .child(div().px(px(22.)).pt(px(14.)).pb(px(34.)).bg(t.raised)
                 .child(div().p(px(13.)).rounded_lg().border_1().border_color(t.input_border)
                     .text_size(px(11.)).text_color(t.text_muted).child("Preview only · composer controls live in chat")))
@@ -152,6 +164,7 @@ impl Render for VoiceDemo {
 pub fn run() {
     gpui_platform::application().run(|cx: &mut App| {
         crate::load_fonts(cx);
+        crate::system::refresh(cx);
         cx.set_global(Theme::pure_black());
         let bounds = Bounds::centered(None, size(px(390.), px(844.)), cx);
         cx.open_window(
@@ -178,6 +191,26 @@ mod tests {
         let tick = demo.tick;
         assert!((1..=2).contains(&demo.advance(262_144. + 1. / 60.)));
         assert_ne!(demo.tick, tick);
+    }
+
+    #[test]
+    fn voice_demo_reduce_motion_stops_frames_without_changing_script() {
+        for elapsed in [1.7, 3., 5.6, 12.45, 15.5, 262_144.] {
+            let mut normal = VoiceDemo::new();
+            let mut reduced = VoiceDemo::new();
+            assert!(normal.preview_frame(elapsed, false));
+            assert!(!reduced.preview_frame(elapsed, true));
+            assert_eq!(normal.phase, reduced.phase);
+            assert_eq!(normal.gesture.state, reduced.gesture.state);
+            assert_eq!(normal.cycle, reduced.cycle);
+            assert!(!reduced.gesture.tick(1. / 120.));
+            assert!(!reduced.preview_frame(elapsed, true));
+            assert!(reduced.preview_frame(elapsed + 0.5, false));
+            let mut fresh = VoiceDemo::new();
+            fresh.advance(elapsed + 0.5);
+            assert_eq!(reduced.phase, fresh.phase);
+            assert_eq!(reduced.gesture.state, fresh.gesture.state);
+        }
     }
 
     fn same(actual: &VoiceDemo, expected: &VoiceDemo) {
