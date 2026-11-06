@@ -451,7 +451,7 @@ mod haptic_tests {
         }
     }
 
-    fn tap(cx: &mut gpui::VisualTestContext, selector: &str) {
+    fn tap(cx: &mut gpui::VisualTestContext, selector: &'static str) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let at = cx
             .debug_bounds(selector)
