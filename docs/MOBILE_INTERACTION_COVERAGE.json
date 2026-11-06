@@ -1,0 +1,1740 @@
+{
+  "entries": [
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "This visual helper is mounted under both error-banner hit targets in the transcript tests. Dismissal routing is tested, not every tint/message/width combination.",
+          "tests": [
+            "src/app/composer_coverage.rs::transcript_and_empty_error_banners_dismiss_safely_offline"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Detailed error-banner visual appearance, long-message wrapping and all callers have no independent pixel assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::banner",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Connecting, provisioning, reconnecting and disconnected status rendering has no focused per-phase assertion. Existing refresh-ownership tests cover a separate gating predicate, not this helper output.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::connection_status",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "id:literal:chat-swipe": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Wheel input releases follow on the transcript and is contained by modal drawer paths. This is rendered GPUI event routing, not native momentum.",
+          "tests": [
+            "src/app/scroll_tests.rs::live_tools_release_follow_on_small_upward_scroll",
+            "src/app/scroll_tests.rs::drawer_scroll_does_not_move_transcript_or_release_follow"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Native pan velocity, interactive keyboard dismissal and simultaneous system gesture arbitration need device checks.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_scroll_wheel": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_chat",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:err": 1,
+        "debug_selector:literal:err-empty": 1,
+        "debug_selector:literal:jump": 1,
+        "id:literal:err": 1,
+        "id:literal:err-empty": 1,
+        "id:literal:jump": 1,
+        "id:literal:transcript": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Jump-to-latest and both visible/empty error banners are tapped in offline rendered fixtures; local follow and draft state are asserted.",
+          "tests": [
+            "src/app/composer_coverage.rs::transcript_jump_control_restores_follow_without_discarding_draft",
+            "src/app/composer_coverage.rs::transcript_and_empty_error_banners_dismiss_safely_offline"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Long transcript/tool reasoning fixtures check narrow viewport layout, not delivery of real streamed tool responses.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3,
+        "on_scroll_wheel": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_chat_inner",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:chat-composer": 1,
+        "debug_selector:literal:chat-metadata": 1,
+        "debug_selector:literal:location": 1,
+        "id:literal:chat-composer": 1,
+        "id:literal:chat-metadata": 1,
+        "id:literal:location": 1,
+        "pill:literal:cancel-dictation": 1,
+        "pill:literal:pill-account": 1,
+        "pill:literal:pill-effort": 1,
+        "pill:literal:pill-model": 1,
+        "round_button:literal:send": 1,
+        "round_button:literal:stop": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered send/stop controls cover readiness, blank drafts, local send/queued interrupt and stop-request state. Model/account/location metadata paths preserve drafts. The effort pill is a decorative label with no event handler. No socket is present.",
+          "tests": [
+            "src/app/composer_coverage.rs::composer_send_disabled_for_disconnected_missing_session_and_blank_input",
+            "src/app/composer_coverage.rs::composer_send_records_local_message_then_queues_processing_followup",
+            "src/app/composer_coverage.rs::composer_stop_requires_ready_session_and_does_not_fake_cancel_ack",
+            "src/app/composer_coverage.rs::metadata_picker_actions_preserve_each_tabs_unsent_draft"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Voice completion results are injected. Native capture and transcription upload are not performed.",
+          "tests": [
+            "src/app/voice.rs::tests::voice_results_preserve_typing_and_never_send",
+            "src/app/voice.rs::tests::quick_voice_send_preserves_unrelated_draft_and_queues_while_processing"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "The rendered cancel-dictation button and every simultaneous metadata/voice gesture combination do not have independent hit-target evidence here.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 6
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_composer",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Rendered assistant text, reasoning and tool fixture content checks phone constraints; this function delegates interactive tools to tool_line.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "All role, empty reasoning, error, markdown and streaming-content visual branches are not exhaustively snapshot tested.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_entry",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:menu": 1,
+        "debug_selector:literal:new-session": 1,
+        "debug_selector:macro:format:literal:tab-{id}": 1,
+        "id:literal:menu": 1,
+        "id:literal:new-session": 1,
+        "id:literal:session-tabs": 1,
+        "id:tuple:literal:tab": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered header menu/tab controls, raw held-tab scrubbing and the new-session button are exercised. New-session is inert without an account, creates a new tab when signed in, and parks/restores the original draft.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test",
+            "src/app/interaction_fuzz.rs::raw_held_tab_scrubs_sessions_without_menu_or_release_click",
+            "src/app/composer_coverage.rs::metadata_picker_actions_preserve_each_tabs_unsent_draft",
+            "src/app/composer_coverage.rs::header_new_session_is_inert_without_account_and_parks_existing_draft"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every overflow width, mouse-up ordering, accessibility tab activation and multi-pointer hold interleaving remains outside focused assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3,
+        "on_mouse_up": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_header",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:model-dismiss": 1,
+        "id:literal:picker-dismiss": 1,
+        "id:literal:picker-list": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered model selection, same choice, scrim dismiss and unavailable/available route rows are hit-tested against local fixture state.",
+          "tests": [
+            "src/app/navigation_coverage.rs::model_picker_bare_selection_same_selection_and_dismiss_hit_test",
+            "src/app/navigation_coverage.rs::model_picker_unavailable_route_is_inert_and_available_route_selects"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Actual provider availability and model change acknowledgment need an authorized live session.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_model_picker",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:back": 1,
+        "id:literal:back": 1,
+        "id:literal:settings": 1,
+        "outline_button:literal:clear": 1,
+        "outline_button:literal:delete-account": 1,
+        "outline_button:literal:new": 1,
+        "outline_button:literal:sign-out": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Controls are scrolled into the phone viewport before raw input. New/clear/delete guard/sign-out behavior is asserted locally, not actual deletion execution.",
+          "tests": [
+            "src/app/account_coverage.rs::settings_new_clear_delete_guard_and_signout_controls_are_hit_tested"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Account deletion confirmation/service execution, persistent account removal and native account linking require isolated integration checks.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 5
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_settings",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:google": 1,
+        "debug_selector:literal:use-other-email": 1,
+        "id:literal:google": 1,
+        "id:literal:sign-in": 1,
+        "id:literal:sign-in-form": 1,
+        "id:literal:use-other-email": 1,
+        "outline_button:literal:submit-sign-in": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Use-other-email and outside-focus dismissal are exercised through the rendered sign-in surface; authentication results themselves are injected.",
+          "tests": [
+            "src/app/account_coverage.rs::email_auth_outcomes_retry_cancel_and_stale_success_are_isolated",
+            "src/app/interaction_fuzz.rs::raw_touch_onboarding_outside_taps_release_focus"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Provider layout and browser cancellation/late-completion identity are fixture assertions. These do not prove provider button success.",
+          "tests": [
+            "src/app/scroll_tests.rs::phone_sign_in_offers_apple_and_google_before_email_code",
+            "src/app/account_coverage.rs::browser_cancel_old_failure_and_old_success_cannot_replace_new_login"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Google OAuth browser launch/return, email code delivery/verification and native keyboard/provider permissions need device or service checks.",
+          "tests": []
+        },
+        {
+          "kind": "gap",
+          "note": "The submit-sign-in hit target readiness/validation states and every code/email form branch do not have dedicated raw-hit assertions in the named auth completion tests.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3,
+        "on_mouse_down": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_sign_in",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:key": 1,
+        "debug_selector:literal:tm-dismiss": 1,
+        "id:dynamic:key": 1,
+        "id:literal:tm-dismiss": 1,
+        "row:literal:tm-close": 1,
+        "row:literal:tm-copy": 1,
+        "row:literal:tm-fork": 1,
+        "row:literal:tm-open": 1,
+        "row:literal:tm-others": 1,
+        "row:literal:tm-rename": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered tab actions cover switch, close others, disabled fork and rename routes with local state. Row helper IDs describe control families, not every runtime tab instance.",
+          "tests": [
+            "src/app/navigation_coverage.rs::tab_menu_switch_close_others_and_disabled_fork_hit_test",
+            "src/app/overlay_coverage.rs::rename_save_cancel_empty_unicode_and_settled_keyboard_viewports"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Enabled remote fork, direct dismiss-scrim activation, system clipboard transfer and every close-current/last-tab variant are not all covered through this menu hit target.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 7
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_tab_menu",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:block": 1,
+        "id:macro:format:literal:tool-{}": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "A rendered tool row is tapped twice and visible output expansion/collapse is asserted. Tool IDs are a runtime family, not one static instance per tool.",
+          "tests": [
+            "src/app/composer_coverage.rs::transcript_tool_control_expands_and_collapses_visible_output"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every tool status, tool ID collision and long-output nesting combination is not independently exercised.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::tool_line",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Screen roots are rendered during sign-in, chat sheets and settings tests; outside input and focus/overlay transitions exercise representative root routing.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::raw_touch_onboarding_outside_taps_release_focus",
+            "src/app/navigation_coverage.rs::directory_sheet_hit_test_invalid_same_valid_and_dismiss",
+            "src/app/account_coverage.rs::settings_new_clear_delete_guard_and_signout_controls_are_hit_tested"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Native safe-area/rotation/keyboard timing, application activation, VoiceOver and all three-screen interleavings require additional device checks.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_mouse_down": 1
+      },
+      "handler": false,
+      "owner": "src/app.rs::impl:Render for MobileApp::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Shared labels appear in constrained transcript/footer fixtures that assert bounds and layout. No assertion establishes every label caller, font or accessibility behavior.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "All shared-label content/color/scale combinations are not independently snapshotted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::label",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Activity/status orb rows render during app fixtures, but animation state, status text placement and every activity branch lack focused assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::orb_row",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "id:dynamic:id": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Shared outline-button IDs/selector plumbing is exercised indirectly by rendered settings controls. This does not prove every caller or disabled variant.",
+          "tests": [
+            "src/app/account_coverage.rs::settings_new_clear_delete_guard_and_signout_controls_are_hit_tested"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::outline_button",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:macro:format:literal:model-row-{}-{}": 1,
+        "id:dynamic:expression": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Dynamic model row ID/selector families are exercised by routed and unavailable model fixtures. Every provider/model combination is not enumerated.",
+          "tests": [
+            "src/app/navigation_coverage.rs::model_picker_unavailable_route_is_inert_and_available_route_selects"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::picker_row",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "id:dynamic:id": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Shared pill IDs/selector plumbing is exercised by model/account picker routes; location uses a separate control. Effort is a decorative label, while voice cancel and every other caller remain separate coverage obligations.",
+          "tests": [
+            "src/app/composer_coverage.rs::metadata_picker_actions_preserve_each_tabs_unsent_draft"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::pill",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Preview corner canvas clipping is a visual-only renderer with no pixel or geometric regression for every radius/viewport combination.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::preview_corner_mask",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "id:dynamic:id": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered composer send/stop uses the shared round control. This covers representative caller states rather than every icon/button invocation.",
+          "tests": [
+            "src/app/composer_coverage.rs::composer_send_records_local_message_then_queues_processing_followup",
+            "src/app/composer_coverage.rs::composer_stop_requires_ready_session_and_does_not_fake_cancel_ack"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::round_button",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:sign-in-with-apple": 1,
+        "id:literal:sign-in-with-apple": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Apple button bounds and provider ordering are inspected on phone layouts, without invoking native authorization.",
+          "tests": [
+            "src/app/scroll_tests.rs::phone_sign_in_offers_apple_and_google_before_email_code"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Apple authentication button launch, entitlement, consent, cancellation and returned account credentials need a native device/bridge run.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 1
+      },
+      "handler": false,
+      "owner": "src/app/apple_sign_in.rs::impl:MobileApp::render_apple_button",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Settings/account fixtures render the app integration and reject a different account identity. Native account authorization is not performed.",
+          "tests": [
+            "src/app/cloud_machine.rs::tests::cloud_settings_render_offline_and_clear_inventory_on_logout",
+            "src/app/apple_sign_in.rs::haptic_tests::offline_link_events_cannot_update_a_different_account"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every parent-app mount/unmount transition while a link panel event is pending is not individually hit-tested.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/apple_sign_in.rs::impl:MobileApp::render_apple_link",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "outline_button:literal:link-account": 1,
+        "outline_button:literal:link-cancel": 1,
+        "outline_button:literal:link-submit": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Panel controls link-account/link-submit/link-cancel are driven through raw rendered touch. Service successes/failures are fake completions with generation checks.",
+          "tests": [
+            "src/app/apple_sign_in.rs::haptic_tests::rendered_link_flow_error_retry_busy_code_done",
+            "src/app/apple_sign_in.rs::haptic_tests::rendered_cancel_reopen_rejects_stale_send_and_verify"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Real link-email delivery, verification and subscription merge/persistence need an authorized service run.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3
+      },
+      "handler": false,
+      "owner": "src/app/apple_sign_in.rs::impl:Render for AppleLinkPanel::render",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "outline_button:literal:inspect-cloud-machine": 1,
+        "outline_button:literal:setup-cloud-github": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Offline settings rendering and setup-draft content/preservation are checked. These tests do not execute the cloud inspection service or prove both button hit routes.",
+          "tests": [
+            "src/app/cloud_machine.rs::tests::cloud_settings_render_offline_and_clear_inventory_on_logout",
+            "src/app/cloud_machine.rs::tests::setup_preserves_existing_composer_draft",
+            "src/app/cloud_machine.rs::tests::setup_requires_approval_and_forbids_secret_disclosure"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Cloud inspection SSH, GitHub auth setup and real credential storage are deliberately excluded and require approved integration steps.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2
+      },
+      "handler": false,
+      "owner": "src/app/cloud_machine.rs::impl:MobileApp::render_cloud_machine",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "platform_device_required",
+          "note": "Global URL channel installation and native Shortcut donation are intentionally not invoked by offline tests. Real cold/warm OS URL delivery needs an application-level native run.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {
+        "on_deep_link": 1
+      },
+      "handler": false,
+      "owner": "src/app/deep_link_glue.rs::impl:MobileApp::install_deep_links",
+      "renderer": false
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Direct parsed-link dispatch covers signed-out no-op, active/parked reuse, fresh tab/prompt replacement and deferred local dispatch readiness. No URL channel or network is used.",
+          "tests": [
+            "src/app/deep_link_glue.rs::tests::cold_signed_out_links_never_queue_prompts_or_create_tabs",
+            "src/app/deep_link_glue.rs::tests::warm_links_reuse_active_and_parked_sessions_and_replace_pending_prompt",
+            "src/app/account_coverage.rs::deferred_prompt_dispatch_waits_for_ready_session_and_preserves_live_draft"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Delivery before application channel installation, native cold-start lifecycle and actual server receipt of a queued prompt remain integration requirements.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": true,
+      "owner": "src/app/deep_link_glue.rs::impl:MobileApp::on_deep_link",
+      "renderer": false
+    },
+    {
+      "controls": {
+        "debug_selector:literal:git-pull-handle": 1,
+        "id:literal:git-pull-handle": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered Git handle supports raw touch pull and tap; short/horizontal/cancelled pulls remain inert and context changes dismiss stale content.",
+          "tests": [
+            "src/app/git_info_tests.rs::raw_touch_pull_opens_git_without_reconnecting_or_recording",
+            "src/app/git_info_tests.rs::git_pull_threshold_cancel_and_session_invalidation"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Device touch arbitration and a real authenticated repository inspection are not exercised.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 1
+      },
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_handle",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:git-info-panel": 1,
+        "id:literal:git-info-panel": 1,
+        "outline_button:literal:refresh-git": 1,
+        "pill:literal:close-git": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Panel close/reopen and scroll containment at panel/header boundaries are exercised offline without changing transcript/follow/voice state.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_pull_threshold_cancel_and_session_invalidation",
+            "src/app/git_info.rs::lifecycle_tests::git_overlay_wheel_at_boundaries_never_scrolls_or_releases_transcript"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Refresh generation/context/account invalidation and sanitized errors use injected Git snapshots/results, not the rendered refresh hit target or real SSH.",
+          "tests": [
+            "src/app/git_info.rs::lifecycle_tests::mocked_git_results_reject_stale_refresh_account_tab_session_and_directory"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Rendered refresh-button action and scroll of a large populated real Git snapshot lack a focused hit-target regression.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2,
+        "on_scroll_wheel": 1
+      },
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_panel",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Raw message hold resolves the actual recorded message bounds, opens the menu and cancels subsequent contact without mutating transcript/draft.",
+          "tests": [
+            "src/app/overlay_coverage.rs::raw_message_hold_copy_and_cancel_preserve_transcript_and_draft"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every message hit-boundary, overlapping tool row and long-content geometry is not independently covered.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_hit",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Model picker fixtures mount this geometry recorder while selecting/dismissing the real rendered sheet. The recorder has no separate direct shape assertion.",
+          "tests": [
+            "src/app/navigation_coverage.rs::model_picker_bare_selection_same_selection_and_dismiss_hit_test"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every drag-dismiss threshold, changing model-list height and keyboard/sheet collision needs more focused geometry assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_sheet_recorder",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Held-tab and tab-menu tests use rendered recorded tab bounds for scrub/hold/release behavior.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::raw_held_tab_scrubs_sessions_without_menu_or_release_click",
+            "src/app/interaction_fuzz.rs::raw_long_press_tab_menu_rename_cancel_and_recovery"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "All tab overflow, touch-id reuse and mixed mouse/touch boundary cases are not enumerated.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_tab_hit",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "A rendered transcript wheel pull is armed and cancelled; reconnect must not occur. This tests representative routing through the recorded transcript geometry.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::cancelled_armed_wheel_pull_never_refreshes"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Refresh ownership and voice pending-result navigation use state seams; they do not prove every rendered indicator phase.",
+          "tests": [
+            "src/app/offline_tests.rs::pull_reconnect_owns_status_until_indicator_settles",
+            "src/app/voice_controls_tests.rs::navigation_discards_pending_quick_transcription_after_release"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "All voice/reconnect indicator visual states and native simultaneous momentum/keyboard dismiss combinations lack focused visual evidence.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_transcript",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:tab-hold-feedback": 1,
+        "id:literal:tab-hold-feedback": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Representative raw mouse/touch capture, held tab, cancellation, rename and scene transition routes exercise wrapper routing. Static on_mouse_event counts are not every possible gesture interleaving.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::raw_edge_capture_is_cancelled_when_screen_changes",
+            "src/app/interaction_fuzz.rs::raw_held_tab_scrubs_sessions_without_menu_or_release_click",
+            "src/app/interaction_fuzz.rs::raw_long_press_tab_menu_rename_cancel_and_recovery",
+            "src/app/interaction_fuzz.rs::cancelled_pan_does_not_commit_drawer_or_tab_navigation"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Voice gesture ownership is seeded without real Recording objects. Native capture startup and interruptions require device checks.",
+          "tests": [
+            "src/app/voice_controls_tests.rs::reverse_to_stop_during_startup_consumes_tail_until_ended",
+            "src/app/voice_controls_tests.rs::navigation_discards_pending_quick_transcription_after_release"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_mouse_event": 6
+      },
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_wrap",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "debug_selector:literal:msg-menu-dismiss": 1,
+        "id:dynamic:id": 1,
+        "id:literal:msg-menu-dismiss": 1,
+        "row:literal:msg-copy": 1,
+        "row:literal:msg-retry": 1,
+        "row:literal:msg-select": 1,
+        "row:literal:msg-share": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Hold menu copy/retry/select/dismiss routes use rendered input, preserve draft/transcript, and gate retry locally.",
+          "tests": [
+            "src/app/overlay_coverage.rs::raw_message_hold_copy_and_cancel_preserve_transcript_and_draft",
+            "src/app/overlay_coverage.rs::raw_disabled_retry_is_inert_and_enabled_retry_resends_correct_prompt",
+            "src/app/overlay_coverage.rs::selection_is_read_only_copyable_and_done_releases_focus"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "The share action opens a native share sheet and actual clipboard ownership needs platform checks. No fixture claim covers native sharing.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 5
+      },
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::render_msg_menu",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "debug_selector:literal:rename-card": 1,
+        "id:dynamic:id": 1,
+        "id:literal:rename-card": 1,
+        "id:literal:rename-overlay": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered rename save/cancel and submit paths cover empty/unicode title, focus release and modal transient cleanup at settled keyboard viewports.",
+          "tests": [
+            "src/app/overlay_coverage.rs::rename_save_cancel_empty_unicode_and_settled_keyboard_viewports",
+            "src/app/overlay_coverage.rs::rename_submit_commits_once_and_releases_editor_focus",
+            "src/app/overlay_coverage.rs::rename_transition_discards_selection_menu_and_pending_gesture"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Live keyboard animation/interactive dismissal and server rename acknowledgment remain platform/service requirements.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2,
+        "on_mouse_down": 1
+      },
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::render_rename",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "debug_selector:literal:selection-scroll": 1,
+        "id:dynamic:id": 1,
+        "id:literal:selection-scroll": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered read-only selection, copy and Done routes reject edits and release focus while preserving the transcript and draft.",
+          "tests": [
+            "src/app/overlay_coverage.rs::selection_is_read_only_copyable_and_done_releases_focus"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Native iOS selection handles, copy menu and accessibility activation are not GPUI fixture coverage.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3
+      },
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::render_text_selection",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Invisible canvas bounds are used indirectly by mounted gesture/sheet fixtures. No standalone test exhaustively asserts recorded geometry across layout changes.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::raw_long_press_tab_menu_rename_cancel_and_recovery",
+            "src/app/navigation_coverage.rs::model_picker_bare_selection_same_selection_and_dismiss_hit_test"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Stale bounds after every viewport/rotation change and callback ordering have no independent recorder regression.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::recorder",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "id:literal:wide-sidebar": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "The fixture explicitly resizes to a wide 1024px layout and taps docked quick actions before returning to phone width.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every tablet/desktop breakpoint, sidebar focus route, rotation and keyboard-width combination is not covered by that single wide fixture.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_system.rs::impl:MobileApp::wrap_wide",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Repeated read-only neighboring previews preserve active/parked drafts and reject an unknown tab ID. This test directly renders the helper, not a native swipe animation.",
+          "tests": [
+            "src/app/panel_preview.rs::tests::neighbor_preview_preserves_active_and_parked_drafts"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Preview truncation across every role/tool/reasoning branch and transition-frame visual behavior are not exhaustively asserted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/panel_preview.rs::impl:MobileApp::render_panel_preview",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:dir-dismiss": 1,
+        "debug_selector:literal:dir-go": 1,
+        "debug_selector:macro:format:literal:dir-row-{i}": 1,
+        "id:literal:dir-dismiss": 1,
+        "id:literal:dir-go": 1,
+        "id:literal:dir-list": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Directory row/go/dismiss controls are hit-tested for invalid, same and valid fixture paths and a recent-row selection.",
+          "tests": [
+            "src/app/navigation_coverage.rs::directory_sheet_hit_test_invalid_same_valid_and_dismiss",
+            "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Real remote directory discovery/validation and connection changes need service integration.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3
+      },
+      "handler": false,
+      "owner": "src/app/recent_dirs.rs::impl:MobileApp::render_dir_picker",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:start-suggestions": 1,
+        "debug_selector:macro:format:literal:recent-dir-{i}": 1,
+        "debug_selector:macro:format:literal:suggested-session-{i}": 1,
+        "id:literal:start-suggestions": 1,
+        "id:tuple:literal:recent-dir": 1,
+        "id:tuple:literal:suggested-session": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered directory suggestions and new-session offer confirmation preserve drafts until creation in offline fixtures.",
+          "tests": [
+            "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test",
+            "src/app/navigation_coverage.rs::new_session_directory_offer_preserves_draft_until_create"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Empty/missing metadata and suggestion ordering use local data models, not a live service response.",
+          "tests": [
+            "src/app/recent_dirs.rs::tests::suggestions_allow_missing_metadata_and_empty_lists",
+            "src/app/recent_dirs.rs::tests::suggestions_prioritize_live_then_activity_and_hide_ineligible_sessions"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2
+      },
+      "handler": false,
+      "owner": "src/app/recent_dirs.rs::impl:MobileApp::render_recent_dirs",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:drawer-account": 1,
+        "id:literal:drawer-account": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "The compact account footer is tapped to open Settings and close the drawer. Layout assertions check its phone placement.",
+          "tests": [
+            "src/app/scroll_tests.rs::drawer_footer_is_compact_account_only_and_opens_settings",
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 1
+      },
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_account_footer",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:drawer-scrim": 1,
+        "id:literal:drawer": 1,
+        "id:literal:drawer-scrim": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Drawer list, pinned areas and scrim contain wheel input without transcript scroll/follow changes; navigation tests exercise its visible controls.",
+          "tests": [
+            "src/app/scroll_tests.rs::drawer_scroll_does_not_move_transcript_or_release_follow",
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every scrim down/up ordering, native momentum and simultaneous drawer/edge gesture race is not covered.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_mouse_down": 2,
+        "on_scroll_wheel": 2
+      },
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_drawer",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Drawer search text is supplied synthetically with set_text, then rendered filtering and result-row selection are checked. This does not hit-test keyboard editing or the search input itself.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_directory_groups_and_search_hit_test",
+            "src/app/synced_sessions.rs::tests::local_sidebar_discloses_more_and_searches_hidden_sessions"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Focused rendered search-field caret placement, keyboard edits and IME interaction do not have a dedicated search hit-target regression.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_drawer_search",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:macro:format:literal:drawer-tab-close-{id}": 1,
+        "debug_selector:macro:format:literal:drawer-tab-{id}": 1,
+        "id:tuple:literal:drawer-tab": 1,
+        "id:tuple:literal:drawer-tab-close": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Dynamic drawer-tab and close families are exercised by selecting and closing rendered open-tab rows in the offline phone UI.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every last-tab/active-tab/overflow ordering and native accessibility close action is not exhaustively represented.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2
+      },
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_open_tabs",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:drawer-new-thread": 1,
+        "debug_selector:literal:drawer-refresh": 1,
+        "id:literal:drawer-new-thread": 1,
+        "id:literal:drawer-refresh": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered drawer new-thread and refresh controls are reachable and exercised. Offline refresh cannot prove a live service request.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_new_switch_close_refresh_and_account_hit_test"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2
+      },
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_quick_actions",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:block": 2,
+        "debug_selector:dynamic:header_selector": 1,
+        "debug_selector:dynamic:sessions_selector": 1,
+        "debug_selector:literal:drawer-sessions": 1,
+        "id:literal:drawer-overview": 1,
+        "id:literal:drawer-sessions": 1,
+        "id:macro:format:literal:drawer-directory-sessions-{}": 1,
+        "id:macro:format:literal:drawer-directory-{}": 1,
+        "id:macro:format:literal:drawer-new-in-{}": 1,
+        "id:macro:format:literal:drawer-session-{}": 1,
+        "row:dynamic:s": 2
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered dynamic directory headers, new-in-directory buttons and session rows are tested for grouping, search and propagation isolation.",
+          "tests": [
+            "src/app/navigation_coverage.rs::drawer_directory_groups_and_search_hit_test",
+            "src/app/navigation_coverage.rs::drawer_directory_new_button_does_not_toggle_group"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Long-list header reachability and search matching use deterministic fixture metadata.",
+          "tests": [
+            "src/app/sidebar.rs::tests::directory_headers_remain_visible_below_long_session_list",
+            "src/app/sidebar.rs::tests::search_matches_title_label_and_dir"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Live cloud inventory refresh, remote session resume and concurrent service ordering require an authorized integration run.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 3
+      },
+      "handler": false,
+      "owner": "src/app/sidebar.rs::impl:MobileApp::render_session_list",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Long directory-list fixtures assert section/header visibility in the containing sidebar. Shared section styling is not independently snapshot tested.",
+          "tests": [
+            "src/app/sidebar.rs::tests::directory_headers_remain_visible_below_long_session_list"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/sidebar.rs::section_label",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:dynamic:block": 3,
+        "debug_selector:literal:drawer-local-see-more": 1,
+        "id:literal:drawer-local-see-more": 1,
+        "id:macro:format:literal:drawer-local-session-{sid}": 1,
+        "id:macro:format:literal:open-transfer-{sid}": 1,
+        "id:macro:format:literal:transfer-{sid}": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Rendered local session disclosure/search and continuation controls cover busy/uncertain/completed fixture states without real transfers.",
+          "tests": [
+            "src/app/synced_sessions.rs::tests::continuation_controls_hit_test_offline_busy_uncertain_and_completed",
+            "src/app/synced_sessions.rs::tests::local_sidebar_discloses_more_and_searches_hidden_sessions"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Old account identities are rejected through the completion seam, not live concurrent service requests.",
+          "tests": [
+            "src/app/synced_sessions.rs::tests::stale_account_results_are_rejected"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Actual remote continuation/transfer, service authentication and network acknowledgment are not exercised.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 4
+      },
+      "handler": false,
+      "owner": "src/app/synced_sessions.rs::impl:MobileApp::render_synced_sessions",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Field/rotation models and a rendered touch target are tested. These establish numeric/input behavior, not the canvas paint output or GPU quality.",
+          "tests": [
+            "src/donut_field.rs::tests::profiles_are_deterministic_finite_and_lit",
+            "src/donut.rs::tests::raw_touch_rotates_the_rendered_donut"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Canvas pixels, degenerate dimensions, clipping and animation smoothness lack dedicated visual assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/donut.rs::donut_canvas",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Raw touch drives the rendered donut and asserts rotation updates without services.",
+          "tests": [
+            "src/donut.rs::tests::raw_touch_rotates_the_rendered_donut"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Pointer delta and cancel behavior also has direct rotation-model regressions.",
+          "tests": [
+            "src/donut.rs::tests::drag_rotates_both_axes_and_tracks_incremental_motion",
+            "src/donut.rs::tests::touch_drag_rotates_from_contact_origin_and_cancels_without_jumping"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Native mouse capture outside the window and frame-by-frame rendering quality are not established by these fixture tests.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/donut.rs::impl:RenderOnce for InteractiveDonut::render",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:interactive-hero-donut": 1,
+        "id:literal:interactive-hero-donut": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "Raw touch drives the rendered donut and asserts rotation updates without services.",
+          "tests": [
+            "src/donut.rs::tests::raw_touch_rotates_the_rendered_donut"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Pointer delta and cancel behavior also has direct rotation-model regressions.",
+          "tests": [
+            "src/donut.rs::tests::drag_rotates_both_axes_and_tracks_incremental_motion",
+            "src/donut.rs::tests::touch_drag_rotates_from_contact_origin_and_cancels_without_jumping"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Native mouse capture outside the window and frame-by-frame rendering quality are not established by these fixture tests.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_mouse_down": 1,
+        "on_mouse_event": 1,
+        "on_mouse_move": 1,
+        "on_mouse_up": 1,
+        "on_mouse_up_out": 1
+      },
+      "handler": false,
+      "owner": "src/donut.rs::interactive_donut",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "The autonomous spinning wrapper has no focused elapsed-time/rendered orientation regression. Interactive-donut input tests do not establish this wrapper animation.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": false,
+      "owner": "src/donut.rs::spinning_donut",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Field generation and smoothing have deterministic numeric assertions; they do not validate the final rendered animation pixel output.",
+          "tests": [
+            "src/donut_field.rs::tests::profiles_are_deterministic_finite_and_lit",
+            "src/donut_field.rs::tests::smoothing_preserves_constant_and_one_pixel_fields"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Sign-in background rendering performance, visual quality and reduced-motion presentation need additional visual/device checks.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/donut_field.rs::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "platform_device_required",
+          "note": "Application startup wiring registers native open-URL handling. Offline parser/dispatch tests intentionally avoid launching the Application or OS URL channel.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {
+        "on_open_urls": 1
+      },
+      "handler": false,
+      "owner": "src/main.rs::main",
+      "renderer": false
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Inline parser regressions establish literal/delimiter text behavior used by this renderer; they are not pixel/style assertions for the inline UI helper.",
+          "tests": [
+            "src/markdown.rs::tests::escapes_stay_literal_not_formatting",
+            "src/markdown.rs::tests::code_is_literal_and_matches_exact_backtick_runs",
+            "src/markdown.rs::tests::incomplete_and_non_delimiter_asterisks_survive"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every rich-text style span, font metric and narrow wrapping combination is not independently rendered and asserted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::inline",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Phone transcript fixtures exercise rendered markdown bounds and parser tests preserve literal/code behavior. These are not exhaustive rendered-markdown snapshots.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone",
+            "src/markdown.rs::tests::code_is_literal_and_matches_exact_backtick_runs",
+            "src/markdown.rs::tests::escapes_stay_literal_not_formatting"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every markdown list/link/code combination and long-content visual branch still needs focused rendering evidence.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Reasoning fixture content is rendered in the constrained phone transcript. The assertion concerns bounds and width, not every reasoning formatting branch.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Collapsed/streaming/empty reasoning visual transitions and every rich-text branch lack exhaustive dedicated snapshots.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::render_reasoning",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "platform_device_required",
+          "note": "APNs/global push channel installation is intentionally excluded from fixtures. Native permission, entitlement and callback delivery require a device/service integration run.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {
+        "on_push": 1
+      },
+      "handler": false,
+      "owner": "src/push_glue.rs::impl:MobileApp::install_push",
+      "renderer": false
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Fake Token/Foreground/Open/Reply events exercise offline local state, active/parked routing, optimistic send/queue and deferred reply ownership without sockets or OS channels.",
+          "tests": [
+            "src/push_glue.rs::tests::offline_token_and_foreground_are_local_only_even_with_account",
+            "src/push_glue.rs::tests::mocked_connected_and_processing_inline_replies_preserve_draft",
+            "src/push_glue.rs::tests::offline_disconnected_reply_waits_and_parked_session_is_reused"
+          ]
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "Real APNs delivery, token registration, badge clearing/reset and actual server receipt require native/service integration.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": true,
+      "owner": "src/push_glue.rs::impl:MobileApp::on_push",
+      "renderer": false
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Keyboard mode/return-label state and app input focus have fixture coverage. These do not prove every rendered simulated key hit target.",
+          "tests": [
+            "src/sim_keyboard.rs::tests::shift_is_one_shot",
+            "src/sim_keyboard.rs::tests::return_label_follows_action",
+            "src/app/interaction_fuzz.rs::auxiliary_fields_show_keyboard_and_receive_typing"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Per-key rendered tap routes, symbol/email-layout combinations and blank-key propagation are not individually hit-tested.",
+          "tests": []
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "UIKit keyboard/IME/autocorrect/system dictation behavior is outside the simulated keyboard and needs device checks.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_key": 2,
+        "on_mouse_down": 3
+      },
+      "handler": false,
+      "owner": "src/sim_keyboard.rs::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "GPUI actions/platform-input methods and model invariants cover Unicode editing, submit, read-only selection/copy and configuration. Test-platform APIs do not prove UIKit.",
+          "tests": [
+            "src/text_input.rs::ios_keyboard_tests::seeded_unicode_handler_sequences",
+            "src/text_input.rs::ios_keyboard_tests::return_key_submits_not_inserts",
+            "src/text_input.rs::ios_keyboard_tests::read_only_transcript_can_select_and_copy_but_not_edit",
+            "src/text_input.rs::ios_keyboard_tests::keyboard_config_reaches_platform"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Each of the eleven action registration sites and every mouse selection/caret route is not independently paired with a rendered hit-target regression.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_action": 11,
+        "on_mouse_down": 1,
+        "on_mouse_move": 1,
+        "on_mouse_up": 1
+      },
+      "handler": false,
+      "owner": "src/text_input.rs::impl:Render for TextInput::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Related fixtures focus auxiliary fields directly and exercise selection overlay controls. They are not direct proof of this mouse-down caret-placement handler.",
+          "tests": [
+            "src/app/interaction_fuzz.rs::auxiliary_fields_show_keyboard_and_receive_typing",
+            "src/app/overlay_coverage.rs::selection_is_read_only_copyable_and_done_releases_focus"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "No focused regression is assigned specifically to rendered TextInput mouse-down click-to-index, multiline boundary selection or pointer-drag combinations.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": true,
+      "owner": "src/text_input.rs::impl:TextInput::on_mouse_down",
+      "renderer": false
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Autonomous voice demo renders a simulated cycle, but has no focused regression for its elapsed-time step loop, preview layout or animation frames. It does not start capture.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": false,
+      "owner": "src/voice_demo.rs::impl:Render for VoiceDemo::render",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:voice-control": 1,
+        "id:literal:voice-control": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Voice phase instructions and reduced-motion animation bounds are pure-model assertions, not rendered control hit-target or real microphone coverage.",
+          "tests": [
+            "src/voice_visual.rs::tests::preparing_never_claims_recording",
+            "src/voice_visual.rs::tests::locked_explains_explicit_stop",
+            "src/voice_visual.rs::tests::animation_is_bounded_and_reduce_motion_is_static"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every visual phase, timing transition, accessibility label and small-screen overlay placement is not independently rendered/asserted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/voice_visual.rs::render",
+      "renderer": true
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
+  "snapshot": {
+    "control_site_count": 147,
+    "event_site_count": 111,
+    "owner_count": 65
+  }
+}
