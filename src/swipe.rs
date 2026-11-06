@@ -1,13 +1,13 @@
 //! Horizontal swipe between session tabs, modeled on the desktop workspace
-//! pull: the panel follows the finger with resistance, and a release past the
-//! threshold slides to the neighbor while the new panel eases in.
+//! pull, but restrained for a phone: vertical scrolling stays locked, panel
+//! travel is capped, and deliberate swipes reveal the neighbor with a small nudge.
 
 use std::time::{Duration, Instant};
 
 /// Distance (px) of finger travel that counts as a committed swipe.
-pub const COMMIT: f32 = 90.0;
+pub const COMMIT: f32 = 120.0;
 /// How long the slide-in takes after a commit, or the snap-back after a cancel.
-pub const SETTLE: Duration = Duration::from_millis(220);
+pub const SETTLE: Duration = Duration::from_millis(160);
 /// No wheel/touch event for this long ends the gesture (trackpads without phases).
 pub const IDLE_END: Duration = Duration::from_millis(160);
 
@@ -17,6 +17,8 @@ pub struct Swipe {
     pub dx: f32,
     /// Vertical travel, so mostly-vertical scrolls never become swipes.
     dy: f32,
+    /// Once scrolling vertically, keep that decision until the gesture ends.
+    vertical: bool,
     pub active: bool,
     pub last_event: Option<Instant>,
     /// Release animation: (start offset, start time).
@@ -25,7 +27,7 @@ pub struct Swipe {
 
 /// Rubber-band: direct at first, then increasingly resisted, like the desktop pull.
 pub fn resist(dx: f32, width: f32) -> f32 {
-    let limit = width * 0.6;
+    let limit = (width * 0.12).clamp(1.0, 48.0);
     let a = dx.abs();
     let r = limit * (1.0 - (-a / limit).exp());
     r.copysign(dx)
@@ -45,15 +47,25 @@ pub enum Release {
 impl Swipe {
     /// Feeds a scroll delta. Returns true when the gesture is horizontal and was consumed.
     pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> bool {
+        if self.last_event.is_some_and(|last| now.duration_since(last) > IDLE_END) {
+            self.dx = 0.0;
+            self.dy = 0.0;
+            self.active = false;
+            self.vertical = false;
+        }
         self.last_event = Some(now);
+        if self.vertical {
+            return false;
+        }
         if !self.active {
             self.dx += dx;
             self.dy += dy;
-            if self.dx.abs() > 12.0 && self.dx.abs() > self.dy.abs() * 1.5 {
+            if self.dx.abs() > 24.0 && self.dx.abs() > self.dy.abs() * 2.0 {
                 self.active = true;
                 self.settle = None;
             } else if self.dy.abs() > 12.0 {
-                // Committed to vertical scrolling. Reset so the next gesture starts clean.
+                // Never reinterpret diagonal drift or momentum as navigation.
+                self.vertical = true;
                 self.dx = 0.0;
                 self.dy = 0.0;
             }
@@ -70,19 +82,21 @@ impl Swipe {
         self.active = false;
         self.dx = 0.0;
         self.dy = 0.0;
+        self.vertical = false;
         self.last_event = None;
         if !was {
             return Release::Cancel;
         }
         // Content moves with the finger: dragging left (dx < 0) reveals the next tab.
         if dx <= -COMMIT && can_next {
-            self.settle = Some((width, now));
+            self.settle = Some((resist(width, width), now));
             Release::Switch(1)
         } else if dx >= COMMIT && can_prev {
-            self.settle = Some((-width, now));
+            self.settle = Some((resist(-width, width), now));
             Release::Switch(-1)
         } else {
-            self.settle = Some((resist(dx, width), now));
+            let edge = (dx > 0.0 && !can_prev) || (dx < 0.0 && !can_next);
+            self.settle = Some((resist(dx, width) * if edge { 0.25 } else { 1.0 }, now));
             Release::Cancel
         }
     }
@@ -124,12 +138,12 @@ mod tests {
     fn far_left_drag_switches_to_next() {
         let mut s = Swipe::default();
         let now = Instant::now();
-        assert!(s.feed(-20.0, 0.0, now));
+        assert!(s.feed(-30.0, 0.0, now));
         s.feed(-100.0, 0.0, now);
         assert!(matches!(s.release(390.0, true, true, now), Release::Switch(1)));
-        // New panel starts a full width to the right and eases to 0.
+        // New panel enters subtly rather than crossing the whole screen.
         let (o, moving) = s.offset(390.0, true, true, now);
-        assert!(moving && (o - 390.0).abs() < 1.0);
+        assert!(moving && o > 0.0 && o <= 48.0);
         let (o, moving) = s.offset(390.0, true, true, now + SETTLE);
         assert!(!moving && o == 0.0);
     }
@@ -146,7 +160,46 @@ mod tests {
 
     #[test]
     fn resistance_is_bounded() {
-        assert!(resist(10_000.0, 390.0) < 390.0 * 0.6 + 0.1);
-        assert!((resist(5.0, 390.0) - 5.0).abs() < 0.2);
+        assert!(resist(10_000.0, 390.0) <= 48.0);
+        assert!((resist(5.0, 390.0) - 5.0).abs() < 0.3);
+    }
+
+    #[test]
+    fn incidental_horizontal_motion_does_not_switch_sessions() {
+        let now = Instant::now();
+        let mut s = Swipe::default();
+        assert!(!s.feed(18.0, 1.0, now));
+        s.feed(80.0, 0.0, now);
+        assert!(matches!(s.release(390.0, true, true, now), Release::Cancel));
+    }
+
+    #[test]
+    fn vertical_gesture_stays_locked_despite_horizontal_drift() {
+        let mut s = Swipe::default();
+        let now = Instant::now();
+        assert!(!s.feed(2.0, 30.0, now));
+        assert!(!s.feed(180.0, 1.0, now));
+        assert!(matches!(s.release(390.0, true, true, now), Release::Cancel));
+        assert!(s.feed(-130.0, 0.0, now));
+    }
+
+    #[test]
+    fn idle_resets_direction_and_uncommitted_travel() {
+        let mut s = Swipe::default();
+        let now = Instant::now();
+        s.feed(0.0, 30.0, now);
+        assert!(s.feed(-130.0, 0.0, now + IDLE_END + Duration::from_millis(1)));
+        assert!(matches!(s.release(390.0, true, true, now + IDLE_END), Release::Switch(1)));
+    }
+
+    #[test]
+    fn missing_neighbor_does_not_jump_on_release() {
+        let mut s = Swipe::default();
+        let now = Instant::now();
+        s.feed(200.0, 0.0, now);
+        let before = s.offset(390.0, false, true, now).0;
+        s.release(390.0, false, true, now);
+        let after = s.offset(390.0, false, true, now).0;
+        assert_eq!(before, after);
     }
 }
