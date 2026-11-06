@@ -2007,6 +2007,16 @@ impl MobileApp {
                     }),
             )
             .when_some(if preview { None } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
+            .when(!preview && self.voice.auto_send && (self.voice.starting || self.voice.recording.is_some()), |d| d.child(
+                pill("stop-dictation", "Stop and send", t)
+                    .a11y_button("Stop recording and send voice message")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.feel.voice_gesture.reset();
+                        this.feel.voice_wheel_at = None;
+                        this.feel.voice_pan_ended = true;
+                        this.finish_overscroll_voice(cx);
+                    }))
+            ))
             .when(!preview && (self.voice.busy || self.voice.recording.is_some()), |d| d.child(
                 pill("cancel-dictation", "Cancel dictation", t)
                     .a11y_button("Discard voice recording")

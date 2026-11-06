@@ -18,13 +18,18 @@ Native capture is PCM16 mono at 16 kHz, limited to five minutes and 10 MiB. A
 private temporary WAV is removed after stop, cancel, or failure. Removal is
 best-effort if the filesystem itself fails. Audio and recognition text are not
 logged or persisted by the dictation implementation. The normal draft behavior
-still applies after text is inserted. Desktop preview does not open a microphone.
+still applies after text is inserted. The Linux preview supports real microphone
+capture using `parec` and a PulseAudio-compatible server. Its audio stays in memory
+rather than a temporary file. The current composer exposes voice through the
+bottom-overscroll gesture, with **Stop and send** and **Cancel dictation** controls
+while recording. See `VOICE_GESTURES.md` for that send-on-release workflow.
 
 ## Automated validation
 
 - `justrust test --workspace voice` covers authenticated multipart upload with a
   local HTTP server, invalid recordings, draft append behavior, stale/canceled
-  and wrong-tab results, and preview capture rejection.
+  and wrong-tab results, Linux WAV encoding and subprocess cleanup, and capture
+  rejection on unsupported desktop platforms. Tests never open a microphone.
 - With the Apple SDK/compiler environment from `scripts/ios-bundle.sh`,
   `justrust check --target aarch64-apple-ios` validates native APIs.
 - `justrust build --target aarch64-apple-ios --release --target-dir target`

@@ -1,44 +1,44 @@
 //! Microphone capture. All native objects stay on a dedicated recording worker.
 
 pub struct Recording {
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "linux"))]
     worker: Option<imp::Worker>,
 }
 
 impl Recording {
     /// Call off the UI thread: permission approval can take up to two minutes.
     pub fn start() -> Result<Self, String> {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
         {
             Ok(Self {
                 worker: Some(imp::start()?),
             })
         }
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
         {
-            Err("Microphone recording is supported only on iOS, not in the desktop preview.".into())
+            Err("Microphone recording is supported only on iOS and Linux, not on this desktop preview platform.".into())
         }
     }
 
     pub fn stop(mut self) -> Result<Vec<u8>, String> {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
         {
             self.worker
                 .take()
                 .ok_or("Recording already stopped")?
                 .finish(true)
         }
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
         {
             let _ = &mut self;
-            Err("Microphone recording is supported only on iOS, not in the desktop preview.".into())
+            Err("Microphone recording is supported only on iOS and Linux, not on this desktop preview platform.".into())
         }
     }
 }
 
 impl Drop for Recording {
     fn drop(&mut self) {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
         if let Some(worker) = self.worker.take() {
             worker.cancel();
         }
@@ -381,7 +381,219 @@ mod imp {
     }
 }
 
-#[cfg(all(test, not(target_os = "ios")))]
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::{
+        io::Read,
+        os::fd::AsRawFd,
+        process::{Child, Command, Stdio},
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    const MAX_DURATION: Duration = Duration::from_secs(300);
+    const MAX_PCM: usize = 10 * 1024 * 1024 - 44;
+
+    pub(super) struct Worker {
+        command: mpsc::Sender<bool>,
+        join: thread::JoinHandle<Result<Vec<u8>, String>>,
+    }
+    impl Worker {
+        pub(super) fn cancel(self) {
+            let _ = self.command.send(false);
+            // Detach: killing and reaping the child must never block the UI.
+        }
+        pub(super) fn finish(self, keep: bool) -> Result<Vec<u8>, String> {
+            let _ = self.command.send(keep);
+            self.join
+                .join()
+                .map_err(|_| "Audio recording worker panicked".to_owned())?
+        }
+    }
+
+    // Every path, including read errors and unwinding, kills and reaps the child.
+    struct CaptureChild(Child);
+    impl Drop for CaptureChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    pub(super) fn start() -> Result<Worker, String> {
+        let mut command = Command::new("parec");
+        command.args([
+            "--record",
+            "--raw",
+            "--format=s16le",
+            "--rate=16000",
+            "--channels=1",
+        ]);
+        start_command(command, MAX_DURATION, MAX_PCM)
+    }
+
+    fn start_command(
+        mut process: Command,
+        duration: Duration,
+        max_pcm: usize,
+    ) -> Result<Worker, String> {
+        let (command, commands) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let join = thread::Builder::new().name("voice-capture".into()).spawn(move || {
+            let child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+            let mut child = match child {
+                Ok(child) => CaptureChild(child),
+                Err(error) => {
+                    let _ = ready_tx.send(Err(format!("Cannot start parec microphone capture (install pulseaudio-utils and check your audio service): {error}")));
+                    return Ok(Vec::new());
+                }
+            };
+            let mut stdout = child.0.stdout.take().ok_or("parec stdout is unavailable")?;
+            if ready_tx.send(Ok(())).is_err() { return Ok(Vec::new()); }
+            let started = Instant::now();
+            let mut pcm = Vec::new();
+            loop {
+                match commands.try_recv() {
+                    Ok(false) | Err(mpsc::TryRecvError::Disconnected) => return Ok(Vec::new()),
+                    Ok(true) => break,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                if started.elapsed() >= duration { break; }
+                if pcm.len() >= max_pcm { return Err("Recorded audio exceeds the 10 MiB limit".into()); }
+                // poll makes silence cancellable without a blocked reader thread. There is
+                // only one reader, so a readable pipe can safely be read without O_NONBLOCK.
+                #[repr(C)]
+                struct PollFd { fd: std::ffi::c_int, events: i16, revents: i16 }
+                unsafe extern "C" {
+                    fn poll(fds: *mut PollFd, nfds: usize, timeout: std::ffi::c_int) -> std::ffi::c_int;
+                }
+                let mut fd = PollFd { fd: stdout.as_raw_fd(), events: 1, revents: 0 };
+                // SAFETY: fd points to one initialized pollfd for the lifetime of the call.
+                let available = unsafe { poll(&mut fd, 1, 20) };
+                if available < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted { continue; }
+                    return Err(format!("Cannot poll microphone audio: {error}"));
+                }
+                if available == 0 { continue; }
+                let mut buffer = [0; 4096];
+                let remaining = (max_pcm - pcm.len()).min(buffer.len());
+                match stdout.read(&mut buffer[..remaining]) {
+                    Ok(0) => {
+                        let status = child.0.try_wait().map_err(|e| format!("Cannot inspect parec: {e}"))?;
+                        return Err(format!("Microphone capture ended unexpectedly ({status:?}). Check the PulseAudio/PipeWire service and microphone permissions."));
+                    }
+                    Ok(count) => pcm.extend_from_slice(&buffer[..count]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(format!("Cannot read microphone audio: {e}")),
+                }
+            }
+            wav(pcm)
+        }).map_err(|e| format!("Cannot start recording worker: {e}"))?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Worker { command, join }),
+            Ok(Err(error)) => {
+                let _ = join.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = join.join();
+                Err("Audio recording worker stopped during startup".to_owned())
+            }
+        }
+    }
+
+    fn wav(pcm: Vec<u8>) -> Result<Vec<u8>, String> {
+        if pcm.is_empty() {
+            return Err("Microphone produced no audio".into());
+        }
+        if pcm.len() > MAX_PCM {
+            return Err("Recorded audio exceeds the 10 MiB limit".into());
+        }
+        if pcm.len() % 2 != 0 {
+            return Err("Microphone returned an incomplete PCM sample".into());
+        }
+        let size = pcm.len() as u32;
+        let mut bytes = Vec::with_capacity(44 + pcm.len());
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + size).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&32000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&size.to_le_bytes());
+        bytes.extend_from_slice(&pcm);
+        Ok(bytes)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn pcm_has_correct_wav_header() {
+            let bytes = wav(vec![1, 2, 3, 4]).unwrap();
+            assert_eq!(&bytes[..4], b"RIFF");
+            assert_eq!(&bytes[4..8], &40u32.to_le_bytes());
+            assert_eq!(&bytes[8..16], b"WAVEfmt ");
+            assert_eq!(&bytes[20..24], &[1, 0, 1, 0]);
+            assert_eq!(&bytes[24..28], &16000u32.to_le_bytes());
+            assert_eq!(&bytes[28..32], &32000u32.to_le_bytes());
+            assert_eq!(&bytes[32..36], &[2, 0, 16, 0]);
+            assert_eq!(&bytes[36..44], &[100, 97, 116, 97, 4, 0, 0, 0]);
+            assert_eq!(&bytes[44..], &[1, 2, 3, 4]);
+            assert!(wav(vec![]).is_err());
+            assert!(wav(vec![1]).is_err());
+            assert!(wav(vec![0; MAX_PCM + 2]).is_err());
+        }
+        #[test]
+        fn silent_child_cancellation_is_prompt_and_reaped() {
+            let mut process = Command::new("sleep");
+            process.arg("30");
+            let worker = start_command(process, MAX_DURATION, MAX_PCM).unwrap();
+            let start = Instant::now();
+            assert!(worker.finish(false).unwrap().is_empty());
+            assert!(start.elapsed() < Duration::from_secs(2));
+        }
+        #[test]
+        fn fake_pcm_is_wrapped_after_duration_limit() {
+            let mut process = Command::new("sh");
+            process.args(["-c", "printf '\\001\\002\\003\\004'; exec sleep 30"]);
+            let worker = start_command(process, Duration::from_millis(100), MAX_PCM).unwrap();
+            // Wait for automatic completion, not a user stop, without using a microphone.
+            let bytes = worker.join.join().unwrap().unwrap();
+            assert_eq!(&bytes[44..], &[1, 2, 3, 4]);
+        }
+        #[test]
+        fn fake_pcm_cannot_exceed_byte_limit() {
+            let mut process = Command::new("sh");
+            process.args(["-c", "exec yes"]);
+            let worker = start_command(process, MAX_DURATION, 1024).unwrap();
+            assert!(worker.join.join().unwrap().unwrap_err().contains("10 MiB"));
+        }
+        #[test]
+        fn subprocess_failure_and_missing_executable_are_errors() {
+            assert!(
+                start_command(
+                    Command::new("/nonexistent/jcode-parec"),
+                    MAX_DURATION,
+                    MAX_PCM
+                )
+                .is_err()
+            );
+            let worker = start_command(Command::new("false"), MAX_DURATION, MAX_PCM).unwrap();
+            thread::sleep(Duration::from_millis(50));
+            assert!(worker.finish(true).unwrap_err().contains("unexpectedly"));
+        }
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "ios", target_os = "linux"))))]
 mod tests {
     #[test]
     fn preview_cannot_record() {

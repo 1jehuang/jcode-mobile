@@ -95,6 +95,19 @@ impl MobileApp {
         cx.notify();
     }
 
+    fn voice_wheel_eligible(&self, event: &ScrollWheelEvent) -> bool {
+        let delta = event.delta.pixel_delta(px(20.));
+        cfg!(any(target_os = "ios", target_os = "linux"))
+            && self.scene_allows_voice()
+            && self.scene().menus
+            && !matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled)
+            && !self.feel.voice_pan_ended
+            && self.feel.g.refreshing.is_none()
+            && self.feel.g.transcript.is_some_and(|b| b.contains(&event.position))
+            && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5
+            && delta.y < px(0.) && delta.y.abs() >= delta.x.abs()
+    }
+
     /// Capture only the deliberate overscroll, not ordinary scrolling or the
     /// post-release fling. Explicit touch phases never use an idle timeout.
     fn feel_voice_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) -> bool {
@@ -115,13 +128,7 @@ impl MobileApp {
         if ended { self.feel.voice_pan_ended = true; }
         let delta = event.delta.pixel_delta(px(20.));
         if !tracking {
-            let eligible = cfg!(target_os = "ios") && self.scene_allows_voice()
-                && self.scene().menus && !ended && !self.feel.voice_pan_ended
-                && self.feel.g.refreshing.is_none()
-                && self.feel.g.transcript.is_some_and(|b| b.contains(&event.position))
-                && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5
-                && delta.y < px(0.) && delta.y.abs() >= delta.x.abs();
-            if !eligible { return false; }
+            if !self.voice_wheel_eligible(event) { return false; }
             self.feel.g.cancel();
             self.feel.voice_gesture.reset();
         }

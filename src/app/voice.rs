@@ -26,7 +26,7 @@ impl VoiceState {
                 .into(),
             )
         } else if self.recording.is_some() && self.locked {
-            Some("Mic locked on. Tap stop to transcribe and send, or cancel to discard.".into())
+            Some("Mic locked on. Tap Stop and send, or cancel to discard.".into())
         } else if self.recording.is_some() && self.auto_send {
             Some("Recording. Return to Stop or release to send. Pull farther to lock.".into())
         } else if self.recording.is_some() {
@@ -52,7 +52,7 @@ impl VoiceState {
 impl MobileApp {
     /// Start while the finger is still held, not after release.
     pub(super) fn start_overscroll_voice(&mut self, cx: &mut Context<Self>) {
-        if cfg!(target_os = "ios") && self.scene_allows_voice() {
+        if cfg!(any(target_os = "ios", target_os = "linux")) && self.scene_allows_voice() {
             self.begin_voice(true, cx);
         }
     }

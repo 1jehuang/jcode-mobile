@@ -155,6 +155,7 @@
         "pill:literal:pill-account": 1,
         "pill:literal:pill-effort": 1,
         "pill:literal:pill-model": 1,
+        "pill:literal:stop-dictation": 1,
         "round_button:literal:send": 1,
         "round_button:literal:stop": 1
       },
@@ -188,11 +189,18 @@
           "tests": [
             "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers"
           ]
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Stop and send is hit-tested with a synthetic locked startup. It releases gesture ownership, remembers stop during startup, and preserves the unrelated draft. No microphone or transcription service is acquired.",
+          "tests": [
+            "src/app/voice_controls_tests.rs::locked_voice_has_a_rendered_stop_and_send_control"
+          ]
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 6
+        "on_click": 7
       },
       "handler": false,
       "owner": "src/app.rs::impl:MobileApp::render_composer_for",

@@ -76,6 +76,12 @@ keyboard integration, or an iOS simulator. Safe areas, keyboard insets, platform
 services, haptics, and system interaction still need real iPhone testing. The
 preview connects to real services and uses real stored accounts, not mock data.
 
+The bottom-overscroll microphone gesture also records real audio on Linux.
+It requires `parec` and a PulseAudio-compatible server (PipeWire PulseAudio works).
+Pull upward past the newest message while holding your finger down, then release
+to transcribe and send. Pull farther to lock, then use **Stop and send**, or
+**Cancel dictation** to discard. See `docs/VOICE_GESTURES.md` for details.
+
 ## Existing preview environment options
 
 All app environment settings are inherited unchanged. Defaults remain app-owned:

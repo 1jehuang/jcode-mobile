@@ -28,6 +28,109 @@ fn seed_startup(app: &mut MobileApp, locked: bool) {
     app.voice.locked = locked;
 }
 
+#[cfg(any(target_os = "ios", target_os = "linux"))]
+#[gpui::test]
+fn supported_preview_accepts_only_deliberate_bottom_overscroll(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        // Eligibility only. Never start a microphone or contact the fixture account.
+        app.offline = false;
+        app.feel.g.transcript = Some(gpui::Bounds::new(
+            point(px(0.), px(0.)), gpui::size(px(390.), px(600.)),
+        ));
+        assert!(app.voice_wheel_eligible(&wheel(-80., TouchPhase::Moved)));
+        assert!(!app.voice_wheel_eligible(&wheel(80., TouchPhase::Moved)));
+        assert!(!app.voice_wheel_eligible(&wheel(-80., TouchPhase::Ended)));
+        assert!(!app.voice_wheel_eligible(&wheel(-80., TouchPhase::Cancelled)));
+        let mut outside = wheel(-80., TouchPhase::Moved);
+        outside.position = point(px(500.), px(200.));
+        assert!(!app.voice_wheel_eligible(&outside));
+        let mut horizontal = wheel(-80., TouchPhase::Moved);
+        horizontal.delta = ScrollDelta::Pixels(point(px(200.), px(-80.)));
+        assert!(!app.voice_wheel_eligible(&horizontal));
+        app.drawer_open = true;
+        assert!(!app.voice_wheel_eligible(&wheel(-80., TouchPhase::Moved)));
+        app.drawer_open = false;
+        app.feel.voice_pan_ended = true;
+        assert!(!app.voice_wheel_eligible(&wheel(-80., TouchPhase::Moved)));
+        app.offline = true;
+        app.cancel_voice();
+        cx.notify();
+    });
+}
+
+#[gpui::test]
+fn locked_voice_has_a_rendered_stop_and_send_control(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
+    view.update(cx, |app, cx| {
+        seed_startup(app, true);
+        app.feel.voice_gesture.release();
+        app.feel.voice_wheel_at = None;
+        app.composer.update(cx, |input, cx| input.set_text("Keep this draft", cx));
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let stop = cx.debug_bounds("stop-dictation").expect("locked recording needs a stop control");
+    cx.simulate_click(stop.center(), Modifiers::default());
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
+        assert!(!app.voice.locked);
+        assert!(app.voice.starting && app.voice.auto_send);
+        assert!(app.voice.status().unwrap().contains("Finishing microphone startup"));
+        assert_eq!(app.composer.read(cx).text(), "Keep this draft");
+        assert!(app.session.transcript.is_empty());
+    });
+}
+
+#[cfg(any(target_os = "ios", target_os = "linux"))]
+#[gpui::test]
+fn native_touch_pan_enters_voice_and_release_finishes_mocked_capture(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
+    // Recorded gesture bounds lag layout by one frame after resizing.
+    for _ in 0..3 {
+        cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+    }
+    let at = view.read_with(cx, |app, _| app.feel.g.transcript.unwrap().center());
+    view.update(cx, |app, _| app.offline = false);
+    let dispatch = |cx: &mut gpui::VisualTestContext, phase, position| {
+        cx.update(|window, cx| {
+            window.dispatch_event(gpui::PlatformInput::Touch(gpui::TouchEvent {
+                id: gpui::TouchId(701), phase, position,
+                predicted_position: None, force: None,
+            }), cx);
+            window.draw(cx).clear(cx);
+        });
+    };
+    dispatch(cx, TouchPhase::Started, at);
+    let moved = at - point(px(0.), px(20.));
+    dispatch(cx, TouchPhase::Moved, moved);
+    view.update(cx, |app, _| {
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling,
+            "at={at:?}, transcript={:?}, ended={}, phased={}, tracked={}, eligible={}, offset={:?}, max={:?}, offline={}, screen={:?}, drawer={}, git={}",
+            app.feel.g.transcript, app.feel.voice_pan_ended, app.feel.voice_phased,
+            app.feel.voice_wheel_at.is_some(), app.scene_allows_voice(),
+            app.transcript_scroll.offset(), app.transcript_scroll.max_offset(),
+            app.offline, app.screen == Screen::Chat, app.drawer_open, app.git_info.open);
+        assert!(app.feel.voice_phased && app.feel.voice_wheel_at.is_some());
+        // The real touchscreen pan has acquired voice routing below the start
+        // threshold. Seed capture now, so tests never access real audio/network.
+        app.offline = true;
+        seed_startup(app, false);
+    });
+    dispatch(cx, TouchPhase::Ended, moved);
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
+        assert!(app.feel.voice_pan_ended && app.feel.voice_wheel_at.is_none());
+        assert!(app.voice.status().unwrap().contains("Finishing microphone startup"));
+        assert!(app.session.transcript.is_empty());
+    });
+}
+
 #[gpui::test]
 fn reverse_to_stop_during_startup_consumes_tail_until_ended(cx: &mut TestAppContext) {
     cx.update(init);
