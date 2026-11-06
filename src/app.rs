@@ -889,6 +889,7 @@ fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
 fn pill(id: &'static str, text: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .a11y_text_button()
         .flex_none()
         .h(px(22.))
@@ -1462,7 +1463,7 @@ impl MobileApp {
                             }
                             cx.notify();
                         }))
-                        .child(div().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows))
+                        .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows))
                         .child({
                             let scroll = self.transcript_scroll.clone();
                             let follow = self.follow;
@@ -1593,9 +1594,9 @@ impl MobileApp {
             }
             Role::System => label(e.text.clone(), t.text_muted, 12.).into_any_element(),
             Role::Assistant => {
-                let mut col = div().flex().flex_col().gap(px(6.));
+                let mut col = div().w_full().min_w_0().flex().flex_col().gap(px(6.));
                 if !e.reasoning.is_empty() {
-                    col = col.child(label(e.reasoning.clone(), t.text_muted, 12.).italic());
+                    col = col.child(crate::markdown::render_reasoning(&e.reasoning, t));
                 }
                 for call in &e.tool_calls {
                     col = col.child(self.tool_line(call, t, cx));
@@ -1711,8 +1712,12 @@ impl MobileApp {
             cx.notify();
         });
         div()
+            .id("chat-composer")
+            .debug_selector(|| "chat-composer".into())
             .flex()
             .flex_col()
+            .flex_none()
+            .min_w_0()
             .gap(px(4.))
             .px(px(12.))
             .pt(px(6.))
@@ -1731,12 +1736,12 @@ impl MobileApp {
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
-                    .child(
+                    .when(cfg!(target_os = "ios"), |d| d.child(
                         round_button("microphone", if self.voice.recording.is_some() { "■" } else if self.voice.busy { "…" } else { "🎙" },
                             if self.voice.recording.is_some() { t.error } else { t.text_strong }, !self.voice.busy, t)
                             .a11y_button(if self.voice.recording.is_some() { "Stop recording and transcribe" } else { "Dictate message" })
                             .when(!self.voice.busy, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx))))
-                    )
+                    ))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")
@@ -1762,7 +1767,10 @@ impl MobileApp {
             ).px(px(8.))))
             .child(
                 div()
+                    .id("chat-metadata")
+                    .debug_selector(|| "chat-metadata".into())
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap(px(4.))
                     .px(px(4.))
@@ -1796,6 +1804,7 @@ impl MobileApp {
                         let (name, parent) = crate::labels::cloud_location(self.session.working_dir.as_deref());
                         div()
                             .id("location")
+                            .debug_selector(|| "location".into())
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, window, cx| this.open_dir_picker(window, cx)))
                             .flex_shrink(8.)
@@ -1816,7 +1825,9 @@ impl MobileApp {
                             )
                             .child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .flex_shrink_1()
+                                    .truncate()
                                     .text_size(crate::system::fs(11.5))
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(t.text_secondary)

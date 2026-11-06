@@ -3,6 +3,49 @@ use super::*;
 use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, size};
 
 #[gpui::test]
+fn attached_cloud_history_and_footer_stay_inside_phone(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+        app.screen = Screen::Chat;
+        app.session.phase = ConnectionPhase::Connected;
+        app.session.session_id = Some("cloud-render-fixture".into());
+        app.session.model_name = Some("gpt-6.1".into());
+        app.session.provider_name = Some("anthropic".into());
+        app.session.reasoning_effort = Some("medium".into());
+        app.session.account_label = Some("a-very-long-account-label@example.test".into());
+        app.session.working_dir = Some(format!("/home/cloud/projects/{}", "long-repository-name".repeat(5)));
+        app.session.transcript.push(TranscriptEntry {
+            id: 1, role: Role::Assistant,
+            text: format!("The **answer** wraps normally.\n\n```rust\n{}\n```\n\nFinal paragraph.", "long_identifier_".repeat(80)),
+            reasoning: "**Adding TODO initialization**\n\n**Preparing type-coercion coverage**".into(),
+            tool_calls: Vec::new(), is_streaming: false, is_queued: false,
+        });
+        app
+    });
+    for width in [320., 390., 430.] {
+        view.update(cx, |app, cx| { app.device = Some((width, 844.)); cx.notify(); });
+        cx.simulate_resize(size(px(width), px(844.)));
+        for _ in 0..3 { cx.update(|window, cx| { window.draw(cx).clear(cx); }); }
+        let composer = cx.debug_bounds("chat-composer").unwrap();
+        let metadata = cx.debug_bounds("chat-metadata").unwrap();
+        assert!(composer.left() >= px(0.) && composer.right() <= px(width), "composer overflow: {composer:?}");
+        assert!(metadata.left() >= composer.left() && metadata.right() <= composer.right());
+        for id in ["pill-model", "pill-effort", "pill-account", "location"] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert!(bounds.left() >= metadata.left() && bounds.right() <= metadata.right(), "{id} clipped at {width}: {bounds:?} in {metadata:?}");
+            assert!(bounds.top() >= metadata.top() && bounds.bottom() <= metadata.bottom());
+        }
+        #[cfg(not(target_os = "ios"))]
+        assert!(cx.debug_bounds("microphone").is_none(), "unsupported desktop microphone must not be offered");
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.transcript_scroll.max_offset().x, px(0.), "code must not widen the transcript");
+            assert!(app.transcript_scroll.bounds().bottom() <= composer.top(), "transcript overlaps composer");
+        });
+    }
+}
+
+#[gpui::test]
 fn drawer_footer_is_compact_account_only_and_opens_settings(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {

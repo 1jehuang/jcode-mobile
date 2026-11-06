@@ -5,6 +5,43 @@
 use jcode_sdk::{ApiEvent, HistoryMessage, TurnStopReason};
 use std::collections::{HashMap, HashSet};
 
+/// Stored history prefixes assistant text with terminal-specific reasoning
+/// markup. Decode only the sentinel-tagged prefix, never ordinary Markdown or
+/// examples in the answer. Keep this in sync with jcode-render-core/reasoning.
+fn history_assistant_content(content: &str) -> (String, String) {
+    let mut reasoning = String::new();
+    let mut consumed = 0;
+    let mut tagged = false;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches([' ', '\r', '\n']);
+        if let Some(body) = trimmed.strip_prefix("*\u{2063}")
+            .and_then(|s| s.strip_suffix("\u{2063}*"))
+        {
+            tagged = true;
+            let mut chars = body.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\\' && chars.peek().is_some_and(|c| "\\*_`[]<>&~|$".contains(*c)) {
+                    reasoning.push(chars.next().unwrap());
+                } else {
+                    reasoning.push(ch);
+                }
+            }
+            if line.ends_with('\n') {
+                reasoning.push('\n');
+            }
+        } else if trimmed.is_empty() {
+            reasoning.push('\n');
+        } else {
+            break;
+        }
+        consumed += line.len();
+    }
+    if !tagged {
+        return (content.to_owned(), String::new());
+    }
+    (content[consumed..].to_owned(), reasoning.trim_matches('\n').to_owned())
+}
+
 /// Keep useful prose, not Markdown layout, in the small banner preview.
 fn notification_preview(text: &str, limit: usize) -> String {
     let mut lines = Vec::new();
@@ -538,7 +575,11 @@ impl SessionState {
             if m.content.is_empty() {
                 continue;
             }
-            transcript.push(self.entry(role, m.content.clone()));
+            let mut entry = self.entry(role, m.content.clone());
+            if role == Role::Assistant {
+                (entry.text, entry.reasoning) = history_assistant_content(&m.content);
+            }
+            transcript.push(entry);
         }
         transcript.extend(tail);
         self.transcript = transcript;
@@ -612,6 +653,40 @@ mod tests {
     }
     fn sid() -> String {
         "s".into()
+    }
+
+    #[test]
+    fn attached_history_decodes_reasoning_and_preserves_answer_markdown() {
+        let mut s = SessionState::default();
+        let content = "*\u{2063}\\*\\*Adding TODO initialization\\*\\*\u{2063}*  \n\n*\u{2063}Checking `path` and C:\\work\u{2063}*  \n\nThe **answer** keeps \\*literal\\* markup.";
+        ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
+            response_stats: None, role: "assistant".into(), content: content.into(),
+        }], images: vec![] });
+        assert_eq!(s.transcript[0].reasoning, "**Adding TODO initialization**\n\nChecking `path` and C:\\work");
+        assert_eq!(s.transcript[0].text, "The **answer** keeps \\*literal\\* markup.");
+        assert!(!s.transcript[0].is_streaming);
+    }
+
+    #[test]
+    fn history_decoder_preserves_literal_examples_and_partial_wrappers() {
+        for content in ["\n\n**ordinary**", "**ordinary**", "*ordinary italic*", "*\u{2063}unfinished", "```\n*\u{2063}example\u{2063}*\n```", "Answer\n*\u{2063}example\u{2063}*"] {
+            assert_eq!(history_assistant_content(content), (content.into(), String::new()));
+        }
+        assert_eq!(history_assistant_content("*\u{2063}é文字 \\[docs\\] \\\\ \\*\u{2063}*"),
+            (String::new(), "é文字 [docs] \\ *".into()));
+        assert_eq!(history_assistant_content("\n\n*\u{2063}Thought\u{2063}*  \r\n\nAnswer"),
+            ("Answer".into(), "Thought".into()));
+    }
+
+    #[test]
+    fn user_history_is_not_interpreted_as_reasoning() {
+        let mut s = SessionState::default();
+        let content = "*\u{2063}literal\u{2063}*";
+        ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
+            response_stats: None, role: "user".into(), content: content.into(),
+        }], images: vec![] });
+        assert_eq!(s.transcript[0].text, content);
+        assert!(s.transcript[0].reasoning.is_empty());
     }
 
     #[test]
