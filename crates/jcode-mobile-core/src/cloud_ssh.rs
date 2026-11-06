@@ -159,6 +159,9 @@ impl std::fmt::Debug for CloudSsh {
 }
 
 enum Command {
+    Inspect {
+        reply: mpsc::Sender<std::result::Result<Vec<u8>, String>>,
+    },
     Open {
         deadline: Instant,
         reply: mpsc::Sender<Result<ApiChannel>>,
@@ -297,6 +300,47 @@ impl CloudSsh {
                 loop {
                     tokio::select! {
                         request = requests.recv() => match request {
+                            Some(Command::Inspect { reply }) => {
+                                let session = session.clone();
+                                tokio::spawn(async move {
+                                    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+                                    let result = async {
+                                        let mut channel = tokio::time::timeout_at(deadline, session.channel_open_session())
+                                            .await.map_err(|_| ())?.map_err(|_| ())?;
+                                        let result = tokio::time::timeout_at(deadline, async {
+                                            channel.exec(true, crate::cloud_machine::INSPECTION_COMMAND).await.map_err(|_| ())?;
+                                            let mut output = Vec::new();
+                                            let mut received = 0usize;
+                                            let mut success = false;
+                                            loop {
+                                                match channel.wait().await {
+                                                    Some(russh::ChannelMsg::Data { data }) => {
+                                                        received = received.saturating_add(data.len());
+                                                        if received > crate::cloud_machine::MAX_OUTPUT_BYTES { return Err(()); }
+                                                        output.extend_from_slice(&data);
+                                                    }
+                                                    Some(russh::ChannelMsg::ExtendedData { data, .. }) => {
+                                                        received = received.saturating_add(data.len());
+                                                        if received > crate::cloud_machine::MAX_OUTPUT_BYTES { return Err(()); }
+                                                    }
+                                                    Some(russh::ChannelMsg::ExitStatus { exit_status }) => success = exit_status == 0,
+                                                    Some(russh::ChannelMsg::Close) | None => break,
+                                                    Some(russh::ChannelMsg::Failure | russh::ChannelMsg::ExitSignal { .. }) => return Err(()),
+                                                    // Never retain or expose stderr, including gh auth diagnostics.
+                                                    Some(_) => {}
+                                                }
+                                            }
+                                            if success { Ok(output) } else { Err(()) }
+                                        }).await;
+                                        let _ = tokio::time::timeout(Duration::from_millis(250), channel.close()).await;
+                                        result.map_err(|_| ())?
+                                    }.await;
+                                    let _ = reply.send(match result {
+                                        Ok(output) => Ok(output),
+                                        _ => Err("Machine inspection failed or timed out".into()),
+                                    });
+                                });
+                            }
                             Some(Command::Open { deadline, reply }) => {
                                 let session = session.clone();
                                 tokio::spawn(async move {
@@ -355,6 +399,15 @@ impl CloudSsh {
 
     pub fn is_closed(&self) -> bool {
         self.0.closed.load(Ordering::Acquire) || self.0.commands.is_closed()
+    }
+
+    /// Execute only the built-in read-only inspection, never caller-supplied shell.
+    pub(crate) fn inspect_machine(&self) -> std::result::Result<Vec<u8>, String> {
+        let (reply, result) = mpsc::channel();
+        self.0.commands.send(Command::Inspect { reply })
+            .map_err(|_| "Machine inspection connection closed".to_string())?;
+        result.recv_timeout(Duration::from_secs(9))
+            .map_err(|_| "Machine inspection failed or timed out".to_string())?
     }
 
     /// Open a fresh, independently attached `jcode api --stdio` channel.
@@ -548,6 +601,7 @@ mod tests {
         withhold_first_hello: bool,
         first_channel: Option<russh::ChannelId>,
         ping_delay: Duration,
+        inspection_output: Option<Vec<u8>>,
     }
 
     fn frame(
@@ -602,6 +656,17 @@ mod tests {
             command: &[u8],
             session: &mut russh::server::Session,
         ) -> std::result::Result<(), Self::Error> {
+            if let Some(output) = &self.inspection_output {
+                assert_eq!(command, crate::cloud_machine::INSPECTION_COMMAND.as_bytes());
+                session.channel_success(channel)?;
+                // Empty fixture means the server never finishes this command.
+                if output.is_empty() { return Ok(()); }
+                session.extended_data(channel, 1, b"auth secret-token".to_vec())?;
+                session.data(channel, output.clone())?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                return session.close(channel);
+            }
             assert_eq!(command, REMOTE_COMMAND.as_bytes());
             session.channel_success(channel)
         }
@@ -698,6 +763,14 @@ mod tests {
             withhold_first_hello: bool,
             ping_delay: Duration,
         ) -> (Self, CloudTarget, CloudSshKey) {
+            Self::start_with_inspection(withhold_first_hello, ping_delay, None)
+        }
+
+        fn start_with_inspection(
+            withhold_first_hello: bool,
+            ping_delay: Duration,
+            inspection_output: Option<Vec<u8>>,
+        ) -> (Self, CloudTarget, CloudSshKey) {
             let host = CloudSshKey::generate("host").unwrap();
             let key = CloudSshKey::generate("test-client").unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -718,6 +791,7 @@ mod tests {
                 withhold_first_hello,
                 first_channel: None,
                 ping_delay,
+                inspection_output,
             };
             let (stop, stopped) = mpsc::channel();
             let thread = std::thread::spawn(move || {
@@ -764,6 +838,34 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("SSH master leaked");
             self.thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stalled_inspection_times_out_without_exposing_auth_details() {
+        let (server, target, key) = Server::start_with_inspection(false, Duration::ZERO, Some(Vec::new()));
+        let master = CloudSsh::connect(target, key).unwrap();
+        let started = Instant::now();
+        assert_eq!(master.inspect_machine().unwrap_err(), "Machine inspection failed or timed out");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!master.is_closed());
+        drop(master);
+        server.finish();
+    }
+
+    #[test]
+    fn inspection_uses_fixed_pinned_command_discards_stderr_and_caps_output() {
+        for (output, valid) in [(b"only structured stdout".to_vec(), true), (vec![b'x'; crate::cloud_machine::MAX_OUTPUT_BYTES + 1], false)] {
+            let (server, target, key) = Server::start_with_inspection(false, Duration::ZERO, Some(output.clone()));
+            let master = CloudSsh::connect(target, key).unwrap();
+            let result = master.inspect_machine();
+            if valid {
+                assert_eq!(result.unwrap(), output);
+            } else {
+                assert_eq!(result.unwrap_err(), "Machine inspection failed or timed out");
+            }
+            drop(master);
+            server.finish();
         }
     }
 

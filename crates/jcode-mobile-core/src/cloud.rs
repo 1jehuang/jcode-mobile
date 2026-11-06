@@ -54,6 +54,16 @@ fn client_for(account: &Account) -> CloudClient {
     client().with_api_base(account.api_base.clone())
 }
 
+/// A dedicated pinned connection for read-only inspection. No API server is started.
+pub(crate) fn inspection_ssh(account: &Account) -> Result<crate::cloud_ssh::CloudSsh, String> {
+    let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)
+        .map_err(|_| "Could not prepare machine inspection".to_string())?;
+    let target = client_for(account).wait_for_host(account, key.public_openssh(), &|_| {}, &|| false)
+        .map_err(|_| "Could not reach your cloud machine for inspection".to_string())?;
+    crate::cloud_ssh::CloudSsh::connect(target, key)
+        .map_err(|_| "Could not securely connect for machine inspection".to_string())
+}
+
 /// Persistent account storage (app data dir on iOS, XDG data on Linux).
 pub struct AccountStore {
     path: PathBuf,
