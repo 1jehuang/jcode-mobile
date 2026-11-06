@@ -37,10 +37,14 @@ GPUI_LOCAL=0 scripts/touch-preview.sh # pinned revision, not local touch work
 ```
 
 **Native finger input depends on GPUI's Wayland `wl_touch` implementation.**
-The backend initially has no `wl_touch` handling. That support is being developed
-separately in `/home/jeremy/gpui`; this launcher alone does not implement it or
-prove it works. Use the checkout containing that work, and verify actual taps,
-drags, scrolling, cancellation, and long presses on hardware. The pinned revision
+The local GPUI checkout now subscribes to `wl_touch` and forwards contact down,
+motion, up, and cancellation into the same recognizer used on iOS. Contacts
+retain their starting window and get unique IDs even when Wayland reuses a slot.
+Capability loss cancels active touches instead of treating them as taps.
+This launcher alone does not provide that implementation. Use the checkout
+containing the backend changes (`fe70561`, native Wayland touchscreen input),
+and verify actual taps, drags, scrolling, cancellation, and long presses on
+hardware. The pinned revision
 is not a substitute for the local backend changes. XWayland pointer events are
 not evidence that native Wayland touch works. Multitouch and gesture fidelity
 must not be assumed from a successful build or mouse-only test.
