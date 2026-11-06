@@ -10,6 +10,89 @@ mod tests;
 
 const TRIGGER: f32 = 48.;
 
+/// A terminal-style frame with its title interrupting the top border.
+fn git_frame(id: &'static str, title: &'static str, t: &Theme) -> gpui::Div {
+    div()
+        .debug_selector(move || id.into())
+        .relative()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .mt(px(8.))
+        .px(px(9.))
+        .pt(px(15.))
+        .pb(px(9.))
+        .border_1()
+        .border_color(t.border_focus)
+        .rounded(px(5.))
+        .child(
+            label(title, t.text_secondary, 12.)
+                .absolute()
+                .top(px(-9.))
+                .left(px(8.))
+                .px(px(5.))
+                .bg(t.background),
+        )
+}
+
+fn git_row() -> gpui::Div {
+    div().w_full().min_w_0().flex().items_center().gap(px(6.))
+}
+
+fn commit_columns(line: &str) -> (&str, &str, &str) {
+    let mut columns = line.splitn(3, '\t');
+    let hash = columns.next().unwrap_or_default();
+    if let Some(subject) = columns.next() {
+        (hash, subject, columns.next().unwrap_or_default())
+    } else {
+        let (hash, subject) = line.split_once(' ').unwrap_or((line, ""));
+        (hash, subject, "")
+    }
+}
+
+fn compact_age(age: &str) -> String {
+    let mut words = age.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let number = if first == "a" || first == "an" {
+        "1"
+    } else {
+        first
+    };
+    if number.parse::<u32>().is_ok() {
+        let unit = match words.next().unwrap_or_default() {
+            "second" | "seconds" => "s",
+            "minute" | "minutes" => "m",
+            "hour" | "hours" => "h",
+            "day" | "days" => "d",
+            "week" | "weeks" => "w",
+            "month" | "months" => "mo",
+            "year" | "years" => "y",
+            _ => return age.to_owned(),
+        };
+        return format!("{number}{unit}");
+    }
+    age.to_owned()
+}
+
+fn status_columns(line: &str) -> Option<(&str, &str)> {
+    // Porcelain status codes are two ASCII bytes, followed by a space.
+    if line.len() < 4 || !line.is_char_boundary(2) || line.as_bytes()[2] != b' ' {
+        return None;
+    }
+    Some((&line[..2], &line[3..]))
+}
+
+fn file_stat<'a>(path: &str, stats: &'a str) -> Option<(&'a str, &'a str)> {
+    stats.lines().find_map(|line| {
+        let mut columns = line.splitn(3, '\t');
+        let added = columns.next()?;
+        let removed = columns.next()?;
+        (columns.next()? == path).then_some((added, removed))
+    })
+}
+
 #[cfg(test)]
 mod lifecycle_tests {
     use super::super::lifecycle_coverage::{fixture_account, fixture_app};
@@ -22,6 +105,7 @@ mod lifecycle_tests {
             branch: branch.into(),
             status: String::new(),
             recent_commits: "fixture commit".into(),
+            ..Default::default()
         }
     }
 
@@ -176,9 +260,194 @@ pub(super) struct GitState {
     error: Option<String>,
     context: Option<(u64, Option<String>, Option<String>)>,
     generation: u64,
+    show_all_files: bool,
+    show_all_commits: bool,
 }
 
 impl MobileApp {
+    fn render_git_commits(
+        &self,
+        snapshot: &GitSnapshot,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let commits: Vec<_> = snapshot.recent_commits.lines().collect();
+        let limit = if self.git_info.show_all_commits {
+            commits.len()
+        } else {
+            5
+        };
+        let mut panel = git_frame("git-commits", "Commits", t);
+        for line in commits.iter().take(limit) {
+            let (hash, subject, age) = commit_columns(line);
+            panel = panel.child(
+                git_row()
+                    .child(label("●", gpui::rgb(0x8fb8ff).into(), 11.).flex_none())
+                    .child(label(hash.to_owned(), t.warning, 12.).flex_none())
+                    .child(
+                        label(subject.to_owned(), t.text, 12.)
+                            .flex_1()
+                            .min_w_0()
+                            .truncate(),
+                    )
+                    .child(label(compact_age(age), t.text_muted, 10.).flex_none()),
+            );
+        }
+        if commits.is_empty() {
+            panel = panel.child(label("No commits yet", t.text_muted, 12.));
+        }
+        let mut footer = git_row().flex_wrap().justify_between();
+        if commits.len() > 5 {
+            footer = footer.child(
+                div()
+                    .id("git-more-commits")
+                    .debug_selector(|| "git-more-commits".into())
+                    .a11y_button("Toggle all recent commits")
+                    .cursor_pointer()
+                    .py(px(6.))
+                    .child(label(
+                        if self.git_info.show_all_commits {
+                            "Show fewer".into()
+                        } else {
+                            format!("+{} more", commits.len() - 5)
+                        },
+                        t.text_muted,
+                        11.,
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.git_info.show_all_commits = !this.git_info.show_all_commits;
+                        cx.notify();
+                    })),
+            );
+        }
+        if snapshot.ahead > 0 || snapshot.behind > 0 {
+            footer = footer.child(label(
+                format!("↑{} unpushed  ↓{} behind", snapshot.ahead, snapshot.behind),
+                gpui::rgb(0x8fb8ff).into(),
+                11.,
+            ));
+        }
+        panel.child(footer).into_any_element()
+    }
+
+    fn render_git_overview(
+        &self,
+        snapshot: &GitSnapshot,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let files: Vec<_> = snapshot.status.lines().filter_map(status_columns).collect();
+        let limit = if self.git_info.show_all_files {
+            files.len()
+        } else {
+            5
+        };
+        let mut panel = git_frame("git-overview", "Overview", t).child(
+            git_row()
+                .child(label("◆", gpui::rgb(0x8fb8ff).into(), 12.))
+                .child(
+                    label(snapshot.branch.clone(), t.text_secondary, 12.)
+                        .min_w_0()
+                        .flex_1()
+                        .truncate(),
+                )
+                .child(label(format!("{} changed", files.len()), t.text_muted, 11.).flex_none()),
+        );
+        for (code, path) in files.iter().take(limit) {
+            let color = if code.contains('?') {
+                t.text_muted
+            } else if code.contains('D') {
+                t.error
+            } else if code.contains('A') {
+                t.ok
+            } else {
+                t.warning
+            };
+            let mut row = git_row()
+                .child(label(code.to_owned(), color, 12.).flex_none())
+                .child(
+                    label(path.to_owned(), t.text_secondary, 12.)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate(),
+                );
+            if let Some((added, removed)) = file_stat(path, &snapshot.diff_stat) {
+                row = row.child(
+                    label(
+                        if added == "-" {
+                            "binary".into()
+                        } else {
+                            format!("+{added}")
+                        },
+                        t.ok,
+                        11.,
+                    )
+                    .flex_none(),
+                );
+                if removed != "-" {
+                    row = row.child(label(format!("−{removed}"), t.error, 11.).flex_none());
+                }
+            }
+            panel = panel.child(row);
+        }
+        if files.is_empty() {
+            panel = panel.child(label("✓ Clean working tree", t.ok, 12.));
+        }
+        if files.len() > 5 {
+            panel = panel.child(
+                div()
+                    .id("git-more-files")
+                    .debug_selector(|| "git-more-files".into())
+                    .a11y_button("Toggle all changed files")
+                    .cursor_pointer()
+                    .py(px(6.))
+                    .child(label(
+                        if self.git_info.show_all_files {
+                            "Show fewer".into()
+                        } else {
+                            format!("+{} more", files.len() - 5)
+                        },
+                        t.text_muted,
+                        11.,
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.git_info.show_all_files = !this.git_info.show_all_files;
+                        cx.notify();
+                    })),
+            );
+        }
+        let (added, removed) = snapshot
+            .diff_stat
+            .lines()
+            .fold((0_u64, 0_u64), |(a, r), line| {
+                let mut columns = line.split('\t');
+                (
+                    a.saturating_add(
+                        columns
+                            .next()
+                            .and_then(|n| n.parse::<u64>().ok())
+                            .unwrap_or(0),
+                    ),
+                    r.saturating_add(
+                        columns
+                            .next()
+                            .and_then(|n| n.parse::<u64>().ok())
+                            .unwrap_or(0),
+                    ),
+                )
+            });
+        if !snapshot.diff_stat.is_empty() {
+            panel = panel.child(
+                git_row()
+                    .justify_end()
+                    .child(label(format!("+{added}"), t.ok, 11.))
+                    .child(label(format!("−{removed}"), t.error, 11.))
+                    .child(label("all tracked", t.text_muted, 11.)),
+            );
+        }
+        panel.into_any_element()
+    }
+
     fn git_context(&self) -> (u64, Option<String>, Option<String>) {
         (
             self.active_tab,
@@ -333,7 +602,9 @@ impl MobileApp {
                     .items_center()
                     .justify_center()
                     .gap(px(3.))
-                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(t.border)
+                    .rounded(px(6.))
                     .bg(if pull >= TRIGGER {
                         t.surface
                     } else {
@@ -345,7 +616,7 @@ impl MobileApp {
                     .child(if pull >= TRIGGER {
                         "Release · Git"
                     } else {
-                        "Git ↓"
+                        "◇ Git ↓"
                     })
                     .child(div().w(px(28.)).h(px(3.)).rounded_full().bg(t.border_focus))
                     .on_click(cx.listener(|this, _, _, cx| this.open_git(cx)))
@@ -376,7 +647,7 @@ impl MobileApp {
                     .justify_between()
                     .px(px(16.))
                     .py(px(10.))
-                    .child(label("Git information", t.text_strong, 18.))
+                    .child(label("Repository", t.text_strong, 16.))
                     .child(
                         pill("close-git", "Done", t).on_click(cx.listener(|this, _, _, cx| {
                             this.git_info.open = false;
@@ -434,34 +705,12 @@ impl MobileApp {
                             .when_some(state.error.clone(), |d, error| {
                                 d.child(label(error, t.error, 12.))
                             })
-                            .when_some(state.snapshot.as_ref(), |mut d, snapshot| {
-                                for (title, text) in [
-                                    ("Repository", snapshot.root.as_str()),
-                                    ("Branch", snapshot.branch.as_str()),
-                                    (
-                                        "Working tree",
-                                        if snapshot.status.is_empty() {
-                                            "Clean working tree"
-                                        } else {
-                                            snapshot.status.as_str()
-                                        },
-                                    ),
-                                    (
-                                        "Recent commits",
-                                        if snapshot.recent_commits.is_empty() {
-                                            "No commits yet"
-                                        } else {
-                                            snapshot.recent_commits.as_str()
-                                        },
-                                    ),
-                                ] {
-                                    d = d.child(label(title, t.text_strong, 13.)).child(label(
-                                        text.to_owned(),
-                                        t.text_secondary,
-                                        12.,
-                                    ));
-                                }
-                                d
+                            .when_some(state.snapshot.as_ref(), |d, snapshot| {
+                                d.child(self.render_git_commits(snapshot, t, cx))
+                                    .child(self.render_git_overview(snapshot, t, cx))
+                                    .child(
+                                        label(snapshot.root.clone(), t.text_muted, 11.).truncate(),
+                                    )
                             }),
                     ),
             )
