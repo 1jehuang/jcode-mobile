@@ -74,3 +74,36 @@ fn every_connection_phase_has_explicit_status_and_bounded_phone_presentation(
         }
     }
 }
+
+#[gpui::test]
+fn settings_actions_stay_inside_narrow_phone_width(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    for width in [320., 390.] {
+        cx.simulate_resize(gpui::size(px(width), px(844.)));
+        view.update(cx, |app, cx| {
+            app.device = Some((width, 844.));
+            app.screen = Screen::Settings;
+            app.account.as_mut().unwrap().email = None;
+            app.feel.g.edge_x = 0.;
+            cx.notify();
+        });
+        draw(cx);
+        // The first draw observes the screen change and starts the push.
+        // Settle that seeded presentation only after recognition, as other
+        // Settings fixtures do, before making static containment assertions.
+        view.update(cx, |app, cx| {
+            app.feel.g.edge_x = 0.;
+            cx.notify();
+        });
+        draw(cx);
+        for selector in ["new", "clear", "link-account", "sign-out", "delete-account"] {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            assert!(
+                bounds.left() >= px(0.) && bounds.right() <= px(width),
+                "{selector} overflows phone {width}: {bounds:?}"
+            );
+        }
+    }
+}

@@ -278,6 +278,13 @@
           "kind": "platform_device_required",
           "note": "Account deletion confirmation/service execution, persistent account removal and native account linking require isolated integration checks.",
           "tests": []
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Settled Settings fixtures assert New/Clear/Link/Sign-out/Delete action bounds remain inside320/390-point phone widths. This distinguishes a moving seeded push transition from persistent overflow, not text/pixel or every content branch acceptance.",
+          "tests": [
+            "src/app/status_coverage.rs::settings_actions_stay_inside_narrow_phone_width"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -431,6 +438,19 @@
           "kind": "platform_device_required",
           "note": "Native safe-area/rotation/keyboard timing, application activation, VoiceOver and all three-screen interleavings require additional device checks.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Actual rendered keyboard keys/suggestions and Return feed the real MobileApp focused TextInput bridge for composer, drawer search, directory, email/code, rename, transfer and Apple-link email fixtures. Unicode drafts remain field-local and blank keyboard taps preserve focus. Drawer layering is tested through actual key taps, not direct sim_key calls. Return intent is observed offline, not server/provider acknowledgement.",
+          "tests": [
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_composer_keys_blank_background_and_offline_return",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_focus_transfer_search_return_preserves_unicode",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_directory_go_preserves_unicode_composer",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_email_code_suggestions_and_return_are_field_local",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_transient_rename_done_preserves_composer",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_transfer_editor_preserves_unrelated_draft",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_apple_link_email_suggestion_and_next_preserve_draft"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -549,12 +569,20 @@
       "controls": {},
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "The actual paint polygon generator is checked against independent circle radius, mirrored corners, viewport bounds and mask area across 1,024 seeded translated viewport sizes; empty/nonfinite geometry is rejected. These are vertices used by painting, not GPU/pixel assertions.",
+          "tests": [
+            "src/app/preview_geometry_coverage.rs::preview_mask_corners_are_symmetric_bounded_and_follow_circle_geometry",
+            "src/app/preview_geometry_coverage.rs::preview_mask_rejects_empty_and_nonfinite_bounds"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "Preview corner canvas clipping is a visual-only renderer with no pixel or geometric regression for every radius/viewport combination.",
+          "note": "Rasterization, antialiasing, stacking above every overlay and screenshot corner appearance still need visual acceptance.",
           "tests": []
         }
       ],
-      "coverage_scope": "gap_only",
+      "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/app.rs::preview_corner_mask",
@@ -1428,6 +1456,15 @@
           "kind": "gap",
           "note": "Canvas pixels, degenerate dimensions, clipping and animation smoothness lack dedicated visual assertions.",
           "tests": []
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Rendered raw contacts verify cancellation without a jump, outside release, stale movement and competing-contact isolation. Pure paint orientation/scheduling tests verify motion preference and finite angles; no screenshot acceptance is implied.",
+          "tests": [
+            "src/donut.rs::tests::rendered_donut_cancel_outside_release_and_competing_contact",
+            "src/donut.rs::tests::reduced_motion_freezes_time_but_preserves_explicit_rotation",
+            "src/donut.rs::tests::invalid_drag_input_cannot_poison_orientation"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1491,6 +1528,15 @@
           "kind": "gap",
           "note": "Native mouse capture outside the window and frame-by-frame rendering quality are not established by these fixture tests.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Rendered raw contacts verify cancellation without a jump, outside release, stale movement and competing-contact isolation. Pure paint orientation/scheduling tests verify motion preference and finite angles; no screenshot acceptance is implied.",
+          "tests": [
+            "src/donut.rs::tests::rendered_donut_cancel_outside_release_and_competing_contact",
+            "src/donut.rs::tests::reduced_motion_freezes_time_but_preserves_explicit_rotation",
+            "src/donut.rs::tests::invalid_drag_input_cannot_poison_orientation"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1509,12 +1555,20 @@
       "controls": {},
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "The orientation/frame-scheduling seam used by the wrapper canvas is checked for normal elapsed motion, bounded extreme inputs and static Reduce Motion baseline while explicit drag remains effective. This is not pixel comparison or direct frame-scheduler observation.",
+          "tests": [
+            "src/donut.rs::tests::reduced_motion_freezes_time_but_preserves_explicit_rotation",
+            "src/donut.rs::tests::normal_motion_animates_with_bounded_finite_orientation"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "The autonomous spinning wrapper has no focused elapsed-time/rendered orientation regression. Interactive-donut input tests do not establish this wrapper animation.",
+          "note": "Smoothness, GPU appearance and native accessibility preference change delivery require visual/platform acceptance.",
           "tests": []
         }
       ],
-      "coverage_scope": "gap_only",
+      "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/donut.rs::spinning_donut",
@@ -1689,7 +1743,7 @@
         },
         {
           "kind": "gap",
-          "note": "Every app-field integration, gesture arbitration, viewport clipping, visual/accessibility configuration and native software keyboard path is not proven by standalone renderer callbacks.",
+          "note": "Every viewport, gesture arbitration, app-field purpose/selection combination and native keyboard path remains outside the finite standalone and app-bridge fixtures.",
           "tests": []
         },
         {
@@ -1704,6 +1758,19 @@
             "src/sim_keyboard.rs::tests::rendered_pointer_routes_every_key_in_all_layouts",
             "src/sim_keyboard.rs::tests::rendered_suggestions_and_blank_area_preserve_focus",
             "src/sim_keyboard.rs::tests::rendered_shift_and_mode_transitions_survive_redraw"
+          ]
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Actual rendered keyboard keys/suggestions and Return feed the real MobileApp focused TextInput bridge for composer, drawer search, directory, email/code, rename, transfer and Apple-link email fixtures. Unicode drafts remain field-local and blank keyboard taps preserve focus. Drawer layering is tested through actual key taps, not direct sim_key calls. Return intent is observed offline, not server/provider acknowledgement.",
+          "tests": [
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_composer_keys_blank_background_and_offline_return",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_focus_transfer_search_return_preserves_unicode",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_directory_go_preserves_unicode_composer",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_email_code_suggestions_and_return_are_field_local",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_transient_rename_done_preserves_composer",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_transfer_editor_preserves_unrelated_draft",
+            "src/app/keyboard_bridge_coverage.rs::keyboard_bridge_apple_link_email_suggestion_and_next_preserve_draft"
           ]
         }
       ],
@@ -1792,12 +1859,26 @@
       "controls": {},
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "Deterministic periodic integer ticks bound catch-up work after suspension and avoid f32 long-uptime stalls. Tests compare slow/fine advancement, huge/nonfinite/backward elapsed inputs, cycle thresholds and reduced-motion frame policy. No microphone/capture/services are initialized.",
+          "tests": [
+            "src/voice_demo.rs::tests::voice_demo_long_uptime_clock_progresses",
+            "src/voice_demo.rs::tests::voice_demo_slow_frames_preserve_fixed_step_semantics",
+            "src/voice_demo.rs::tests::voice_demo_suspend_reconstructs_current_cycle_not_stale_lock",
+            "src/voice_demo.rs::tests::voice_demo_huge_nonfinite_and_backward_time_are_safe",
+            "src/voice_demo.rs::tests::voice_demo_cycle_phases_and_thresholds",
+            "src/voice_demo.rs::tests::voice_demo_exact_phase_boundaries",
+            "src/voice_demo.rs::tests::voice_demo_reduce_motion_stops_frames_without_changing_script",
+            "src/voice_demo.rs::tests::voice_demo_narrow_preview_geometry"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "Autonomous voice demo renders a simulated cycle, but has no focused regression for its elapsed-time step loop, preview layout or animation frames. It does not start capture.",
+          "note": "Narrow fixtures assert only rendered status bounds, not GPU pixels, all preview text clipping or native preference-change callbacks. Actual audio behavior is outside this autonomous simulation.",
           "tests": []
         }
       ],
-      "coverage_scope": "gap_only",
+      "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/voice_demo.rs::impl:Render for VoiceDemo::render",

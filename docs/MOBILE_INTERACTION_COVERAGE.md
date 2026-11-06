@@ -12,8 +12,8 @@ Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
 The reviewed snapshot records **65 owners, 112 static event-call sites, and
-163 control/helper-family sites**. Of those owners, 59 have named, explicitly
-partial regression evidence and 6 are gap-only. These are inventory counts,
+163 control/helper-family sites**. Of those owners, 62 have named, explicitly
+partial regression evidence and 3 are gap-only. These are inventory counts,
 not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
 as `partial` or `gap_only`.
 
@@ -203,6 +203,50 @@ Standalone software-keyboard tests use fixed renderer styling. Repeating them
 under the eight environment configurations is not evidence that Dynamic Type,
 Reduce Motion or appearance visually changes that keyboard. App-level layout
 fixtures and native UIKit keyboard acceptance remain distinct.
+
+### Follow-up timing, motion and keyboard bridge hypotheses
+
+The next local-gap iteration found additional concrete issues:
+
+- The onboarding donut ignored Reduce Motion and continuously requested frames.
+  Its painter now freezes autonomous orientation/frame requests under that
+  preference while still accepting explicit user rotation. Rendered cancellation,
+  outside-release and competing-contact tests also pass. Focused matrix: 12 tests
+  per configuration, receipt `20261106-021314214-813822`.
+- The voice preview replayed every elapsed 1/120-second step, with unbounded work
+  after suspension and an f32 increment stall at long uptime. Bounded periodic
+  integer ticks now reconstruct only the current cycle. The standalone preview
+  also initializes and respects Reduce Motion without microphone access. Clock
+  red receipt `20261106-021144839-800433`; motion red receipt
+  `20261106-021557860-836994`; final eight-test focused matrix receipt
+  `20261106-021756964-853344`.
+- Real rendered keyboard-to-app tests exposed drawer paint ordering: its overlay
+  covered the simulated keyboard, so search and transfer keys did not type.
+  Drawing the keyboard above app overlays fixes the same user-visible behavior
+  that standalone keyboard callback tests could not detect. Original red receipt
+  `20261106-021856673-861699` had exactly those two bridge failures.
+
+The actual corner-mask paint vertices additionally passed independent symmetry,
+arc-radius, area and viewport assertions over 1,024 seeded translated viewports,
+receipt `20261106-021246538-808010`. This is geometry evidence, not GPU/pixel
+acceptance. The newly partial preview owners still have explicit visual gaps.
+The three gap-only owners are native URL/push/startup channel installation,
+not an assertion that all other interactions are fully covered.
+
+The seven bridge workflows passed the full default and forced-keyboard matrices,
+112 behavioral executions total: final receipts `20261106-022518411-913654` and
+`20261106-022540249-917550`. Explicit keyboard disable was checked separately
+(`20261106-022521554-914242`); its early-return guards are skips, not interaction
+coverage. Return intent and unrelated Unicode drafts are asserted across all
+focused editors, including transient rename, transfer and Apple-link email.
+
+An apparent horizontal Apple action overflow was isolated to the seeded Settings
+push still moving. Tests settle only that presentation after its first render,
+then retain full physical bounds assertions and real scrolling to expose fields.
+No speculative parent-sizing change was made.
+
+Fresh complete-suite validation is required for these integrated changes. The
+earlier 224-test result remains a checkpoint, not acceptance of newer sources.
 
 ### Initial validation receipt
 

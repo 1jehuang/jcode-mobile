@@ -2428,6 +2428,9 @@ impl Render for MobileApp {
                 window.dismiss_virtual_keyboard();
             })
             .child(body)
+            // A software keyboard belongs above every app overlay, as UIKit
+            // does. The drawer must not occlude its own search/transfer keys.
+            .children(drawer)
             .when(kb_visible, |d| {
                 let this = cx.entity().downgrade();
                 let on_key: std::rc::Rc<dyn Fn(crate::sim_keyboard::Key, &mut Window, &mut App)> =
@@ -2449,8 +2452,7 @@ impl Render for MobileApp {
                             &t,
                         )),
                 )
-            })
-            .children(drawer);
+            });
         // Dev hook (JCODE_MOBILE_FRAMELESS): bare screen for App Store screenshots.
         if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
             return screen.size_full().into_any_element();
