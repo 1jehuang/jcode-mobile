@@ -184,6 +184,9 @@ impl CloudSsh {
                 let mismatch = Arc::new(AtomicBool::new(false));
                 let authenticated = tokio::time::timeout(AUTH_TIMEOUT, async {
                     let config = Arc::new(russh::client::Config {
+                        // API hello and commands are small, latency-sensitive
+                        // frames. Do not wait for Nagle/delayed-ACK batching.
+                        nodelay: true,
                         keepalive_interval: Some(Duration::from_secs(20)),
                         ..Default::default()
                     });
@@ -657,6 +660,9 @@ mod tests {
                     });
                     tokio::time::timeout(Duration::from_secs(15), async move {
                         let (stream, _) = listener.accept().await.unwrap();
+                        // run_stream accepts an existing socket, so configure
+                        // TCP_NODELAY here rather than server Config.nodelay.
+                        stream.set_nodelay(true).unwrap();
                         // Pin rejection intentionally terminates the handshake.
                         if let Ok(session) =
                             russh::server::run_stream(config, stream, handler).await
