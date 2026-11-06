@@ -19,13 +19,32 @@ impl MobileApp {
                 .into_any_element()
         } else {
             let mut prompt_n = 0;
-            let mut rows = Vec::new();
+            let mut rows = Vec::with_capacity(session.transcript.len() + 2);
+            let mut top = Some(px(12.));
+            // Preview layout may be taller than the saved tab (keyboard or
+            // resize) and clamp its private offset. Cover that entire possible
+            // shift conservatively, without changing the parked scroll handle.
+            let viewport = px(self.device.map_or_else(|| f32::from(window.viewport_size().height), |(_, height)| height));
+            let off = (-parked.scroll.offset().y - viewport).max(px(0.));
             for entry in &session.transcript {
                 if entry.role == Role::User { prompt_n += 1; }
-                rows.push(div().id(("preview-entry", entry.id))
-                    .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") })
-                    .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, t, cx))
-                    .into_any_element());
+                let key = super::transcript_layout::key(id, entry, prompt_n, &parked.expanded_tools, self.content_width());
+                let height = self.transcript_heights.get(key);
+                let skip = height.is_some_and(|height| super::transcript_layout::offscreen(top, height, off, viewport * 3.));
+                #[cfg(test)]
+                let skip = skip && !self.disable_transcript_windowing;
+                let row = div().id(("preview-entry", entry.id))
+                    .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") });
+                if skip {
+                    rows.push(row.h(height.unwrap()).flex_none().into_any_element());
+                } else {
+                    let heights = self.transcript_heights.clone();
+                    rows.push(row.relative()
+                        .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, t, cx))
+                        .child(gpui::canvas(move |bounds, _, _| heights.record(key, bounds.size.height), |_, _, _, _| {}).absolute().inset_0())
+                        .into_any_element());
+                }
+                top = top.zip(height).map(|(top, height)| top + height + px(14.));
             }
             if let Some(activity) = Self::activity_for(session) {
                 parked.preview_activity_orb.update(cx, |orb, cx| orb.set_state(orb_state(activity), cx));

@@ -32,6 +32,9 @@ mod panel_preview;
 mod voice;
 mod cloud_machine;
 mod git_info;
+mod transcript_layout;
+#[cfg(test)]
+mod performance_tests;
 #[cfg(test)]
 mod interaction_fuzz;
 #[cfg(test)]
@@ -163,6 +166,13 @@ pub struct MobileApp {
     /// Horizontal swipe between tabs, like the desktop workspace pull.
     swipe: crate::swipe::Swipe,
     spinner_step: usize,
+    /// Armed only while a visible text spinner needs another tick.
+    spinner_tick: Option<gpui::Task<()>>,
+    transcript_heights: transcript_layout::Heights,
+    #[cfg(test)]
+    disable_transcript_windowing: bool,
+    #[cfg(test)]
+    rendered_transcript_rows: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
     activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
@@ -274,30 +284,6 @@ impl MobileApp {
         })
         .detach();
 
-        // Spinner tick while processing or provisioning.
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_millis(125)).await;
-                let alive = this
-                    .update(cx, |this, cx| {
-                        if this.session.is_processing
-                            || this.session.is_reasoning
-                            || this.signing_in
-                            || this.browser_login.is_some()
-                            || !matches!(this.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. })
-                        {
-                            this.spinner_step = (this.spinner_step + 1) % 8;
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
-
         let store = AccountStore::default_location();
         // Dev convenience: JCODE_MOBILE_USE_CLI_ACCOUNT=1 reuses the jcode CLI login.
         let account = (!offline).then(|| store.load().or_else(|| {
@@ -357,6 +343,12 @@ impl MobileApp {
             dir_input,
             swipe: Default::default(),
             spinner_step: 0,
+            spinner_tick: None,
+            transcript_heights: Default::default(),
+            #[cfg(test)]
+            disable_transcript_windowing: false,
+            #[cfg(test)]
+            rendered_transcript_rows: 0,
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
             auto_send: (!offline).then(|| std::env::var("JCODE_MOBILE_SEND").ok()).flatten(),
@@ -1119,6 +1111,35 @@ fn spinner_glyph(step: usize) -> &'static str {
 }
 
 impl MobileApp {
+    /// Only the browser button and live tool rows use this textual spinner.
+    /// Orbs own their animation clocks. Idle/disconnected screens need no poll.
+    fn needs_spinner_tick(&self) -> bool {
+        match self.screen {
+            Screen::SignIn => self.login_token.is_none() && self.browser_login.is_some(),
+            Screen::Settings => false,
+            Screen::Chat => self.session.transcript.iter().any(|entry| entry.tool_calls.iter().any(|call| {
+                matches!(call.status, ToolStatus::StreamingInput | ToolStatus::Running)
+            })),
+        }
+    }
+
+    fn sync_spinner_tick(&mut self, cx: &mut Context<Self>) {
+        if !self.needs_spinner_tick() || crate::system::reduce_motion() {
+            self.spinner_tick = None;
+        } else if self.spinner_tick.is_none() {
+            self.spinner_tick = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(125)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.spinner_tick = None;
+                    if this.needs_spinner_tick() && !crate::system::reduce_motion() {
+                        this.spinner_step = (this.spinner_step + 1) % 8;
+                        cx.notify();
+                    }
+                });
+            }));
+        }
+    }
+
     fn render_sign_in(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let code_step = self.login_token.is_some();
         // Keep an explicit action: the iOS number pad has no return key.
@@ -1565,16 +1586,35 @@ impl MobileApp {
         let at_bottom = max - off < px(56.);
         let entries = &self.session.transcript;
         let mut prompt_n = 0;
-        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(entries.len() + 2);
+        let viewport = self.transcript_scroll.bounds().size.height;
+        let mut top = Some(px(12.));
+        #[cfg(test)]
+        { self.rendered_transcript_rows = 0; }
         for e in entries {
             if e.role == Role::User {
                 prompt_n += 1;
             }
-            let el = self.render_entry(e, prompt_n, &self.expanded_tools, t, cx);
-            rows.push(div().id(("entry", e.id))
-                .debug_selector({ let id = e.id; move || format!("entry-{id}") })
-                .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
-                .into_any_element());
+            let key = transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width());
+            let height = self.transcript_heights.get(key);
+            let skip = height.is_some_and(|height| transcript_layout::offscreen(top, height, off, viewport));
+            #[cfg(test)]
+            let skip = skip && !self.disable_transcript_windowing;
+            let row = div().id(("entry", e.id))
+                .debug_selector({ let id = e.id; move || format!("entry-{id}") });
+            if skip {
+                rows.push(row.h(height.unwrap()).flex_none().into_any_element());
+            } else {
+                #[cfg(test)]
+                { self.rendered_transcript_rows += 1; }
+                let el = self.render_entry(e, prompt_n, &self.expanded_tools, t, cx);
+                let heights = self.transcript_heights.clone();
+                rows.push(row.relative()
+                    .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
+                    .child(gpui::canvas(move |bounds, _, _| heights.record(key, bounds.size.height), |_, _, _, _| {}).absolute().inset_0())
+                    .into_any_element());
+            }
+            top = top.zip(height).map(|(top, height)| top + height + px(14.));
         }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
@@ -1813,7 +1853,7 @@ impl MobileApp {
             ToolStatus::Succeeded => ("✓", t.ok),
             ToolStatus::Failed(_) => ("✗", t.error),
         };
-        let headline = crate::tool_summary::headline(&call.input).unwrap_or_default();
+        let headline = crate::tool_summary::cached_headline(&call.input).unwrap_or_default();
         let id = call.id.clone();
         div()
             .id(SharedString::from(format!("tool-{}", call.id)))
@@ -1842,20 +1882,8 @@ impl MobileApp {
                     }),
             )
             .when(expanded, |d| {
-                let mut body = call.output.clone();
-                if let ToolStatus::Failed(m) = &call.status
-                    && body.is_empty()
-                {
-                    body = m.clone();
-                }
-                if body.len() > 4000 {
-                    let mut cut = 4000;
-                    while !body.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    body.truncate(cut);
-                    body.push_str("\n…");
-                }
+                let failure = match &call.status { ToolStatus::Failed(message) => Some(message.as_str()), _ => None };
+                let body = crate::tool_output::body(&call.output, failure, &call.input).into_owned();
                 d.child(
                     div()
                         .mt(px(4.))
@@ -1866,7 +1894,7 @@ impl MobileApp {
                         .border_color(t.border_focus)
                         .text_size(crate::system::fs(11.))
                         .text_color(t.text_secondary)
-                        .child(if body.is_empty() { call.input.clone() } else { body }),
+                        .child(body),
                 )
             })
             .into_any_element()
@@ -2359,6 +2387,7 @@ impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }
         self.system_tick(window, cx);
+        self.sync_spinner_tick(cx);
         if std::mem::take(&mut self.blur_on_render) {
             window.blur(cx);
             window.dismiss_virtual_keyboard();

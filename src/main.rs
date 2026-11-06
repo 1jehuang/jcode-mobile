@@ -15,6 +15,7 @@ mod text_input;
 mod text_selection;
 mod theme;
 mod tool_summary;
+mod tool_output;
 mod labels;
 mod ios_ext;
 mod haptics;
