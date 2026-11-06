@@ -25,6 +25,12 @@ pub struct Swipe {
     pub last_event: Option<Instant>,
     /// Release animation: (start offset, start time).
     settle: Option<(f32, Instant)>,
+    /// Destination panel's visual offset after navigation commits. Kept
+    /// separate so raw rubber-band consumers retain their existing behavior.
+    switch_settle: Option<(f32, Instant)>,
+    /// `cancel` has no neighbor arguments. Reuse the last rendered geometry
+    /// instead of turning an edge pull into a full-strength cancellation.
+    panel_neighbors: Option<(bool, bool)>,
 }
 
 /// Rubber-band: direct at first, then increasingly resisted, like the desktop pull.
@@ -75,18 +81,28 @@ impl Swipe {
     /// snap-back animation, but discard travel and direction lock so a late
     /// release (or the idle-end handler) cannot switch tabs.
     pub fn cancel(&mut self, width: f32, now: Instant) {
-        let from = self.offset(width, true, true, now).0;
+        let landing = self.switch_settle.is_some();
+        let (can_prev, can_next) = self.panel_neighbors.unwrap_or((true, true));
+        let from = if landing {
+            self.panel_offset(width, can_prev, can_next, now).0
+        } else {
+            self.offset(width, can_prev, can_next, now).0
+        };
         self.dx = 0.0;
         self.dy = 0.0;
         self.vertical = false;
         self.active = false;
         self.last_event = None;
-        self.settle = (from != 0.0).then_some((from, now));
+        self.settle = (!landing && from != 0.0).then_some((from, now));
+        self.switch_settle = (landing && from != 0.0).then_some((from, now));
     }
 
     /// Feeds a scroll delta. Returns true when the gesture is horizontal and was consumed.
     pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> bool {
-        if self.last_event.is_some_and(|last| now.duration_since(last) > IDLE_END) {
+        if self
+            .last_event
+            .is_some_and(|last| now.duration_since(last) > IDLE_END)
+        {
             self.dx = 0.0;
             self.dy = 0.0;
             self.active = false;
@@ -102,6 +118,7 @@ impl Swipe {
             if self.dx.abs() > 24.0 && self.dx.abs() > self.dy.abs() * 2.0 {
                 self.active = true;
                 self.settle = None;
+                self.switch_settle = None;
             } else if self.dy.abs() > 12.0 {
                 // Never reinterpret diagonal drift or momentum as navigation.
                 self.vertical = true;
@@ -128,22 +145,88 @@ impl Swipe {
         }
         // Content moves with the finger: dragging left (dx < 0) reveals the next tab.
         if dx <= -COMMIT && can_next {
-            // The drag already provides motion. Do not slide the newly
-            // focused panel back in from the opposite side after switching.
             self.settle = None;
+            self.begin_switch_settle(dx, width, now);
             Release::Switch(1)
         } else if dx >= COMMIT && can_prev {
             self.settle = None;
+            self.begin_switch_settle(dx, width, now);
             Release::Switch(-1)
         } else {
+            self.switch_settle = None;
             let edge = (dx > 0.0 && !can_prev) || (dx < 0.0 && !can_next);
             self.settle = Some((resist(dx, width) * if edge { 0.25 } else { 1.0 }, now));
             Release::Cancel
         }
     }
 
+    fn begin_switch_settle(&mut self, dx: f32, width: f32, now: Instant) {
+        let outgoing = (resist(dx, width) * 6.0).clamp(-width * 0.8, width * 0.8);
+        // The destination was adjacent to the outgoing panel before commit.
+        // Preserve that exact position when it becomes the active panel.
+        let incoming = -(width - outgoing.abs()).copysign(dx);
+        self.switch_settle = Some((incoming, now));
+    }
+
+    /// Final visual offset, including neighbor amplification while dragging
+    /// and a continuous destination landing after a committed tab switch.
+    pub fn panel_offset(
+        &mut self,
+        width: f32,
+        can_prev: bool,
+        can_next: bool,
+        now: Instant,
+    ) -> (f32, bool) {
+        self.panel_offset_with_motion(
+            width,
+            can_prev,
+            can_next,
+            now,
+            crate::system::reduce_motion(),
+        )
+    }
+
+    fn panel_offset_with_motion(
+        &mut self,
+        width: f32,
+        can_prev: bool,
+        can_next: bool,
+        now: Instant,
+        reduce_motion: bool,
+    ) -> (f32, bool) {
+        self.panel_neighbors = Some((can_prev, can_next));
+        if let Some((from, start)) = self.switch_settle {
+            let t = now.saturating_duration_since(start).as_secs_f32() / SETTLE.as_secs_f32();
+            if t >= 1.0 || reduce_motion {
+                self.switch_settle = None;
+                return (0.0, false);
+            }
+            return (from * (1.0 - ease_out_cubic(t)), true);
+        }
+        if reduce_motion && !self.active {
+            self.settle = None;
+            return (0.0, false);
+        }
+        let (raw, moving) = self.offset(width, can_prev, can_next, now);
+        let neighbor = (raw > 0.0 && can_prev) || (raw < 0.0 && can_next);
+        (
+            if neighbor {
+                (raw * 6.0).clamp(-width * 0.8, width * 0.8)
+            } else {
+                raw
+            },
+            moving,
+        )
+    }
+
     /// Current horizontal offset of the chat panel, and whether it is still moving.
-    pub fn offset(&mut self, width: f32, can_prev: bool, can_next: bool, now: Instant) -> (f32, bool) {
+    pub fn offset(
+        &mut self,
+        width: f32,
+        can_prev: bool,
+        can_next: bool,
+        now: Instant,
+    ) -> (f32, bool) {
         if self.active {
             // Edges with no neighbor resist much harder.
             let edge = (self.dx > 0.0 && !can_prev) || (self.dx < 0.0 && !can_next);
@@ -165,6 +248,130 @@ impl Swipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_panel_lands_from_its_exact_neighbor_position_both_directions() {
+        let now = Instant::now();
+        for width in [240., 390., 768.] {
+            for dx in [-COMMIT, COMMIT, -1000., 1000.] {
+                let mut s = Swipe::default();
+                s.feed(dx, 0., now);
+                let (outgoing, _) = s.panel_offset_with_motion(width, true, true, now, false);
+                let direction = if dx < 0. { 1 } else { -1 };
+                let neighbor_before = outgoing + width * direction as f32;
+                assert!(
+                    matches!(s.release(width, true, true, now), Release::Switch(d) if d == direction)
+                );
+                // After switching, neighbor availability may be entirely different.
+                let (incoming, moving) =
+                    s.panel_offset_with_motion(width, false, false, now, false);
+                assert!((incoming - neighbor_before).abs() < 0.001);
+                assert!(moving);
+                assert_eq!(incoming.signum(), direction as f32);
+                let mut previous = incoming.abs();
+                for ms in [1, 16, 40, 80, 159, 160, 200] {
+                    let (offset, moving) = s.panel_offset_with_motion(
+                        width,
+                        false,
+                        false,
+                        now + Duration::from_millis(ms),
+                        false,
+                    );
+                    assert!(offset.abs() <= previous);
+                    assert!(
+                        offset == 0. || offset.signum() == incoming.signum(),
+                        "landing crossed to opposite direction"
+                    );
+                    if ms >= 160 {
+                        assert_eq!((offset, moving), (0., false));
+                    }
+                    previous = offset.abs();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn canceled_panels_keep_visual_position_with_and_without_neighbors() {
+        let now = Instant::now();
+        for (dx, prev, next) in [
+            (60., true, true),
+            (-60., true, true),
+            (200., false, true),
+            (-200., true, false),
+        ] {
+            for explicit_cancel in [false, true] {
+                let mut s = Swipe::default();
+                s.feed(dx, 0., now);
+                let before = s.panel_offset(390., prev, next, now).0;
+                if explicit_cancel {
+                    s.cancel(390., now);
+                } else {
+                    assert!(matches!(s.release(390., prev, next, now), Release::Cancel));
+                }
+                let (after, _) = s.panel_offset(390., prev, next, now);
+                if crate::system::reduce_motion() {
+                    assert_eq!(after, 0.);
+                } else {
+                    assert!((before - after).abs() < 0.001);
+                }
+                assert!(s.switch_settle.is_none());
+                assert_eq!(s.panel_offset(390., prev, next, now + SETTLE), (0., false));
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_during_landing_keeps_position_and_new_gesture_discards_old_landing() {
+        let now = Instant::now();
+        for dx in [-COMMIT, COMMIT] {
+            let mut s = Swipe::default();
+            s.feed(dx, 0., now);
+            s.release(390., true, true, now);
+            let midway = now + Duration::from_millis(40);
+            let before = s.panel_offset(390., true, true, midway).0;
+            s.cancel(390., midway);
+            assert_eq!(s.panel_offset(390., true, true, midway).0, before);
+            assert!(matches!(
+                s.release(390., true, true, midway),
+                Release::Cancel
+            ));
+            assert_eq!(
+                s.panel_offset(390., true, true, midway + SETTLE),
+                (0., false)
+            );
+            s.feed(dx, 0., now + Duration::from_secs(1));
+            s.release(390., true, true, now + Duration::from_secs(1));
+            assert!(s.switch_settle.is_some());
+            s.feed(-dx, 0., now + Duration::from_secs(1));
+            assert!(s.switch_settle.is_none());
+            assert_eq!(
+                s.panel_offset(390., true, true, now + Duration::from_secs(1))
+                    .0
+                    .signum(),
+                (-dx).signum()
+            );
+        }
+    }
+
+    #[test]
+    fn reduced_motion_snaps_committed_and_canceled_panel_settlements() {
+        let now = Instant::now();
+        for dx in [-COMMIT, COMMIT, -60., 60.] {
+            let mut s = Swipe::default();
+            s.feed(dx, 0., now);
+            s.release(390., true, true, now);
+            assert_eq!(
+                s.panel_offset_with_motion(390., true, true, now, true),
+                (0., false)
+            );
+            assert!(s.switch_settle.is_none() && s.settle.is_none());
+            assert_eq!(
+                s.panel_offset_with_motion(390., true, true, now, false),
+                (0., false)
+            );
+        }
+    }
 
     #[test]
     fn new_session_requires_continued_travel_at_next_edge() {
@@ -227,7 +434,9 @@ mod tests {
                 let next_tab = next(&mut seed) & 1 != 0;
                 match next(&mut seed) % 6 {
                     0..=2 => {
-                        if s.last_event.is_some_and(|last| now.duration_since(last) > IDLE_END) {
+                        if s.last_event
+                            .is_some_and(|last| now.duration_since(last) > IDLE_END)
+                        {
                             locked = false;
                         }
                         let dx = (next(&mut seed) % 801) as f32 - 400.;
@@ -242,13 +451,25 @@ mod tests {
                         let dx = s.dx;
                         let active = s.active;
                         match s.release(width, prev, next_tab, now) {
-                            Release::Switch(-1) => assert!(active && !locked && prev && dx >= COMMIT),
-                            Release::Switch(1) => assert!(active && !locked && next_tab && dx <= -COMMIT),
+                            Release::Switch(-1) => {
+                                assert!(active && !locked && prev && dx >= COMMIT)
+                            }
+                            Release::Switch(1) => {
+                                assert!(active && !locked && next_tab && dx <= -COMMIT)
+                            }
                             Release::Switch(other) => panic!("invalid direction {other}"),
-                            Release::Cancel => assert!(!active || locked || dx.abs() < COMMIT
-                                || (dx > 0. && !prev) || (dx < 0. && !next_tab)),
+                            Release::Cancel => assert!(
+                                !active
+                                    || locked
+                                    || dx.abs() < COMMIT
+                                    || (dx > 0. && !prev)
+                                    || (dx < 0. && !next_tab)
+                            ),
                         }
-                        assert!(matches!(s.release(width, prev, next_tab, now), Release::Cancel));
+                        assert!(matches!(
+                            s.release(width, prev, next_tab, now),
+                            Release::Cancel
+                        ));
                         locked = false;
                     }
                     4 => {
@@ -261,7 +482,10 @@ mod tests {
                     _ => {}
                 }
                 let (offset, _) = s.offset(width, prev, next_tab, now);
-                assert!(offset.is_finite() && offset.abs() <= 48., "seed={initial_seed} step={step}");
+                assert!(
+                    offset.is_finite() && offset.abs() <= 48.,
+                    "seed={initial_seed} step={step}"
+                );
                 assert!(s.dx.is_finite() && s.dy.is_finite());
                 if !s.active && s.settle.is_none() {
                     assert_eq!(offset, 0.);
@@ -300,11 +524,20 @@ mod tests {
             s.cancel(390., now);
             assert!(!s.active && !s.vertical && s.last_event.is_none());
             assert_eq!((s.dx, s.dy), (0., 0.));
-            assert!(matches!(s.release(390., true, true, now + IDLE_END), Release::Cancel));
+            assert!(matches!(
+                s.release(390., true, true, now + IDLE_END),
+                Release::Cancel
+            ));
             assert_eq!(s.offset(390., true, true, now + SETTLE), (0., false));
             now += Duration::from_secs(1);
-            assert!(s.feed(-COMMIT, 0., now), "cancellation must allow a fresh gesture");
-            assert!(matches!(s.release(390., true, true, now), Release::Switch(1)));
+            assert!(
+                s.feed(-COMMIT, 0., now),
+                "cancellation must allow a fresh gesture"
+            );
+            assert!(matches!(
+                s.release(390., true, true, now),
+                Release::Switch(1)
+            ));
         }
     }
 
@@ -316,10 +549,14 @@ mod tests {
             let mut s = Swipe::default();
             let dx = (next(&mut seed) % 8001) as f32 - 4000.;
             s.feed(dx, 0., now);
-            assert!(matches!(s.release(390., false, false, now), Release::Cancel));
+            assert!(matches!(
+                s.release(390., false, false, now),
+                Release::Cancel
+            ));
             let mut previous = f32::INFINITY;
             for ms in [0, 1, 16, 40, 80, 159, 160, 200] {
-                let (offset, moving) = s.offset(390., false, false, now + Duration::from_millis(ms));
+                let (offset, moving) =
+                    s.offset(390., false, false, now + Duration::from_millis(ms));
                 assert!(offset.is_finite() && offset.abs() <= 12.);
                 assert!(offset.abs() <= previous);
                 previous = offset.abs();
@@ -346,7 +583,10 @@ mod tests {
         let now = Instant::now();
         assert!(s.feed(-30.0, 0.0, now));
         s.feed(-100.0, 0.0, now);
-        assert!(matches!(s.release(390.0, true, true, now), Release::Switch(1)));
+        assert!(matches!(
+            s.release(390.0, true, true, now),
+            Release::Switch(1)
+        ));
         // A committed switch must not start a second panel animation.
         assert_eq!(s.offset(390.0, true, true, now), (0.0, false));
         let (o, moving) = s.offset(390.0, true, true, now + SETTLE);
@@ -360,9 +600,14 @@ mod tests {
             let mut s = Swipe::default();
             assert!(s.feed(dx, 0., now));
             assert!(s.offset(390., true, true, now).0.abs() > 0.);
-            assert!(matches!(s.release(390., true, true, now), Release::Switch(d) if d == direction));
+            assert!(
+                matches!(s.release(390., true, true, now), Release::Switch(d) if d == direction)
+            );
             for ms in [0, 16, 80, 160, 200] {
-                assert_eq!(s.offset(390., true, true, now + Duration::from_millis(ms)), (0., false));
+                assert_eq!(
+                    s.offset(390., true, true, now + Duration::from_millis(ms)),
+                    (0., false)
+                );
             }
         }
     }
@@ -374,7 +619,10 @@ mod tests {
         s.feed(40.0, 0.0, now);
         assert!(matches!(s.release(390.0, true, true, now), Release::Cancel));
         s.feed(200.0, 0.0, now);
-        assert!(matches!(s.release(390.0, false, true, now), Release::Cancel));
+        assert!(matches!(
+            s.release(390.0, false, true, now),
+            Release::Cancel
+        ));
     }
 
     #[test]
@@ -408,7 +656,10 @@ mod tests {
         let now = Instant::now();
         s.feed(0.0, 30.0, now);
         assert!(s.feed(-130.0, 0.0, now + IDLE_END + Duration::from_millis(1)));
-        assert!(matches!(s.release(390.0, true, true, now + IDLE_END), Release::Switch(1)));
+        assert!(matches!(
+            s.release(390.0, true, true, now + IDLE_END),
+            Release::Switch(1)
+        ));
     }
 
     #[test]
