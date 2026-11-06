@@ -32,6 +32,8 @@ mod voice;
 mod interaction_fuzz;
 #[cfg(test)]
 mod offline_tests;
+#[cfg(test)]
+mod scroll_tests;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
