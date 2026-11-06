@@ -920,6 +920,10 @@ impl MobileApp {
         // keyboard, so the form rides up above it and nothing else moves.
         div()
             .id("sign-in")
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.blur(cx);
+                window.dismiss_virtual_keyboard();
+            })
             .size_full()
             .min_w_0()
             .flex()
@@ -2070,7 +2074,10 @@ impl Render for MobileApp {
             .pb(px(bottom))
             .overflow_hidden()
             // Tapping outside a field dismisses the keyboard, like iOS.
-            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| window.blur(cx))
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.blur(cx);
+                window.dismiss_virtual_keyboard();
+            })
             .child(body)
             .when(kb_visible, |d| {
                 let this = cx.entity().downgrade();
@@ -2195,8 +2202,39 @@ mod monkey_tests {
         (*seed % 10_000) as f32 / 10_000.
     }
 
+    fn check_outside_tap_unfocuses_both_onboarding_fields(cx: &mut TestAppContext) {
+        let tmp = std::env::temp_dir().join(format!("jcode-mobile-dismiss-{}", std::process::id()));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+            std::env::set_var("HOME", &tmp);
+        }
+        cx.update(init);
+        for code_step in [false, true] {
+            // A fresh window keeps this deterministic, independent of the
+            // stress test's scroll momentum and pending multi-tap gestures.
+            let (view, cx) = cx.add_window_view(|window, cx| {
+                let mut app = MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx);
+                app.device = Some((390., 844.));
+                app.login_token = code_step.then(|| "offline-test-token".to_string());
+                app
+            });
+            cx.simulate_resize(gpui::size(px(390.), px(844.)));
+            let input = view.read_with(cx, |app, _| {
+                if code_step { app.code.clone() } else { app.email.clone() }
+            });
+            cx.update(|window, cx| {
+                window.set_emulate_touch_from_mouse(true);
+                window.focus(&input.focus_handle(cx), cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.simulate_click(point(px(10.), px(70.)), Modifiers::default());
+            cx.update(|window, cx| assert!(!input.read(cx).is_focused(window), "code_step={code_step}"));
+        }
+    }
+
     #[gpui::test]
     fn random_gestures_on_every_screen_do_not_panic(cx: &mut TestAppContext) {
+        check_outside_tap_unfocuses_both_onboarding_fields(cx);
         // Keep the test offline: no saved account, so nothing connects.
         let tmp = std::env::temp_dir().join(format!("jcode-mobile-monkey-{}", std::process::id()));
         unsafe {
@@ -2209,6 +2247,7 @@ mod monkey_tests {
             app.device = Some((390., 844.));
             app
         });
+        cx.simulate_resize(gpui::size(px(390.), px(844.)));
         cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
         cx.run_until_parked();
         let send = |input: PlatformInput, cx: &mut gpui::VisualTestContext| match input {

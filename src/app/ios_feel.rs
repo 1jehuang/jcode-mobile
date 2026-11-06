@@ -44,6 +44,7 @@ pub(super) struct Feel {
     menu: Option<MsgMenu>,
     menu_anim: f32,
     rename: Option<(u64, Entity<TextInput>)>,
+    selection: Option<Entity<TextInput>>,
     focus_rename: bool,
     toast: Option<(String, Instant)>,
     last: Option<Instant>,
@@ -70,6 +71,7 @@ impl MobileApp {
                 && !self.model_picker
                 && self.tab_menu.is_none()
                 && self.feel.menu.is_none()
+                && self.feel.selection.is_none()
                 && self.feel.rename.is_none(),
         }
     }
@@ -409,6 +411,9 @@ impl MobileApp {
                     let claim = h
                         .update(cx, |this, cx| {
                             this.sync_gestures();
+                            if this.feel.selection.is_some() {
+                                return false;
+                            }
                             match e.phase {
                                 TouchPhase::Started => {
                                     let want = this.feel.g.wants_touch_drag(e.start_position);
@@ -471,6 +476,7 @@ impl MobileApp {
             .child(body)
             .child(listen)
             .when(self.feel.menu.is_some(), |d| d.child(self.render_msg_menu(t, cx)))
+            .when(self.feel.selection.is_some(), |d| d.child(self.render_text_selection(t, cx)))
             .when(self.feel.rename.is_some(), |d| d.child(self.render_rename(t, cx)))
             .when_some(self.feel.toast.clone(), |d, (msg, at)| {
                 let age = at.elapsed().as_secs_f32();
@@ -532,7 +538,7 @@ impl MobileApp {
         let entry = m.entry;
         let a = self.feel.menu_anim.clamp(0., 1.);
         let screen = self.feel.g.screen;
-        let (mw, mh) = (210., 3. * 44. + 8.);
+        let (mw, mh) = (210., 4. * 44. + 8.);
         let sx = f(m.at.x - screen.origin.x);
         let sy = f(m.at.y - screen.origin.y);
         let left = (sx - mw / 2.).clamp(12., (f(screen.size.width) - mw - 12.).max(12.));
@@ -580,6 +586,31 @@ impl MobileApp {
                     .border_1()
                     .border_color(t.border)
                     .shadow_lg()
+                    .child(row("msg-select", "Select text", "↔", true).on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(text) = this.entry_text(entry) {
+                            window.blur(cx);
+                            window.dismiss_virtual_keyboard();
+                            if crate::text_selection::present(&text) {
+                                this.close_menu(cx);
+                                return;
+                            }
+                            let input = cx.new(|cx| {
+                                let mut input = TextInput::new("", cx);
+                                input.set_text(text, cx);
+                                input.read_only = true;
+                                input.bare = true;
+                                input.max_lines = usize::MAX;
+                                input.select_all_text(cx);
+                                input
+                            });
+                            use gpui::Focusable as _;
+                            window.blur(cx);
+                            window.dismiss_virtual_keyboard();
+                            window.focus(&input.focus_handle(cx), cx);
+                            this.feel.selection = Some(input);
+                        }
+                        this.close_menu(cx);
+                    })))
                     .child(row("msg-copy", "Copy", "⧉", true).on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(text) = this.entry_text(entry) {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -608,6 +639,49 @@ impl MobileApp {
                             this.toast("Copied for sharing");
                         }
                         this.close_menu(cx)
+                    }))),
+            )
+            .into_any_element()
+    }
+
+    fn render_text_selection(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(input) = &self.feel.selection else { return div().into_any_element() };
+        let button = |id: &'static str, text: &'static str| {
+            div().id(id).px(px(12.)).h(px(44.)).flex().items_center()
+                .cursor_pointer().child(label(text, t.text_strong, 14.))
+        };
+        div()
+            .absolute().inset_0().p(px(16.)).pt(px(60.)).pb(px(32.))
+            .bg(t.background).flex().flex_col().gap(px(8.))
+            .child(
+                div().flex().items_center().justify_between()
+                    .child(label("Select text", t.text_strong, 16.))
+                    .child(button("selection-done", "Done").on_click(cx.listener(|this, _, window, cx| {
+                        this.feel.selection = None;
+                        window.blur(cx);
+                        window.dismiss_virtual_keyboard();
+                        cx.notify();
+                    }))),
+            )
+            .child(
+                div().id("selection-scroll").flex_1().min_h_0().overflow_y_scroll()
+                    .child(input.clone()),
+            )
+            .child(
+                div().flex().justify_between()
+                    .child(button("selection-all", "Select all").on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(input) = &this.feel.selection {
+                            input.update(cx, |input, cx| input.select_all_text(cx));
+                        }
+                    })))
+                    .child(button("selection-copy", "Copy").on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(input) = &this.feel.selection {
+                            let text = input.read(cx).selected_text().to_string();
+                            if !text.is_empty() {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                                this.toast("Copied");
+                            }
+                        }
                     }))),
             )
             .into_any_element()

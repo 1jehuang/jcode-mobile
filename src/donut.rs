@@ -69,7 +69,10 @@ impl RenderOnce for InteractiveDonut {
             .size(px(side))
             .flex_none()
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                // The hero is outside the form even when it captures a drag.
+                window.blur(cx);
+                window.dismiss_virtual_keyboard();
                 down.update(cx, |state, cx| {
                     state.last = Some(event.position);
                     cx.notify();

@@ -54,6 +54,9 @@ pub struct TextInput {
     /// Wrap onto up to this many lines, then scroll. 1 = single line.
     pub max_lines: usize,
     pub secure: bool,
+    /// Selection-only viewer. Never edits content or requests the keyboard.
+    pub read_only: bool,
+    selection_anchor: Option<usize>,
     /// No own chrome: the parent draws the outline (desktop composer).
     pub bare: bool,
     /// Soft keyboard behavior (autocorrect, caps, return key).
@@ -76,6 +79,8 @@ impl TextInput {
             scroll_y: px(0.),
             max_lines: 1,
             secure: false,
+            read_only: false,
+            selection_anchor: None,
             bare: false,
             config: gpui::TextInputConfiguration::default(),
         }
@@ -91,6 +96,15 @@ impl TextInput {
         self.marked_range = None;
         cx.emit(TextInputEvent::Changed);
         cx.notify();
+    }
+
+    pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        self.selected_range = 0..self.content.len();
+        cx.notify();
+    }
+
+    pub fn selected_text(&self) -> &str {
+        &self.content[self.selected_range.clone()]
     }
 
     pub fn is_focused(&self, window: &Window) -> bool {
@@ -135,6 +149,9 @@ impl TextInput {
         cx.notify();
     }
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if self.selected_range.is_empty() {
             let prev = self.previous_boundary(self.selected_range.start);
             self.selected_range = prev..self.selected_range.start;
@@ -142,6 +159,9 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if self.selected_range.is_empty() {
             let next = self.next_boundary(self.selected_range.end);
             self.selected_range = self.selected_range.start..next;
@@ -149,7 +169,9 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(TextInputEvent::Submit);
+        if !self.read_only {
+            cx.emit(TextInputEvent::Submit);
+        }
     }
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
@@ -172,8 +194,11 @@ impl TextInput {
     fn on_mouse_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.focus(&self.focus_handle, cx);
-        window.request_virtual_keyboard();
+        if !self.read_only {
+            window.request_virtual_keyboard();
+        }
         let i = self.index_for_position(e.position);
+        self.selection_anchor = Some(i);
         self.move_to(i, cx);
     }
 
@@ -300,6 +325,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -322,6 +350,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -526,9 +557,9 @@ impl Element for TextElement {
         let caret = pos(sel.end);
         let content_h = line.size(lh).height;
         let mut scroll_y = input.scroll_y;
-        if caret.y < scroll_y {
+        if !input.read_only && caret.y < scroll_y {
             scroll_y = caret.y;
-        } else if caret.y + lh > scroll_y + bounds.size.height {
+        } else if !input.read_only && caret.y + lh > scroll_y + bounds.size.height {
             scroll_y = caret.y + lh - bounds.size.height;
         }
         scroll_y = scroll_y.min((content_h - bounds.size.height).max(px(0.))).max(px(0.));
@@ -577,7 +608,9 @@ impl Element for TextElement {
                 window.paint_quad(s)
             }
             line.paint(origin, px(LINE_HEIGHT), gpui::TextAlign::Left, None, window, cx).ok();
-            if focus.is_focused(window)
+            // UITextInteraction owns the iOS caret and selection handles.
+            // Drawing our own caret as well produces two out-of-sync cursors.
+            if !cfg!(target_os = "ios") && !self.input.read(cx).read_only && focus.is_focused(window)
                 && let Some(c) = prepaint.cursor.take()
             {
                 window.paint_quad(c);
@@ -613,6 +646,18 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::submit))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if !cfg!(target_os = "ios")
+                    && event.pressed_button == Some(MouseButton::Left)
+                    && let Some(anchor) = this.selection_anchor
+                {
+                    let end = this.index_for_position(event.position);
+                    this.selected_range = anchor.min(end)..anchor.max(end);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.selection_anchor = None))
             .w_full()
             .when(!self.bare, |d| {
                 d.px(px(16.))
@@ -838,6 +883,32 @@ mod ios_keyboard_tests {
         insert_text(cx, "a");
         insert_text(cx, "pple pie");
         assert_eq!(text(&input, cx), "apple pie");
+    }
+
+    #[gpui::test]
+    fn read_only_transcript_can_select_and_copy_but_not_edit(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "hello 😀\nworld");
+        input.update(cx, |t, cx| {
+            t.read_only = true;
+            t.select_all_text(cx);
+        });
+        with_handler(cx, |t, w, cx| {
+            t.copy(&Copy, w, cx);
+            assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("hello 😀\nworld"));
+            t.backspace(&Backspace, w, cx);
+            t.delete(&Delete, w, cx);
+            t.cut(&Cut, w, cx);
+            t.replace_text_in_range(None, "replacement", w, cx);
+            t.replace_and_mark_text_in_range(None, "IME", Some(0..3), w, cx);
+        });
+        assert_eq!(text(&input, cx), "hello 😀\nworld");
+        with_handler(cx, |t, w, cx| {
+            t.set_selected_text_range(6..8, w, cx);
+            assert_eq!(t.selected_text(), "😀");
+            t.copy(&Copy, w, cx);
+            assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("😀"));
+        });
     }
 
     #[gpui::test]
