@@ -2805,7 +2805,6 @@ mod monkey_tests {
     #[gpui::test]
     fn random_gestures_on_every_screen_do_not_panic(cx: &mut TestAppContext) {
         check_outside_tap_unfocuses_both_onboarding_fields(cx);
-        // Keep the test offline: no saved account, so nothing connects.
         cx.update(init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx);
