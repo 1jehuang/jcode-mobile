@@ -146,3 +146,42 @@ passed. Its four new renderer owners are explicitly reviewed in the interaction
 ledger (`878c825`), including untested row pixels, collapse paths, authenticated
 repository and device gaps. The current snapshot is 72 owners, 115 static event
 sites and 180 static control sites, not a claim of complete behavioral coverage.
+
+### Final hosted acceptance
+
+All eight pinned-GPUI configurations passed **287 behavioral tests each**,
+zero failures and zero filtered tests: **2,296 passing app executions**. Each
+cell excluded 11 ignored cases (ten opt-in benchmarks and one inventory dump).
+Sources were frozen at `e9360d3`, including the preview and Git scale repairs.
+
+| Appearance | Reduce Motion | Text scale | Hosted receipt |
+| --- | --- | ---: | --- |
+| Dark | Off | 1.0 | `20261106-033634187-1751487` |
+| Dark | Off | 1.6 | `20261106-033725122-1760247` |
+| Dark | On | 1.0 | `20261106-033752298-1767622` |
+| Dark | On | 1.6 | `20261106-033917527-1788406` |
+| Light | Off | 1.0 | `20261106-033945694-1793032` |
+| Light | Off | 1.6 | `20261106-034014085-1797488` |
+| Light | On | 1.0 | `20261106-034041456-1801974` |
+| Light | On | 1.6 | `20261106-034108884-1806959` |
+
+- Final hosted check: `20261106-033616574-1748453`, success.
+- Final hosted shared core: `20261106-034136017-1812534`, 60 passed,
+  zero failures, two opt-in benchmarks ignored.
+- Explicit hosted Clippy: `20261106-034246880-1832697`, lint succeeded
+  with warnings. Command: `JUSTRUST_BUILDD_PREBUILD=0 justrust clippy --tests`.
+
+Earlier measurements used local execution while hosted charging was unavailable.
+Hosted service recovered during final acceptance. Its fresh dependency cache
+initially could not resolve pinned GPUI in offline mode; an online check warmed
+the dependencies before rerunning the matrix. `justrust show` confirms these
+final receipts ran **remote on hosted**. Server reloads interrupted two wrapper
+tasks, so completed receipt-bearing cells were retained and only unfinished
+work resumed. Aborted invocations are not counted as passing tests.
+
+```sh
+justrust check --tests
+GPUI_LOCAL=0 scripts/mobile-fuzz.sh --matrix
+justrust test -p jcode-mobile-core -- --test-threads=1
+JUSTRUST_BUILDD_PREBUILD=0 justrust clippy --tests
+```
