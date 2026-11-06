@@ -35,7 +35,7 @@ pub(super) fn draw(cx: &mut VisualTestContext) {
 }
 
 /// Raw mouse down/up is translated by GPUI into the phone touch path.
-pub(super) fn tap(cx: &mut VisualTestContext, selector: &str) {
+pub(super) fn tap(cx: &mut VisualTestContext, selector: &'static str) {
     draw(cx);
     let bounds = cx
         .debug_bounds(selector)
