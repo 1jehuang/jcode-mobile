@@ -147,6 +147,7 @@ pub struct MobileApp {
     drawer_drag_last: Option<std::time::Instant>,
     /// Drawer session search field.
     drawer_search: Entity<TextInput>,
+    drawer_directory: sidebar::DirectorySelection,
     synced: synced_sessions::State,
     transfer_input: Entity<TextInput>,
     /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
@@ -332,6 +333,7 @@ impl MobileApp {
             drawer_drag: 0.,
             drawer_drag_last: None,
             drawer_search,
+            drawer_directory: Default::default(),
             synced: Default::default(),
             transfer_input,
             apple_link: None,
@@ -2309,12 +2311,44 @@ impl Render for MobileApp {
                                 .h(px(5.))
                                 .rounded_full()
                                 .bg(t.text),
-                        ),
+                        )
+                        // GPUI overflow clipping is rectangular, even on a
+                        // rounded div. Paint the bezel last so drawers and
+                        // sheets cannot leak into the preview's corners.
+                        .child(preview_corner_mask())
+                        .child(div().absolute().inset_0().rounded(px(48.)).border_1().border_color(t.input_border)),
                 )
                 .into_any_element(),
             None => screen.size_full().into_any_element(),
         }
     }
+}
+
+fn preview_corner_mask() -> impl IntoElement {
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
+            let radius = 48_f32.min(width / 2.).min(height / 2.);
+            for (right, bottom) in [(false, false), (true, false), (false, true), (true, true)] {
+                let point = |x: f32, y: f32| {
+                    bounds.origin + gpui::point(px(if right { width - x } else { x }), px(if bottom { height - y } else { y }))
+                };
+                let mut path = gpui::PathBuilder::fill();
+                path.move_to(point(0., 0.));
+                path.line_to(point(radius, 0.));
+                for step in 1..=48 {
+                    let angle = std::f32::consts::FRAC_PI_2 * step as f32 / 48.;
+                    path.line_to(point(radius * (1. - angle.sin()), radius * (1. - angle.cos())));
+                }
+                path.close();
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, gpui::rgb(0x161616));
+                }
+            }
+        },
+    ).absolute().inset_0()
 }
 
 impl MobileApp {

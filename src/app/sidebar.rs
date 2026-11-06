@@ -24,6 +24,24 @@ const GROUP_ROW_MIN: f32 = 28.;
 /// Drag-to-close travel (share of drawer width) that commits the close.
 const CLOSE_SHARE: f32 = 0.3;
 
+#[derive(Default)]
+pub(super) enum DirectorySelection {
+    #[default]
+    Automatic,
+    Expanded(Option<String>),
+    Collapsed,
+}
+
+impl DirectorySelection {
+    fn expanded(&self, dir: &Option<String>, first: bool) -> bool {
+        match self {
+            Self::Automatic => first,
+            Self::Expanded(selected) => selected == dir,
+            Self::Collapsed => false,
+        }
+    }
+}
+
 impl MobileApp {
     pub(super) fn open_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.blur(cx);
@@ -341,7 +359,8 @@ impl MobileApp {
     pub(super) fn render_session_list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.session.session_id.clone();
         let open: Vec<String> = self.parked.iter().filter_map(|p| p.session.session_id.clone()).collect();
-        let mut list = div().flex().flex_col().pb(px(8.));
+        let mut list = div().id("drawer-overview").flex_none().max_h(relative(0.4))
+            .overflow_y_scroll().flex().flex_col().pb(px(8.));
         list = list.child(self.render_synced_sessions(t, cx));
         // Any tab's list will do; the active one may not have fetched yet.
         let sessions = std::iter::once(&self.session.session_list)
@@ -466,11 +485,23 @@ impl MobileApp {
                     }),
             );
         }
-        for (dir, rows) in group_by_dir(&rest) {
+        // Only the expanded directory's sessions scroll. Its siblings remain
+        // compact, reachable headers above the account footer.
+        let mut directories = div().flex_1().min_h_0().flex().flex_col();
+        for (index, (dir, rows)) in group_by_dir(&rest).into_iter().enumerate() {
             let (name, parent) = crate::labels::cloud_location(dir.as_deref());
             let new_dir = dir.clone();
-            list = list.child(
+            let toggle_dir = dir.clone();
+            let header_selector = format!("drawer-directory-{}", dir.as_deref().unwrap_or(""));
+            let sessions_selector = format!("drawer-directory-sessions-{}", dir.as_deref().unwrap_or(""));
+            let expanded = searching || self.drawer_directory.expanded(&dir, index == 0);
+            directories = directories.child(
                 div()
+                    .id(gpui::SharedString::from(format!("drawer-directory-{}", dir.as_deref().unwrap_or(""))))
+                    .debug_selector(move || header_selector.clone())
+                    .a11y_button(if expanded { "Collapse directory" } else { "Expand directory" })
+                    .flex_none()
+                    .h(px(GROUP_ROW_MIN))
                     .flex()
                     .items_center()
                     .gap(px(6.))
@@ -478,6 +509,16 @@ impl MobileApp {
                     .pt(px(3.))
                     .whitespace_nowrap()
                     .overflow_hidden()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.drawer_directory = if expanded {
+                            DirectorySelection::Collapsed
+                        } else {
+                            DirectorySelection::Expanded(toggle_dir.clone())
+                        };
+                        cx.notify();
+                    }))
+                    .child(div().flex_none().text_size(px(12.)).text_color(t.text_muted).child(if expanded { "⌄" } else { "›" }))
                     .child(
                         gpui::svg()
                             .flex_none()
@@ -506,14 +547,26 @@ impl MobileApp {
                             .cursor_pointer()
                             .active(|el| el.text_color(t.text_strong))
                             .child("+")
-                            .on_click(cx.listener(move |this, _, _, cx| this.new_tab_in_dir(new_dir.clone(), cx))),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.new_tab_in_dir(new_dir.clone(), cx);
+                            })),
                     ),
             );
-            for s in rows {
-                list = list.child(row(s, cx));
+            if expanded {
+                let mut contents = div().flex().flex_col();
+                for s in rows {
+                    contents = contents.child(row(s, cx));
+                }
+                directories = directories.child(
+                    div().id(gpui::SharedString::from(format!("drawer-directory-sessions-{}", dir.as_deref().unwrap_or(""))))
+                        .debug_selector(move || sessions_selector.clone())
+                        .flex_1().min_h_0().overflow_y_scroll().child(contents),
+                );
             }
         }
-        div().id("drawer-sessions").debug_selector(|| "drawer-sessions".into()).flex_1().min_h_0().overflow_y_scroll().child(list)
+        div().id("drawer-sessions").debug_selector(|| "drawer-sessions".into())
+            .flex_1().min_h_0().flex().flex_col().overflow_hidden().child(list).child(directories)
     }
 
     /// Compact desktop-style account pill. The entire 44pt row opens settings.
@@ -683,6 +736,60 @@ fn estimated_tokens(tokens: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_selection_keeps_only_one_group_expanded() {
+        let a = Some("/a".into());
+        let b = Some("/b".into());
+        assert!(DirectorySelection::Automatic.expanded(&a, true));
+        assert!(!DirectorySelection::Automatic.expanded(&b, false));
+        let selected = DirectorySelection::Expanded(b.clone());
+        assert!(!selected.expanded(&a, true));
+        assert!(selected.expanded(&b, false));
+        assert!(!DirectorySelection::Collapsed.expanded(&a, true));
+        assert!(DirectorySelection::Expanded(None).expanded(&None, false));
+    }
+
+    #[gpui::test]
+    fn directory_headers_remain_visible_below_long_session_list(cx: &mut gpui::TestAppContext) {
+        use super::super::{SafeArea, init};
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+            app.screen = Screen::Chat;
+            app.device = Some((390., 844.));
+            app.drawer_open = true;
+            app.drawer_t = 1.;
+            for (dir, count) in [("/a", 100), ("/b", 4), ("/c", 2)] {
+                for index in 0..count {
+                    app.session.session_list.push(serde_json::from_value(serde_json::json!({
+                        "session_id": format!("{dir}-{index}"), "status": "idle",
+                        "title": format!("Session {index}"), "working_dir": dir,
+                    })).unwrap());
+                }
+            }
+            app
+        });
+        for (width, height) in [(390., 844.), (320., 568.), (430., 932.)] {
+            view.update(cx, |app, cx| { app.device = Some((width, height)); cx.notify(); });
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            cx.update(|window, cx| { window.draw(cx).clear(cx); });
+            let account = cx.debug_bounds("drawer-account").unwrap();
+            let expanded = cx.debug_bounds("drawer-directory-sessions-/a").unwrap();
+            let b = cx.debug_bounds("drawer-directory-/b").unwrap();
+            let c = cx.debug_bounds("drawer-directory-/c").unwrap();
+            assert!(expanded.size.height > px(0.));
+            assert!(expanded.bottom() <= b.top());
+            assert!(b.bottom() <= c.top());
+            assert!(c.bottom() <= account.top(), "directory headers must not disappear under the footer");
+            assert!(cx.debug_bounds("drawer-directory-sessions-/b").is_none());
+        }
+        let b = cx.debug_bounds("drawer-directory-/b").unwrap();
+        cx.simulate_click(b.center(), gpui::Modifiers::default());
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert!(cx.debug_bounds("drawer-directory-sessions-/a").is_none());
+        assert!(cx.debug_bounds("drawer-directory-sessions-/b").is_some());
+    }
 
     #[test]
     fn meta_and_titles() {
