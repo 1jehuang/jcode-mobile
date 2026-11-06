@@ -690,6 +690,14 @@ fn raw_long_press_tab_menu_rename_cancel_and_recovery(cx: &mut TestAppContext) {
                 });
                 window.draw(cx).clear(cx);
             });
+            // Insets use std::time::Instant, not GPUI's virtual timer. Snap
+            // presentation to the actual target instead of mistaking a 501ms
+            // virtual long-press advance for keyboard animation completion.
+            view.update(cx, |app, cx| {
+                app.inset_anim = None;
+                cx.notify();
+            });
+            draw(cx);
             view.read_with(cx, |app, cx| {
                 assert_eq!(
                     input.read(cx).text(),
@@ -705,6 +713,26 @@ fn raw_long_press_tab_menu_rename_cancel_and_recovery(cx: &mut TestAppContext) {
                     assert!(app.keyboard_up, "rename focus did not present keyboard");
                 }
             });
+            let screen =
+                cx.update(|window, _| Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+            let keyboard_enabled =
+                std::env::var("JCODE_MOBILE_KEYBOARD").ok().as_deref() != Some("0");
+            let visible_bottom = screen.bottom()
+                - if keyboard_enabled {
+                    px(crate::sim_keyboard::HEIGHT)
+                } else {
+                    px(0.)
+                };
+            for selector in ["rename-cancel", "rename-save"] {
+                let bounds = cx.debug_bounds(selector).expect("rename action rendered");
+                assert!(
+                    bounds.left() >= screen.left()
+                        && bounds.right() <= screen.right()
+                        && bounds.top() >= screen.top()
+                        && bounds.bottom() <= visible_bottom,
+                    "{selector} obscured by settled keyboard: bounds={bounds:?} visible_bottom={visible_bottom:?} screen={screen:?}"
+                );
+            }
             let cancel = cx
                 .debug_bounds("rename-cancel")
                 .expect("rename cancel rendered");
@@ -721,6 +749,11 @@ fn raw_long_press_tab_menu_rename_cancel_and_recovery(cx: &mut TestAppContext) {
                 );
                 assert_eq!(app.composer.read(cx).text(), DRAFT);
             });
+            view.update(cx, |app, cx| {
+                app.inset_anim = None;
+                cx.notify();
+            });
+            draw(cx);
             // Verify another real long press works after modal cancellation,
             // rather than resetting overlay flags directly in the fixture.
             let tab = cx
