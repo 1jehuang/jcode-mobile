@@ -55,7 +55,7 @@ impl MobileApp {
                     self.next_tab += 1;
                     let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
                     self.tab_order.insert(at, id);
-                    self.park_active();
+                    self.park_active(cx);
                     self.active_tab = id;
                     self.session = Default::default();
                     self.start_connection(Some(session_id), cx);
@@ -249,7 +249,7 @@ impl MobileApp {
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
         self.tab_order.insert(at, id);
-        self.park_active();
+        self.park_active(cx);
         self.active_tab = id;
         self.session = Default::default();
         self.session.working_dir = dir.clone();

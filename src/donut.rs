@@ -126,7 +126,7 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
             let s = w / CELLS;
             let half = w / 2.0;
             let (sin_a, cos_a) = std::f32::consts::FRAC_PI_4.sin_cos();
-            let ext = (CELLS * 0.7071).ceil() as i32 + 1;
+            let ext = (CELLS * std::f32::consts::FRAC_1_SQRT_2).ceil() as i32 + 1;
             for j in -ext..=ext {
                 for i in -ext..=ext {
                     let (i, j) = (i as f32, j as f32);

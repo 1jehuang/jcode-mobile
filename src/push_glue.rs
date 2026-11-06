@@ -96,7 +96,7 @@ impl MobileApp {
                     let id = self.next_tab;
                     self.next_tab += 1;
                     self.tab_order.push(id);
-                    self.park_active();
+                    self.park_active(cx);
                     self.active_tab = id;
                     self.session = SessionState::default();
                     self.start_connection(Some(session_id), cx);

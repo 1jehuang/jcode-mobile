@@ -14,7 +14,7 @@ use jcode_mobile_core::{
     Request, Role, SessionState, ToolStatus, TranscriptEntry, cloud,
 };
 
-use crate::text_input::{TextInput, TextInputEvent};
+use crate::text_input::{InputDraft, TextInput, TextInputEvent};
 
 #[path = "push_glue.rs"]
 mod push_glue;
@@ -27,6 +27,7 @@ mod synced_sessions;
 mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
+mod voice;
 #[cfg(test)]
 mod interaction_fuzz;
 #[cfg(test)]
@@ -78,6 +79,7 @@ pub struct MobileApp {
     /// Animation clock for the spinning mark.
     started: std::time::Instant,
     composer: Entity<TextInput>,
+    voice: voice::VoiceState,
     /// Desktop preview's simulated software keyboard state.
     sim_kb: crate::sim_keyboard::SimKeyboard,
     /// Animated bottom inset (keyboard slide), eased toward the target.
@@ -288,6 +290,7 @@ impl MobileApp {
             model_picker: false,
             kb_config: Default::default(),
             composer,
+            voice: voice::VoiceState::default(),
             active_tab: 0,
             next_tab: 1,
             parked: Vec::new(),
@@ -484,6 +487,7 @@ impl MobileApp {
     }
 
     fn start_connection_in(&mut self, resume: Option<String>, working_dir: Option<String>, cx: &mut Context<Self>) {
+        self.cancel_voice();
         if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         let mut config = Config::cloud(account);
@@ -518,14 +522,15 @@ impl MobileApp {
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
         self.tab_order.insert(at, id);
-        self.park_active();
+        self.park_active(cx);
         self.active_tab = id;
         self.session = SessionState::default();
         self.start_connection(None, cx);
         cx.notify();
     }
 
-    fn park_active(&mut self) {
+    fn park_active(&mut self, cx: &mut Context<Self>) {
+        self.cancel_voice();
         self.parked.push(ParkedTab {
             id: self.active_tab,
             connection: self.connection.take(),
@@ -533,12 +538,14 @@ impl MobileApp {
             scroll: std::mem::replace(&mut self.transcript_scroll, ScrollHandle::new()),
             expanded_tools: std::mem::take(&mut self.expanded_tools),
             follow: self.follow,
+            draft: self.composer.read(cx).save_draft(),
         });
+        self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
     }
 
     fn focus_tab(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(i) = self.parked.iter().position(|p| p.id == id) else { return };
-        self.park_active();
+        self.park_active(cx);
         let p = self.parked.swap_remove(i);
         self.active_tab = p.id;
         self.connection = p.connection;
@@ -546,6 +553,10 @@ impl MobileApp {
         self.transcript_scroll = p.scroll;
         self.expanded_tools = p.expanded_tools;
         self.follow = p.follow;
+        self.follow_last = std::time::Instant::now();
+        self.follow_max = self.transcript_scroll.max_offset().y;
+        self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
+        crate::haptics::play(crate::haptics::Haptic::Selection);
         cx.notify();
     }
 
@@ -558,6 +569,7 @@ impl MobileApp {
         self.tab_order.remove(pos);
         self.tab_motion.remove(&id);
         if id == self.active_tab {
+            self.cancel_voice();
             if let Some(c) = self.connection.take() {
                 c.stop();
             }
@@ -570,6 +582,9 @@ impl MobileApp {
             self.transcript_scroll = p.scroll;
             self.expanded_tools = p.expanded_tools;
             self.follow = p.follow;
+            self.follow_last = std::time::Instant::now();
+            self.follow_max = self.transcript_scroll.max_offset().y;
+            self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
         } else if let Some(i) = self.parked.iter().position(|p| p.id == id) {
             if let Some(c) = self.parked.swap_remove(i).connection {
                 c.stop();
@@ -757,10 +772,11 @@ impl MobileApp {
 
     fn send_draft(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() || self.session.phase != ConnectionPhase::Connected {
+        if text.is_empty() || self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
             return;
         }
         static ASKED: std::sync::Once = std::sync::Once::new();
+        self.cancel_voice();
         if !self.offline {
             ASKED.call_once(crate::notify::request_permission);
         }
@@ -813,6 +829,7 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.cancel_voice();
         if !self.offline {
             ios_system::forget_index();
         }
@@ -831,6 +848,7 @@ impl MobileApp {
             self.store.clear();
         }
         self.account = None;
+        self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
         self.synced = Default::default();
         self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
         self.apple_link = None;
@@ -849,6 +867,7 @@ struct ParkedTab {
     connection: Option<Connection>,
     session: SessionState,
     scroll: ScrollHandle,
+    draft: InputDraft,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
 }
@@ -1092,9 +1111,13 @@ impl MobileApp {
         use crate::tabs;
         // Phone width minus side buttons and padding.
         let width = self.content_width();
-        let track = (width - 2. * 10. - 2. * 32. - 2. * 6.).max(40.);
+        let track = (width - 2. * 10. - 2. * 44. - 2. * 6.).max(40.);
         let count = self.tab_order.len();
         let selected = self.tab_order.iter().position(|id| *id == self.active_tab).unwrap_or(0);
+        let preview = self.swipe.preview(selected > 0, selected + 1 < count);
+        let destination = preview.map(|(direction, progress)| {
+            ((selected as i32 + direction) as usize, progress)
+        });
         let targets = tabs::layout(track, count, selected);
         // Ease toward targets; snap on first sight or track change.
         let now = std::time::Instant::now();
@@ -1121,11 +1144,13 @@ impl MobileApp {
             cx.notify();
         }
         let order = tabs::paint_order(count, selected);
-        let mut strip = div().relative().flex_none().w(px(track)).h(px(tabs::TAB_HEIGHT));
+        let mut strip = div().id("session-tabs").role(gpui::Role::TabList)
+            .relative().flex_none().w(px(track)).h(px(44.));
         for &pos in &order {
             let id = self.tab_order[pos];
             let g = geometry[pos];
             let focused = pos == selected;
+            let swipe_progress = destination.filter(|(target, _)| *target == pos).map(|(_, p)| p);
             let (exp_left, visible) = tabs::exposed(&geometry, pos, &order);
             let s = self.tab_session(id);
             let title: SharedString = s
@@ -1157,7 +1182,7 @@ impl MobileApp {
                 .when(visible > 14., |d| d.child(div().flex_none().size(px(7.)).rounded_full().bg(dot)))
                 .when(visible > 40., |d| {
                     d.child(
-                        label(title, if focused { t.text_strong } else { t.text_secondary }, 12.)
+                        label(title.clone(), if swipe_progress.is_some() { t.accent } else if focused { t.text_strong } else { t.text_secondary }, 12.)
                             .min_w_0()
                             .truncate(),
                     )
@@ -1165,17 +1190,37 @@ impl MobileApp {
             strip = strip.child(
                 div()
                     .id(("tab", id))
+                    .debug_selector(move || format!("tab-{id}"))
+                    .role(gpui::Role::Tab)
+                    .aria_label(title)
+                    .aria_selected(focused)
                     .absolute()
                     .left(px(g.left))
                     .bottom_0()
                     .w(px(g.width))
-                    .h(px(g.height))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if focused { t.border } else { gpui::transparent_black() })
-                    .bg(bg)
+                    .h(px(44.))
                     .cursor_pointer()
+                    // Preserve the compact pill while making the full row a
+                    // forgiving touch target, including its long-press area.
+                    .child(div().absolute().left_0().right_0()
+                        .top(px((44. - g.height) / 2.)).h(px(g.height))
+                        .rounded_full().border_1()
+                        .border_color(if focused { t.border } else { gpui::transparent_black() })
+                        .bg(bg))
                     .child(content)
+                    // Keep feedback inside the exposed portion of overlapping
+                    // tabs so even a narrow destination remains visible.
+                    .when_some(swipe_progress, |d, progress| {
+                        d.child(div().absolute()
+                            .left(px(exp_left - g.left + pad))
+                            .bottom(px(7.))
+                            .w(px((visible - 2. * pad).max(0.)))
+                            .h(px(3.)).rounded_full()
+                            .bg(t.accent.opacity(0.2))
+                            .child(div().h_full().rounded_full()
+                                .w(px((visible - 2. * pad).max(0.) * progress))
+                                .bg(t.accent)))
+                    })
                     .child(self.feel_tab_hit(id))
                     // Hold opens tab options, like iOS context menus; tap switches.
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
@@ -1196,13 +1241,16 @@ impl MobileApp {
             .items_center()
             .gap(px(6.))
             .px(px(10.))
-            .h(px(38.))
+            .h(px(48.))
             .bg(t.background)
             .child(
                 div()
                     .id("menu").a11y_button("Sessions")
+                    .debug_selector(|| "menu".into())
                     .flex_none()
-                    .size(px(32.))
+                    .size(px(44.))
+                    .rounded_full()
+                    .active(|s| s.bg(t.surface))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1216,8 +1264,11 @@ impl MobileApp {
             .child(
                 div()
                     .id("new-session").a11y_button("New session")
+                    .debug_selector(|| "new-session".into())
                     .flex_none()
-                    .size(px(32.))
+                    .size(px(44.))
+                    .rounded_full()
+                    .when(connected, |d| d.active(|s| s.bg(t.surface)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1295,7 +1346,7 @@ impl MobileApp {
     }
 
     fn render_chat_inner(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        // Unpin follow mode when the user scrolls up.
+        // Follow is released by upward input, never by streamed layout growth.
         let max = self.transcript_scroll.max_offset().y;
         let mut off = -self.transcript_scroll.offset().y;
         // Streamed text grows the transcript a chunk at a time. Ease toward
@@ -1311,9 +1362,11 @@ impl MobileApp {
             window.request_animation_frame();
         }
         if self.follow && off < max {
-            let gap = f32::from(max - off);
-            let step = if gap < 1. { gap } else { gap * (1. - (-dt * 14.).exp()) };
-            off += px(step.max(gap.min(1.)));
+            off = px(crate::scroll_follow::offset(
+                f32::from(off), f32::from(max),
+                f32::from(self.feel.g.transcript.map_or(window.viewport_size().height, |b| b.size.height)),
+                dt, crate::system::reduce_motion(),
+            ));
             self.transcript_scroll.set_offset(gpui::point(px(0.), -off));
             if off < max {
                 window.request_animation_frame();
@@ -1386,13 +1439,33 @@ impl MobileApp {
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(&self.transcript_scroll)
-                        .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                        .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
                             let max = this.transcript_scroll.max_offset().y;
                             let off = -this.transcript_scroll.offset().y;
-                            this.follow = max - off < px(56.);
+                            let delta = ev.delta.pixel_delta(window.line_height());
+                            // GPUI applies scrolling separately. Use direction to
+                            // release immediately, regardless of listener order
+                            // or how far the streaming animation trails the end.
+                            if delta.y.abs() >= delta.x.abs() {
+                                this.follow = crate::scroll_follow::follow_after_scroll(
+                                    this.follow, f32::from(delta.y), f32::from(max - off),
+                                );
+                            }
                             cx.notify();
                         }))
-                        .child(div().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows)),
+                        .child(div().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows))
+                        .child({
+                            let scroll = self.transcript_scroll.clone();
+                            let follow = self.follow;
+                            // Render sees the previous layout's maximum. Check
+                            // again after layout so a lone tool update cannot
+                            // leave the tail hidden until the next network event.
+                            gpui::canvas(|_, _, _| (), move |_, _, window, _| {
+                                if follow && scroll.max_offset().y != max {
+                                    window.request_animation_frame();
+                                }
+                            }).absolute().inset_0()
+                        }),
                 )
                 .when(!at_bottom && max > px(0.), |d| {
                     d.child(
@@ -1401,7 +1474,7 @@ impl MobileApp {
                             .absolute()
                             .right(px(14.))
                             .bottom(px(8.))
-                            .size(px(36.))
+                            .size(px(44.))
                             .rounded_full()
                             .flex()
                             .items_center()
@@ -1411,6 +1484,7 @@ impl MobileApp {
                             .border_color(t.border_focus)
                             .text_color(t.text_strong)
                             .cursor_pointer()
+                            .active(|s| s.bg(t.surface))
                             .child("↓")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.follow = true;
@@ -1427,6 +1501,10 @@ impl MobileApp {
             .flex_col()
             .size_full()
             .child(self.render_header(t, cx))
+            .when(!empty && !matches!(self.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
+                d.child(div().px(px(14.)).py(px(6.)).border_b_1().border_color(t.border)
+                    .child(self.connection_status(t)))
+            })
             .child(body)
             .child(self.render_composer(t, window, cx))
             .into_any_element()
@@ -1586,11 +1664,12 @@ impl MobileApp {
             .into_any_element()
     }
 
-    /// Desktop composer: 18px-radius input (INPUT_BORDER, focus outline),
+    /// Phone composer: 44pt actions inside a 22px-radius focused outline,
     /// then desktop's pill row: model, effort, `Provider · Auth` on the left,
     /// the machine chip on the right.
     fn render_composer(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let processing = self.session.is_processing;
+        let ready = self.session.phase == ConnectionPhase::Connected && self.session.session_id.is_some();
         let has_text = !self.composer.read(cx).text().trim().is_empty();
         let focused = self.composer.read(cx).is_focused(window);
         let model_raw = self.session.model_name.clone();
@@ -1637,20 +1716,41 @@ impl MobileApp {
                     .gap(px(8.))
                     .pl(px(16.))
                     .pr(px(4.))
-                    .min_h(px(40.))
-                    .rounded(px(18.))
+                    .min_h(px(48.))
+                    .rounded(px(22.))
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    .child(
+                        round_button("microphone", if self.voice.recording.is_some() { "■" } else if self.voice.busy { "…" } else { "🎙" },
+                            if self.voice.recording.is_some() { t.error } else { t.text_strong }, !self.voice.busy, t)
+                            .a11y_button(if self.voice.recording.is_some() { "Stop recording and transcribe" } else { "Dictate message" })
+                            .when(!self.voice.busy, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx))))
+                    )
                     .child(if processing && !has_text {
-                        round_button("stop", "■", t.error, t)
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
+                        round_button("stop", "■", t.error, ready, t)
+                            .a11y_button("Stop response")
+                            .when(ready, |d| d.on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
                     } else {
-                        round_button("send", "↑", if has_text { t.text_strong } else { t.text_muted }, t)
-                            .on_click(cx.listener(|this, _, _, cx| this.send_draft(cx)))
+                        round_button("send", if ready { "↑" } else { "…" }, t.text_strong, ready && has_text, t)
+                            .a11y_button(if !ready { "Waiting for connection" } else if processing { "Queue follow-up" } else { "Send message" })
+                            .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
+            .when_some(self.voice.status(), |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
+            .when(self.voice.busy || self.voice.recording.is_some(), |d| d.child(
+                pill("cancel-dictation", "Cancel dictation", t)
+                    .a11y_button("Discard voice recording")
+                    .on_click(cx.listener(|this, _, _, cx| { this.cancel_voice(); cx.notify(); }))
+            ))
+            .when(!ready, |d| d.child(label(
+                if matches!(self.session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
+                    "Not connected. Your draft stays here."
+                } else {
+                    "Connecting… You can keep typing."
+                }, t.text_muted, 10.5,
+            ).px(px(8.))))
             .child(
                 div()
                     .flex()
@@ -1969,10 +2069,11 @@ fn picker_row(
         .when(selected, |d| d.child(label("✓", t.text_strong, 14.)))
 }
 
-fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, t: &Theme) -> gpui::Stateful<gpui::Div> {
+fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, enabled: bool, t: &Theme) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .size(px(36.))
+        .debug_selector(move || id.into())
+        .size(px(44.))
         .flex_none()
         .flex()
         .items_center()
@@ -1981,8 +2082,8 @@ fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, t: &Theme) -> g
         .bg(t.surface_elevated)
         .text_color(fg)
         .text_size(crate::system::fs(15.))
-        .cursor_pointer()
-        .active(|s| s.bg(t.surface))
+        .when(enabled, |d| d.cursor_pointer().active(|s| s.bg(t.surface)))
+        .when(!enabled, |d| d.opacity(0.4))
         .child(glyph)
 }
 
@@ -2241,6 +2342,73 @@ mod monkey_tests {
         *seed ^= *seed >> 7;
         *seed ^= *seed << 17;
         (*seed % 10_000) as f32 / 10_000.
+    }
+
+    #[gpui::test]
+    fn drafts_stay_with_their_tabs_and_return_when_active_tab_closes(cx: &mut TestAppContext) {
+        let tmp = std::env::temp_dir().join(format!("jcode-mobile-drafts-{}", std::process::id()));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+            std::env::set_var("HOME", &tmp);
+        }
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx)
+        });
+        view.update(cx, |app, cx| {
+            let first = app.active_tab;
+            app.composer.update(cx, |input, cx| input.set_text("First draft 👋", cx));
+            app.park_active(cx);
+            assert_eq!(app.composer.read(cx).text(), "");
+            let second = app.next_tab;
+            app.next_tab += 1;
+            app.active_tab = second;
+            app.tab_order.push(second);
+            app.composer.update(cx, |input, cx| input.set_text("Second draft", cx));
+            app.focus_tab(first, cx);
+            assert_eq!(app.composer.read(cx).text(), "First draft 👋");
+            app.focus_tab(second, cx);
+            assert_eq!(app.composer.read(cx).text(), "Second draft");
+            app.close_tab(second, cx);
+            assert_eq!(app.active_tab, first);
+            assert_eq!(app.composer.read(cx).text(), "First draft 👋");
+            assert!(app.parked.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn primary_touch_targets_fit_small_phones_and_offline_send_preserves_draft(cx: &mut TestAppContext) {
+        let tmp = std::env::temp_dir().join(format!("jcode-mobile-targets-{}", std::process::id()));
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", &tmp);
+            std::env::set_var("HOME", &tmp);
+        }
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = MobileApp::new(SafeArea { top: 20., bottom: 0. }, window, cx);
+            app.screen = Screen::Chat;
+            app.session.phase = ConnectionPhase::Connecting;
+            app.composer.update(cx, |input, cx| input.set_text("Keep this draft", cx));
+            app
+        });
+        for (width, height) in [(320., 568.), (375., 667.), (390., 844.)] {
+            view.update(cx, |app, cx| { app.device = Some((width, height)); cx.notify(); });
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            cx.update(|window, cx| { window.draw(cx).clear(cx); });
+            for selector in ["menu", "new-session", "send"] {
+                let bounds = cx.debug_bounds(selector).expect("primary control rendered");
+                assert!(bounds.size.width >= px(44.) && bounds.size.height >= px(44.), "{selector}: {bounds:?}");
+                assert!(bounds.left() >= px(0.) && bounds.right() <= px(width), "{selector}: {bounds:?}");
+            }
+            let tab = cx.debug_bounds("tab-0").expect("tab rendered");
+            assert!(tab.size.height >= px(44.));
+            let send = cx.debug_bounds("send").unwrap();
+            cx.simulate_click(send.center(), Modifiers::default());
+            view.read_with(cx, |app, cx| {
+                assert_eq!(app.composer.read(cx).text(), "Keep this draft");
+                assert!(app.session.transcript.is_empty());
+            });
+        }
     }
 
     fn check_outside_tap_unfocuses_both_onboarding_fields(cx: &mut TestAppContext) {

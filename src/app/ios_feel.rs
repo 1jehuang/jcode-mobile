@@ -753,7 +753,7 @@ impl MobileApp {
         let at = self.tab_order.iter().position(|t| *t == id).map_or(self.tab_order.len(), |i| i + 1);
         self.tab_order.insert(at, new);
         let title = self.tab_session(id).and_then(|s| s.session_title.clone());
-        self.park_active();
+        self.park_active(cx);
         self.active_tab = new;
         self.session = Default::default();
         self.session.session_title = title;
