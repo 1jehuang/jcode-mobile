@@ -22,7 +22,8 @@ touch "$OUT/.start"
 xcrun simctl install "$DEV" "$APP"
 xcrun simctl spawn "$DEV" log stream --level debug --predicate 'process == "jcode-mobile"' > "$OUT/app.log" 2>&1 &
 LOGPID=$!
-xcrun simctl launch "$DEV" "$BUNDLE"
+PID=$(xcrun simctl launch "$DEV" "$BUNDLE" | awk '{print $NF}')
+echo "launched pid $PID"
 sleep 5
 idb connect "$DEV" >/dev/null
 
@@ -33,7 +34,7 @@ print(int(d["width_points"]), int(d["height_points"]))')
 echo "screen ${W}x${H}"
 
 # Simulator apps run as host processes; launchctl list inside the sim is flaky.
-alive() { pgrep -f "jcode-mobile.app/jcode-mobile" >/dev/null; }
+alive() { kill -0 "$PID" 2>/dev/null; }
 
 r() { echo $(( RANDOM % $1 )); }
 END=$(( SECONDS + DURATION )); n=0; fail=0
