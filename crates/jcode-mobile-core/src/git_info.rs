@@ -5,13 +5,23 @@ use serde::Deserialize;
 const INVALID: &str = "Git inspection failed or returned an invalid response";
 const MAX_OUTPUT: usize = 64 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GitSnapshot {
     pub root: String,
     pub branch: String,
     pub status: String,
+    /// Up to ten newline-separated `short hash\tsubject\trelative age` records.
     pub recent_commits: String,
+    /// Per-file additions/deletions relative to HEAD, including staged changes.
+    #[serde(default)]
+    pub diff_stat: String,
+    /// Local commits not in the configured upstream, or zero without an upstream.
+    #[serde(default)]
+    pub ahead: u32,
+    /// Upstream commits not in HEAD, or zero without an upstream.
+    #[serde(default)]
+    pub behind: u32,
 }
 
 /// Inspect an existing repository, without fetching, writing the index, running
@@ -79,9 +89,13 @@ try:
     branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD'], True) or '(detached HEAD)'
     status = git(['status', '--porcelain=v1', '--untracked-files=normal', '--ignore-submodules=all'])
     head = git(['rev-parse', '--verify', 'HEAD'], True)
-    commits = git(['log', '-10', '--no-show-signature', '--format=%h %s', '--no-decorate', 'HEAD', '--']) if head else ''
+    commits = git(['log', '-10', '--no-show-signature', '--format=%h%x09%s%x09%ar', '--no-decorate', 'HEAD', '--']) if head else ''
+    diff_args = ['diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--numstat']
+    diff_stat = git(diff_args + (['HEAD'] if head else ['--cached']) + ['--'])
+    counts = git(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}', '--'], True) if head else None
+    ahead, behind = map(int, counts.split()) if counts else (0, 0)
     print('JCODE_GIT_V1')
-    print(json.dumps(dict(root=clean(root), branch=clean(branch), status=clean(status), recent_commits=clean(commits))))
+    print(json.dumps(dict(root=clean(root), branch=clean(branch), status=clean(status), recent_commits=clean(commits), diff_stat=clean(diff_stat), ahead=ahead, behind=behind)))
 except Exception:
     raise SystemExit(1)
 "#;
@@ -102,6 +116,7 @@ fn parse(bytes: &[u8]) -> Result<GitSnapshot, String> {
             &snapshot.branch,
             &snapshot.status,
             &snapshot.recent_commits,
+            &snapshot.diff_stat,
         ]
         .iter()
         .any(|s| s.chars().any(|c| c.is_control() && c != '\n' && c != '\t'))
@@ -115,6 +130,13 @@ fn parse(bytes: &[u8]) -> Result<GitSnapshot, String> {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn legacy_snapshot_defaults_new_metadata() {
+        let snapshot = parse(b"JCODE_GIT_V1\n{\"root\":\"/x\",\"branch\":\"main\",\"status\":\"\",\"recent_commits\":\"abc subject\"}").unwrap();
+        assert!(snapshot.diff_stat.is_empty());
+        assert_eq!((snapshot.ahead, snapshot.behind), (0, 0));
+    }
 
     #[test]
     fn rejects_invalid_input_and_untrusted_responses() {
@@ -164,8 +186,11 @@ mod tests {
         let unborn = inspect_local();
         assert_eq!(unborn.branch, "main");
         assert!(unborn.recent_commits.is_empty());
+        assert!(unborn.diff_stat.is_empty());
+        assert_eq!((unborn.ahead, unborn.behind), (0, 0));
         std::fs::write(root.join("tracked"), "original").unwrap();
         git(&["add", "tracked"]);
+        assert_eq!(inspect_local().diff_stat, "1\t0\ttracked");
         git(&[
             "-c",
             "user.name=Test",
@@ -181,6 +206,34 @@ mod tests {
             "origin",
             "https://user:REMOTE_SECRET@example.com/repo",
         ]);
+        git(&["branch", "upstream"]);
+        git(&["branch", "--set-upstream-to=upstream"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "local",
+        ]);
+        assert_eq!((inspect_local().ahead, inspect_local().behind), (1, 0));
+        git(&["checkout", "upstream"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "upstream",
+        ]);
+        git(&["checkout", "main"]);
+        assert_eq!((inspect_local().ahead, inspect_local().behind), (1, 1));
+        std::fs::write(root.join("staged"), "staged\n").unwrap();
+        git(&["add", "staged"]);
         let index = std::fs::read(root.join(".git/index")).unwrap();
         std::fs::write(root.join("tracked"), "modified").unwrap();
         std::fs::write(root.join("untracked"), "private content").unwrap();
@@ -188,6 +241,14 @@ mod tests {
         assert_eq!(snapshot.root, root.to_str().unwrap());
         assert!(snapshot.status.contains(" M tracked"));
         assert!(snapshot.status.contains("?? untracked"));
+        assert!(snapshot.diff_stat.contains("1\t0\tstaged"));
+        assert!(snapshot.diff_stat.contains("1\t1\ttracked"));
+        assert!(!snapshot.diff_stat.contains("untracked"));
+        for commit in snapshot.recent_commits.lines() {
+            let columns: Vec<_> = commit.split('\t').collect();
+            assert_eq!(columns.len(), 3);
+            assert!(!columns[2].is_empty());
+        }
         assert!(
             snapshot
                 .recent_commits
