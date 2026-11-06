@@ -37,6 +37,18 @@ mod interaction_fuzz;
 #[cfg(test)]
 mod offline_tests;
 #[cfg(test)]
+mod account_coverage;
+#[cfg(test)]
+mod composer_coverage;
+#[cfg(test)]
+mod navigation_coverage;
+#[cfg(test)]
+mod lifecycle_coverage;
+#[cfg(test)]
+mod journey_fuzz;
+#[cfg(test)]
+mod coverage_inventory;
+#[cfg(test)]
 mod scroll_tests;
 #[cfg(test)]
 mod haptic_tests;
@@ -56,6 +68,11 @@ enum Screen {
     SignIn,
     Chat,
     Settings,
+}
+
+enum SignInOutcome {
+    Sent(String),
+    Authenticated(Account),
 }
 
 pub struct MobileApp {
@@ -78,6 +95,8 @@ pub struct MobileApp {
     /// Move focus to the code field on the next frame (after the code is mailed).
     focus_code: bool,
     signing_in: bool,
+    auth_generation: u64,
+    blur_on_render: bool,
     sign_in_error: Option<String>,
     /// Account deletion: 0 idle, 1 armed (second tap confirms), 2 in flight.
     delete_step: u8,
@@ -288,6 +307,8 @@ impl MobileApp {
             login_token: None,
             focus_code: false,
             signing_in: false,
+            auth_generation: 0,
+            blur_on_render: false,
             // Dev hook: JCODE_MOBILE_ERROR=text shows a sign-in error banner.
             sign_in_error: std::env::var("JCODE_MOBILE_ERROR").ok(),
             delete_step: 0,
@@ -329,7 +350,7 @@ impl MobileApp {
             spinner_step: 0,
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
-            auto_send: std::env::var("JCODE_MOBILE_SEND").ok(),
+            auto_send: (!offline).then(|| std::env::var("JCODE_MOBILE_SEND").ok()).flatten(),
             push_token: None,
             // Dev hook (JCODE_MOBILE_DRAWER=1): start with the session drawer open.
             drawer_open: std::env::var_os("JCODE_MOBILE_DRAWER").is_some(),
@@ -371,6 +392,50 @@ impl MobileApp {
 
     // MARK: actions
 
+    /// Cancel pending authentication before navigation, logout, or a new flow.
+    fn invalidate_auth(&mut self) {
+        self.auth_generation = self.auth_generation.wrapping_add(1);
+        self.signing_in = false;
+        if let Some(cancel) = self.browser_login.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn begin_auth(&mut self) -> u64 {
+        self.invalidate_auth();
+        self.signing_in = true;
+        self.sign_in_error = None;
+        self.auth_generation
+    }
+
+    fn complete_sign_in(&mut self, generation: u64, result: Result<SignInOutcome, String>, cx: &mut Context<Self>) {
+        if generation != self.auth_generation || !self.signing_in { return; }
+        self.signing_in = false;
+        match result {
+            Ok(SignInOutcome::Sent(token)) => {
+                haptics::play(Haptic::Success);
+                self.login_token = Some(token);
+                self.focus_code = true;
+            }
+            Ok(SignInOutcome::Authenticated(account)) => {
+                if !self.offline {
+                    if let Err(e) = self.store.save(&account) {
+                        self.sign_in_error = Some(format!("Could not save sign-in: {e}"));
+                    }
+                }
+                self.login_token = None;
+                self.code.update(cx, |input, cx| input.set_text("", cx));
+                self.adopt_account(account, cx);
+            }
+            Err(error) if error.is_empty() => {}
+            Err(error) => {
+                haptics::play(Haptic::Error);
+                self.sign_in_error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
     /// Email step mails a code; code step exchanges it for an account key.
     fn sign_in_step(&mut self, cx: &mut Context<Self>) {
         if self.offline { return; }
@@ -387,59 +452,57 @@ impl MobileApp {
             return;
         }
         haptics::play(Haptic::Light);
-        self.signing_in = true;
-        self.sign_in_error = None;
+        let generation = self.begin_auth();
         cx.notify();
-        enum Step {
-            Sent(String),
-            Done(Account),
-        }
         let task = cx.background_spawn(async move {
             match token {
-                None => cloud::start_login(&email).map(Step::Sent),
-                Some(t) => cloud::verify_login(&t, &code).map(Step::Done),
+                None => cloud::start_login(&email).map(SignInOutcome::Sent),
+                Some(t) => cloud::verify_login(&t, &code).map(SignInOutcome::Authenticated),
             }
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            this.update(cx, |this, cx| {
-                this.signing_in = false;
-                match result {
-                    Ok(Step::Sent(t)) => {
-                        haptics::play(Haptic::Success);
-                        this.login_token = Some(t);
-                        this.focus_code = true;
-                    }
-                    Ok(Step::Done(account)) => {
-                        if let Err(e) = this.store.save(&account) {
-                            this.sign_in_error = Some(format!("Could not save sign-in: {e}"));
-                        }
-                        this.login_token = None;
-                        this.code.update(cx, |t, cx| t.set_text("", cx));
-                        this.connect(account, cx);
-                    }
-                    Err(e) => {
-                        haptics::play(Haptic::Error);
-                        this.sign_in_error = Some(e);
-                    }
-                }
-                cx.notify();
-            })
+            this.update(cx, |this, cx| this.complete_sign_in(generation, result, cx))
             .ok();
         })
         .detach();
     }
 
+    fn browser_request_current(&self, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> bool {
+        !cancel.load(std::sync::atomic::Ordering::Relaxed)
+            && self.browser_login.as_ref().is_some_and(|active| std::sync::Arc::ptr_eq(active, cancel))
+    }
+
+    fn complete_browser_sign_in(&mut self, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>, result: Result<Account, String>, cx: &mut Context<Self>) {
+        if !self.browser_request_current(cancel) { return; }
+        self.browser_login = None;
+        match result {
+            Ok(account) => {
+                if !self.offline {
+                    if let Err(error) = self.store.save(&account) {
+                        self.sign_in_error = Some(format!("Could not save sign-in: {error}"));
+                    }
+                }
+                self.adopt_account(account, cx);
+            }
+            Err(error) => {
+                haptics::play(Haptic::Error);
+                self.sign_in_error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
     /// "Continue with Google": opens jcode.sh/account (Google sign-in) in the
     /// system browser and polls the device flow until it is approved.
     fn google_sign_in(&mut self, cx: &mut Context<Self>) {
-        if self.offline { return; }
         if let Some(c) = self.browser_login.take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
             haptics::play(Haptic::Light);
             cx.notify();
             return;
         }
+        if self.offline || self.signing_in { return; }
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.browser_login = Some(cancel.clone());
         haptics::play(Haptic::Light);
@@ -450,43 +513,25 @@ impl MobileApp {
             let start = match start.await {
                 Ok(s) => s,
                 Err(e) => {
-                    this.update(cx, |this, cx| {
-                        this.browser_login = None;
-                        haptics::play(Haptic::Error);
-                        this.sign_in_error = Some(e);
-                        cx.notify()
-                    })
+                    this.update(cx, |this, cx| this.complete_browser_sign_in(&cancel, Err(e), cx))
                     .ok();
                     return;
                 }
             };
             let url = start.verification_uri_complete.clone();
-            this.update(cx, |_, cx| cx.open_url(&url)).ok();
+            let opened = this.update(cx, |this, cx| {
+                if !this.browser_request_current(&cancel) { return false; }
+                cx.open_url(&url);
+                true
+            }).unwrap_or(false);
+            if !opened { return; }
             let flag = cancel.clone();
             let result = cx
                 .background_spawn(async move {
                     cloud::finish_browser_login(&start, || flag.load(std::sync::atomic::Ordering::Relaxed))
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
-                this.browser_login = None;
-                match result {
-                    Ok(account) => {
-                        if let Err(e) = this.store.save(&account) {
-                            this.sign_in_error = Some(format!("Could not save sign-in: {e}"));
-                        }
-                        this.connect(account, cx);
-                    }
-                    Err(e) => {
-                        haptics::play(Haptic::Error);
-                        this.sign_in_error = Some(e);
-                    }
-                }
-                cx.notify();
-            })
+            this.update(cx, |this, cx| this.complete_browser_sign_in(&cancel, result, cx))
             .ok();
         })
         .detach();
@@ -494,6 +539,16 @@ impl MobileApp {
 
     fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
         if self.offline { return; }
+        self.adopt_account(account, cx);
+    }
+
+    /// Apply a completed authentication result, with effects guarded at their boundary.
+    fn adopt_account(&mut self, account: Account, cx: &mut Context<Self>) {
+        self.invalidate_auth();
+        self.focus_code = false;
+        self.blur_on_render = true;
+        self.login_token = None;
+        self.code.update(cx, |input, cx| input.set_text("", cx));
         haptics::play(Haptic::Success);
         self.git_info = git_info::GitState::default();
         self.cloud_machine = cloud_machine::MachineState::default();
@@ -574,6 +629,7 @@ impl MobileApp {
             expanded_tools: std::mem::take(&mut self.expanded_tools),
             follow: self.follow,
             draft: self.composer.read(cx).save_draft(),
+            auto_send: self.auto_send.take(),
         });
         self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
     }
@@ -588,6 +644,7 @@ impl MobileApp {
         self.transcript_scroll = p.scroll;
         self.expanded_tools = p.expanded_tools;
         self.follow = p.follow;
+        self.auto_send = p.auto_send;
         self.follow_last = std::time::Instant::now();
         self.follow_max = self.transcript_scroll.max_offset().y;
         self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
@@ -617,6 +674,7 @@ impl MobileApp {
             self.transcript_scroll = p.scroll;
             self.expanded_tools = p.expanded_tools;
             self.follow = p.follow;
+            self.auto_send = p.auto_send;
             self.follow_last = std::time::Instant::now();
             self.follow_max = self.transcript_scroll.max_offset().y;
             self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
@@ -764,13 +822,7 @@ impl MobileApp {
                             || this.parked.iter().any(|p| p.session.is_processing);
                         crate::notify::keep_alive(busy);
                         this.sync_live_activity();
-                        if this.session.phase == ConnectionPhase::Connected
-                            && this.session.session_id.is_some()
-                            && let Some(msg) = this.auto_send.take()
-                        {
-                            this.composer.update(cx, |t, cx| t.set_text(msg, cx));
-                            this.send_draft(cx);
-                        }
+                        this.flush_pending_send(cx);
                         // Follow mode glides to the new end in render_chat.
                         cx.notify();
                     })
@@ -788,6 +840,17 @@ impl MobileApp {
         if let Some(c) = &self.connection {
             c.send(build);
         }
+    }
+
+    /// External prompts belong to their tab and must not overwrite work typed
+    /// while that tab was connecting. Preserve selection and scroll as well.
+    fn flush_pending_send(&mut self, cx: &mut Context<Self>) {
+        if self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() { return; }
+        let Some(text) = self.auto_send.take() else { return; };
+        let draft = self.composer.read(cx).save_draft();
+        self.composer.update(cx, |input, cx| input.set_text(text, cx));
+        self.send_draft(cx);
+        self.composer.update(cx, |input, cx| input.restore_draft(draft, cx));
     }
 
     fn send_draft(&mut self, cx: &mut Context<Self>) {
@@ -821,6 +884,16 @@ impl MobileApp {
         cx.notify();
     }
 
+    fn complete_account_deletion(&mut self, expected: &Account, generation: u64, result: Result<(), String>, cx: &mut Context<Self>) {
+        if generation != self.auth_generation || self.account.as_ref() != Some(expected) || self.delete_step != 2 { return; }
+        self.delete_step = 0;
+        match result {
+            Ok(()) => self.sign_out(cx),
+            Err(error) => self.delete_error = Some(error),
+        }
+        cx.notify();
+    }
+
     /// First tap arms, second tap deletes the account server-side, then signs out.
     fn delete_account_tap(&mut self, cx: &mut Context<Self>) {
         if self.offline { return; }
@@ -834,19 +907,16 @@ impl MobileApp {
                 haptics::play(Haptic::Rigid);
                 self.delete_step = 2;
                 self.delete_error = None;
+                let expected = account.clone();
+                let generation = self.auth_generation;
                 let task = cx.background_spawn(async move { cloud::delete_account(&account) });
                 cx.spawn(async move |this, cx| {
                     let result = task.await;
                     this.update(cx, |this, cx| {
-                        this.delete_step = 0;
-                        match result {
-                            Ok(()) => this.sign_out(cx),
-                            Err(e) => {
-                                haptics::play(Haptic::Error);
-                                this.delete_error = Some(e);
-                            }
+                        if result.is_err() && generation == this.auth_generation && this.account.as_ref() == Some(&expected) && this.delete_step == 2 {
+                            haptics::play(Haptic::Error);
                         }
-                        cx.notify();
+                        this.complete_account_deletion(&expected, generation, result, cx);
                     })
                     .ok();
                 })
@@ -858,6 +928,31 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_auth();
+        self.auto_send = None;
+        self.blur_on_render = true;
+        self.focus_code = false;
+        self.tab_hold = None;
+        self.hold_fired = false;
+        self.tab_menu = None;
+        self.model_picker = false;
+        self.dir_picker = false;
+        self.dir_picker_new_session = false;
+        self.drawer_open = false;
+        self.drawer_t = 0.;
+        self.drawer_drag = 0.;
+        self.drawer_drag_last = None;
+        self.drawer_directory = Default::default();
+        self.feel = Default::default();
+        self.swipe = Default::default();
+        self.expanded_tools.clear();
+        self.recent_dirs_asked = None;
+        self.delete_step = 0;
+        self.delete_error = None;
+        self.sign_in_error = None;
+        self.code.update(cx, |input, cx| input.set_text("", cx));
+        self.drawer_search.update(cx, |input, cx| input.set_text("", cx));
+        self.dir_input.update(cx, |input, cx| input.set_text("", cx));
         if self.account.is_some() { haptics::play(Haptic::Rigid); }
         self.git_info = git_info::GitState::default();
         self.cloud_machine = cloud_machine::MachineState::default();
@@ -900,6 +995,7 @@ struct ParkedTab {
     session: SessionState,
     scroll: ScrollHandle,
     draft: InputDraft,
+    auto_send: Option<String>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
 }
@@ -939,6 +1035,7 @@ fn outline_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .w_full()
         .h(px(44.))
         .flex()
@@ -1121,13 +1218,16 @@ impl MobileApp {
                         d.child(
                             div()
                                 .id("use-other-email")
+                                .debug_selector(|| "use-other-email".into())
                                 .w_full()
                                 .flex()
                                 .justify_center()
                                 .cursor_pointer()
                                 .child(label("Use a different email", t.text_muted, 12.))
                                 .on_click(cx.listener(|this, _, window, cx| {
+                                    this.invalidate_auth();
                                     this.login_token = None;
+                                    this.code.update(cx, |input, cx| input.set_text("", cx));
                                     this.sign_in_error = None;
                                     window.focus(&this.email.focus_handle(cx), cx);
                                     cx.notify()
@@ -1447,7 +1547,7 @@ impl MobileApp {
         if let Some(err) = self.session.error_banner.clone() {
             rows.push(
                 banner(&err, t.error, t)
-                    .id("err")
+                    .id("err").debug_selector(|| "err".into())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session.apply_intent(LocalIntent::DismissError);
                         if matches!(this.session.phase, ConnectionPhase::Failed { .. }) {
@@ -1477,7 +1577,7 @@ impl MobileApp {
                 .gap(px(12.))
                 .when(!self.feel_reconnect_visible(), |d| d.child(self.connection_status(t)))
                 .when_some(self.session.error_banner.clone(), |d, e| {
-                    d.child(banner(&e, t.error, t).id("err-empty").on_click(cx.listener(|this, _, _, cx| {
+                    d.child(banner(&e, t.error, t).id("err-empty").debug_selector(|| "err-empty".into()).on_click(cx.listener(|this, _, _, cx| {
                         this.session.apply_intent(LocalIntent::DismissError);
                         this.reconnect(cx);
                     })))
@@ -1527,7 +1627,7 @@ impl MobileApp {
                 .when(!at_bottom && max > px(0.), |d| {
                     d.child(
                         div()
-                            .id("jump").a11y_button("Jump to latest")
+                            .id("jump").debug_selector(|| "jump".into()).a11y_button("Jump to latest")
                             .absolute()
                             .right(px(14.))
                             .bottom(px(8.))
@@ -1669,6 +1769,7 @@ impl MobileApp {
         let id = call.id.clone();
         div()
             .id(SharedString::from(format!("tool-{}", call.id)))
+            .debug_selector({ let id = call.id.clone(); move || format!("tool-{id}") })
             .flex()
             .flex_col()
             .cursor_pointer()
@@ -1947,6 +2048,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("picker-dismiss")
+                    .debug_selector(|| "model-dismiss".into())
                     .flex_1()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.feel_close_sheet();
@@ -2037,7 +2139,7 @@ impl MobileApp {
                     .bg(t.raised)
                     .child(
                         div()
-                            .id("back").a11y_button("Back")
+                            .id("back").debug_selector(|| "back".into()).a11y_button("Back")
                             .cursor_pointer()
                             .text_color(t.text_strong)
                             .text_size(crate::system::fs(13.))
@@ -2133,6 +2235,7 @@ fn picker_row(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(gpui::ElementId::NamedInteger(id.0.into(), id.1 as u64))
+        .debug_selector(move || format!("model-row-{}-{}", id.0, id.1))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -2191,8 +2294,12 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
 
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::notify::set_visible_session(self.session.session_id.clone());
+        if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }
         self.system_tick(window, cx);
+        if std::mem::take(&mut self.blur_on_render) {
+            window.blur(cx);
+            window.dismiss_virtual_keyboard();
+        }
         // Real phone: UIKit safe-area insets. Preview: the faked device insets.
         if std::mem::take(&mut self.focus_code) {
             window.focus(&self.code.focus_handle(cx), cx);

@@ -50,3 +50,4 @@ cgl = { git = "https://github.com/1jehuang/gpui", rev = "347fdfb9d26518ff05996fb
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+syn = { version = "2", features = ["full", "visit"] }
