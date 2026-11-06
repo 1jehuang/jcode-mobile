@@ -107,6 +107,7 @@ impl MobileApp {
             .absolute()
             .inset_0()
             .bg(gpui::black().opacity(0.45 * p))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
@@ -128,6 +129,10 @@ impl MobileApp {
             .pb(px(self.drawer_insets.1))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(cx.listener(move |this, ev: &gpui::ScrollWheelEvent, _window, cx| {
+                // The list has already handled vertical scrolling during bubbling.
+                // Consume every remaining wheel event, including at list edges and
+                // over fixed controls, so the transcript beneath cannot handle it.
+                cx.stop_propagation();
                 if ev.touch_phase == gpui::TouchPhase::Cancelled {
                     if this.drawer_drag_last.take().is_some() {
                         this.drawer_t = (this.drawer_t + this.drawer_drag / width).clamp(0., 1.);
