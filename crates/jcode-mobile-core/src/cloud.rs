@@ -43,11 +43,15 @@ pub use jcode_sdk::cloud::{
 /// Kept for API stability: the browser sign-in handle.
 pub type DeviceStart = DeviceLogin;
 
-/// Identifies this app to jcode.sh in sign-in and connect requests.
+/// Mobile identity for user agents, Apple sign-in and SSH key comments.
 pub const CLIENT_NAME: &str = "jcode-ios";
 
+/// The cloud email and device auth endpoints require this exact protocol
+/// identifier, even for mobile clients. It is not the app's display identity.
+const CLOUD_CLIENT_NAME: &str = "jcode-cli";
+
 pub fn client() -> CloudClient {
-    CloudClient::new(CLIENT_NAME)
+    CloudClient::new(CLOUD_CLIENT_NAME)
 }
 
 fn client_for(account: &Account) -> CloudClient {
@@ -361,8 +365,73 @@ mod tests {
     }
 
     #[test]
-    fn client_identifies_as_ios_app() {
-        assert_eq!(client().client_name, "jcode-ios");
+    fn cloud_client_uses_compatible_protocol_identity() {
+        assert_eq!(client().client_name, "jcode-cli");
         assert_eq!(client().api_base, DEFAULT_API_BASE);
+        let account = Account {
+            api_key: "unused".into(),
+            email: None,
+            api_base: "https://cloud.example/v1".into(),
+        };
+        assert_eq!(client_for(&account).client_name, "jcode-cli");
+        assert_eq!(client_for(&account).api_base, account.api_base);
+        assert_eq!(CLIENT_NAME, "jcode-ios");
+    }
+
+    #[test]
+    fn auth_requests_send_server_compatible_client_name() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for path in ["/auth/email/start", "/auth/device"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("POST {path} HTTP/1.1")), "{line}");
+                let mut length = None;
+                loop {
+                    line.clear();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0, "incomplete headers");
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = Some(value.trim().parse::<usize>().unwrap());
+                        }
+                    }
+                }
+                let mut body = vec![0; length.expect("JSON content length")];
+                reader.read_exact(&mut body).unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["client_name"], "jcode-cli");
+                if path == "/auth/email/start" {
+                    assert_eq!(body["email"], "mobile@example.com");
+                }
+                // A deliberate API error avoids coupling this wire-level test
+                // to the SDK's successful device-login response shape.
+                let response = r#"{"error":{"message":"compatible client accepted"}}"#;
+                write!(stream, "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            }
+        });
+        let cloud = client().with_api_base(api_base);
+        let email = cloud.start_email_login("mobile@example.com").unwrap_err();
+        assert!(
+            email.message.contains("compatible client accepted"),
+            "{email}"
+        );
+        let device = cloud.start_device_login().unwrap_err();
+        assert!(
+            device.message.contains("compatible client accepted"),
+            "{device}"
+        );
+        server.join().unwrap();
     }
 }
