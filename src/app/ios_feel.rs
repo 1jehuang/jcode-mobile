@@ -60,6 +60,11 @@ fn recorder(rec: Rc<RefCell<Recorded>>, put: fn(&mut Recorded, Bounds<Pixels>)) 
 }
 
 impl MobileApp {
+    pub(super) fn focused_rename_input(&self, window: &Window, cx: &gpui::App) -> Option<Entity<TextInput>> {
+        self.feel.rename.as_ref().map(|(_, input)| input)
+            .filter(|input| input.read(cx).is_focused(window)).cloned()
+    }
+
     fn scene(&self) -> Scene {
         let chat = self.screen == Screen::Chat;
         let at_top = f(self.transcript_scroll.offset().y) >= -0.5;
@@ -102,7 +107,7 @@ impl MobileApp {
                 (*t, b)
             })
             .collect();
-        g.scene = scene;
+        g.set_scene(scene);
     }
 
     /// Haptic for a sent message (call from send paths).
@@ -388,6 +393,12 @@ impl MobileApp {
                     let consumed = h
                         .update(cx, |this, cx| {
                             this.sync_gestures();
+                            if e.touch_phase == TouchPhase::Cancelled {
+                                this.feel.g.cancel();
+                                cx.notify();
+                                // Let the scroll owner unwind its own swipe/list state.
+                                return false;
+                            }
                             let (a, consumed) = this.feel.g.wheel(p, dy, ended);
                             if let Some(Action::Refresh) = a {
                                 this.reconnect(cx);

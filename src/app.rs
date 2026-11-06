@@ -1323,6 +1323,11 @@ impl MobileApp {
             .flex_col()
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
+                if ev.touch_phase == gpui::TouchPhase::Cancelled {
+                    this.swipe.cancel(this.content_width(), std::time::Instant::now());
+                    cx.notify();
+                    return;
+                }
                 let d = ev.delta.pixel_delta(px(20.));
                 let now = std::time::Instant::now();
                 if this.swipe.feed(f32::from(d.x), f32::from(d.y), now) {
@@ -2117,10 +2122,7 @@ impl Render for MobileApp {
         }
         // Preview: the simulated keyboard shows whenever a field is focused
         // (JCODE_MOBILE_KEYBOARD=1 forces it, =0 disables it).
-        let focused_input = [&self.email, &self.code, &self.composer]
-            .into_iter()
-            .find(|i| i.read(cx).is_focused(window))
-            .cloned();
+        let focused_input = self.focused_text_input(window, cx);
         let kb_env = std::env::var("JCODE_MOBILE_KEYBOARD").ok();
         let sim_kb = self.device.is_some()
             && kb_env.as_deref() != Some("0")
@@ -2299,14 +2301,22 @@ impl Render for MobileApp {
 }
 
 impl MobileApp {
+    /// Keep keyboard visibility, configuration, and keystroke routing on the
+    /// same field inventory, including fields in transient overlays.
+    fn focused_text_input(&self, window: &Window, cx: &App) -> Option<Entity<TextInput>> {
+        [&self.email, &self.code, &self.composer, &self.drawer_search,
+            &self.dir_input, &self.transfer_input]
+            .into_iter()
+            .find(|input| input.read(cx).is_focused(window))
+            .cloned()
+            .or_else(|| self.focused_rename_input(window, cx))
+            .or_else(|| self.apple_link.as_ref().and_then(|panel| panel.read(cx).focused_input(window, cx)))
+    }
+
     /// A tap on the simulated keyboard, routed to the focused field.
     fn sim_key(&mut self, key: crate::sim_keyboard::Key, window: &mut Window, cx: &mut Context<Self>) {
         use crate::sim_keyboard::Key;
-        let Some(input) = [&self.email, &self.code, &self.composer, &self.drawer_search]
-            .into_iter()
-            .find(|i| i.read(cx).is_focused(window))
-            .cloned()
-        else {
+        let Some(input) = self.focused_text_input(window, cx) else {
             return;
         };
         match self.sim_kb.press(&key) {
@@ -2348,11 +2358,6 @@ mod monkey_tests {
 
     #[gpui::test]
     fn drafts_stay_with_their_tabs_and_return_when_active_tab_closes(cx: &mut TestAppContext) {
-        let tmp = std::env::temp_dir().join(format!("jcode-mobile-drafts-{}", std::process::id()));
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("HOME", &tmp);
-        }
         cx.update(init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx)
@@ -2380,11 +2385,6 @@ mod monkey_tests {
 
     #[gpui::test]
     fn primary_touch_targets_fit_small_phones_and_offline_send_preserves_draft(cx: &mut TestAppContext) {
-        let tmp = std::env::temp_dir().join(format!("jcode-mobile-targets-{}", std::process::id()));
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("HOME", &tmp);
-        }
         cx.update(init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = MobileApp::new(SafeArea { top: 20., bottom: 0. }, window, cx);
@@ -2414,11 +2414,6 @@ mod monkey_tests {
     }
 
     fn check_outside_tap_unfocuses_both_onboarding_fields(cx: &mut TestAppContext) {
-        let tmp = std::env::temp_dir().join(format!("jcode-mobile-dismiss-{}", std::process::id()));
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("HOME", &tmp);
-        }
         cx.update(init);
         for code_step in [false, true] {
             // A fresh window keeps this deterministic, independent of the
@@ -2447,11 +2442,6 @@ mod monkey_tests {
     fn random_gestures_on_every_screen_do_not_panic(cx: &mut TestAppContext) {
         check_outside_tap_unfocuses_both_onboarding_fields(cx);
         // Keep the test offline: no saved account, so nothing connects.
-        let tmp = std::env::temp_dir().join(format!("jcode-mobile-monkey-{}", std::process::id()));
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("HOME", &tmp);
-        }
         cx.update(init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx);

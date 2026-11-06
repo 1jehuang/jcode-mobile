@@ -159,6 +159,15 @@ fn f(p: Pixels) -> f32 {
 }
 
 impl Gestures {
+    /// Synchronize hit-test eligibility without allowing a captured gesture
+    /// to survive navigation or the appearance of a different overlay.
+    pub fn set_scene(&mut self, scene: Scene) {
+        if scene != self.scene {
+            self.cancel();
+        }
+        self.scene = scene;
+    }
+
     fn width(&self) -> f32 {
         f(self.screen.size.width).max(1.)
     }
@@ -433,9 +442,7 @@ impl Gestures {
         self.last_frame = now;
         let mut out = Vec::new();
         // Recognition belongs to the scene where it began, not a new overlay.
-        if scene != self.scene {
-            self.cancel();
-        }
+        self.set_scene(scene);
         // Appear transitions: slide new screens/sheets in.
         if scene.pushed && !self.was_pushed {
             self.edge_x = self.width();

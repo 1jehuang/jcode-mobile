@@ -185,6 +185,11 @@ pub struct AppleLinkPanel {
 impl EventEmitter<LinkedEvent> for AppleLinkPanel {}
 
 impl AppleLinkPanel {
+    pub(super) fn focused_input(&self, window: &Window, cx: &gpui::App) -> Option<Entity<TextInput>> {
+        [&self.email, &self.code].into_iter()
+            .find(|input| input.read(cx).is_focused(window)).cloned()
+    }
+
     fn new(account: Account, cx: &mut Context<Self>) -> Self {
         use gpui::{TextInputAction, TextInputConfiguration, TextInputPurpose};
         let email = cx.new(|cx| {
