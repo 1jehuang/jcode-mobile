@@ -2,6 +2,7 @@
 //! (390x844 points, iPhone 15-class safe areas) that talks to a real server.
 
 mod app;
+mod scroll_follow;
 mod donut;
 mod donut_field;
 mod sim_keyboard;
