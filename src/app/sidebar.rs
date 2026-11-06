@@ -160,7 +160,6 @@ impl MobileApp {
             }))
             .child(self.render_drawer_search(t))
             .child(self.render_session_list(t, cx))
-            .child(self.render_quick_actions(t, cx))
             .child(self.render_account_footer(t, cx));
         Some(div().absolute().inset_0().child(scrim).child(panel).into_any_element())
     }
@@ -212,6 +211,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("drawer-new-thread").a11y_text_button()
+                    .debug_selector(|| "drawer-new-thread".into())
                     .flex_1()
                     .h(px(ROW_MIN))
                     .flex()
@@ -235,6 +235,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("drawer-refresh").a11y_button("Refresh sessions")
+                    .debug_selector(|| "drawer-refresh".into())
                     .flex_none()
                     .size(px(ROW_MIN))
                     .flex()
@@ -512,25 +513,26 @@ impl MobileApp {
                 list = list.child(row(s, cx));
             }
         }
-        div().id("drawer-sessions").flex_1().min_h_0().overflow_y_scroll().child(list)
+        div().id("drawer-sessions").debug_selector(|| "drawer-sessions".into()).flex_1().min_h_0().overflow_y_scroll().child(list)
     }
 
-    /// Desktop's `sidebar_account` footer: avatar initial, email, plan line.
+    /// Compact desktop-style account pill. The entire 44pt row opens settings.
     pub(super) fn render_account_footer(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let email = self.account.as_ref().and_then(|a| a.email.clone()).unwrap_or_else(|| "Not signed in".into());
         let initial = email.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
         div()
-            .id("drawer-account").a11y_button("Account settings")
+            .id("drawer-account").a11y_button("Jcode account and settings")
+            .debug_selector(|| "drawer-account".into())
             .flex_none()
             .mx(px(8.))
-            .mb(px(2.))
-            .mt(px(2.))
+            .my(px(4.))
             .px(px(8.))
-            .min_h(px(ROW_MIN))
+            .h(px(ROW_MIN))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .rounded(px(12.))
+            .gap(px(8.))
+            .rounded_full()
+            .bg(t.surface)
             .cursor_pointer()
             .active(|el| el.bg(t.background))
             .on_click(cx.listener(|this, _, _, cx| {
@@ -541,7 +543,7 @@ impl MobileApp {
             .child(
                 div()
                     .flex_none()
-                    .size(px(30.))
+                    .size(px(26.))
                     .rounded_full()
                     .flex()
                     .items_center()
@@ -555,10 +557,10 @@ impl MobileApp {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(div().truncate().text_size(crate::system::fs(13.)).text_color(t.text_strong).child(email))
-                    .child(div().text_size(crate::system::fs(11.)).text_color(t.text_muted).child("Account, plan & settings")),
+                    .truncate()
+                    .text_size(crate::system::fs(12.))
+                    .text_color(t.text_strong)
+                    .child(email),
             )
             .child(div().flex_none().text_size(crate::system::fs(16.)).text_color(t.text_muted).child("⚙"))
     }

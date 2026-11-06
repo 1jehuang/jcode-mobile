@@ -3,6 +3,32 @@ use super::*;
 use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, size};
 
 #[gpui::test]
+fn drawer_footer_is_compact_account_only_and_opens_settings(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+        app.screen = Screen::Chat;
+        app.device = Some((390., 844.));
+        app.drawer_open = true;
+        app.drawer_t = 1.;
+        app
+    });
+    cx.simulate_resize(size(px(390.), px(844.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    let account = cx.debug_bounds("drawer-account").unwrap();
+    let sessions = cx.debug_bounds("drawer-sessions").unwrap();
+    assert_eq!(account.size.height, px(44.), "keep a compact, touch-friendly account row");
+    assert!(account.top() - sessions.bottom() <= px(4.), "no action bar between list and account");
+    assert!(cx.debug_bounds("drawer-new-thread").is_none());
+    assert!(cx.debug_bounds("drawer-refresh").is_none());
+    cx.simulate_click(account.center(), Modifiers::default());
+    view.read_with(cx, |app, _| {
+        assert!(matches!(app.screen, Screen::Settings));
+        assert!(!app.drawer_open);
+    });
+}
+
+#[gpui::test]
 fn drawer_scroll_does_not_move_transcript_or_release_follow(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {
