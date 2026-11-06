@@ -16,6 +16,33 @@ const GRID: usize = 144;
 /// keeps the dots separate instead of forming a shimmering checkerboard.
 const CELLS: f32 = 32.0;
 
+/// Keep renderer inputs bounded even after long uptimes or hostile drag input.
+fn angle(value: f64) -> f64 {
+    if value.is_finite() {
+        value % std::f64::consts::TAU
+    } else {
+        0.0
+    }
+}
+
+fn orientation(elapsed: f64, reduce_motion: bool, tilt: f64, spin: f64) -> (f64, f64, bool) {
+    let elapsed = if elapsed.is_finite() {
+        elapsed.max(0.)
+    } else {
+        0.
+    };
+    let (wobble, turn) = if reduce_motion {
+        (0., 0.)
+    } else {
+        (angle(elapsed * 0.4).sin() * 0.25, angle(elapsed * 0.7))
+    };
+    (
+        angle(1.0 + wobble + angle(tilt)),
+        angle(turn + angle(spin)),
+        !reduce_motion,
+    )
+}
+
 fn sample(lum: &[f32], gx: f32, gy: f32) -> f32 {
     let g = GRID as f32;
     if gx < 0.0 || gy < 0.0 || gx > g - 2.0 || gy > g - 2.0 {
@@ -54,10 +81,22 @@ impl Rotation {
     }
 
     fn drag_to(&mut self, position: Point<Pixels>, side: f32) {
+        if !side.is_finite()
+            || side <= 0.
+            || !f32::from(position.x).is_finite()
+            || !f32::from(position.y).is_finite()
+        {
+            self.last = None;
+            return;
+        }
         if let Some(last) = self.last {
             let scale = std::f64::consts::TAU / side.max(1.) as f64;
-            self.spin += f32::from(position.x - last.x) as f64 * scale;
-            self.tilt += f32::from(position.y - last.y) as f64 * scale;
+            self.spin = angle(
+                self.spin + (f32::from(position.x) as f64 - f32::from(last.x) as f64) * scale,
+            );
+            self.tilt = angle(
+                self.tilt + (f32::from(position.y) as f64 - f32::from(last.y) as f64) * scale,
+            );
             self.last = Some(position);
         }
     }
@@ -167,15 +206,20 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-            let t = started.elapsed().as_secs_f64();
+            let (tilt, spin, animate) = orientation(
+                started.elapsed().as_secs_f64(),
+                crate::system::reduce_motion(),
+                tilt,
+                spin,
+            );
             // Same orientation as makeDonut().render() on the site.
             let mut lum = vec![0.0f32; GRID * GRID];
             render(
                 DonutOptions {
                     columns: GRID,
                     rows: GRID,
-                    tilt: 1.0 + (t * 0.4).sin() * 0.25 + tilt,
-                    spin: t * 0.7 + spin,
+                    tilt,
+                    spin,
                     steps: 48,
                     refine: true,
                     sharp: false,
@@ -212,7 +256,9 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
                     );
                 }
             }
-            window.request_animation_frame();
+            if animate {
+                window.request_animation_frame();
+            }
         },
     )
     .size(px(side))
@@ -222,6 +268,62 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reduced_motion_freezes_time_but_preserves_explicit_rotation() {
+        assert_eq!(orientation(0., true, 0., 0.), (1., 0., false));
+        for elapsed in [1., 1000., f64::MAX, f64::NAN, f64::INFINITY] {
+            assert_eq!(orientation(elapsed, true, 0., 0.), (1., 0., false));
+            assert_eq!(orientation(elapsed, true, 0.5, 0.75), (1.5, 0.75, false));
+        }
+        let mut rotation = Rotation {
+            last: Some(point(px(0.), px(0.))),
+            ..Default::default()
+        };
+        rotation.drag_to(point(px(35.), px(35.)), 140.);
+        assert_eq!(
+            orientation(5., true, rotation.tilt, rotation.spin),
+            (
+                1. + std::f64::consts::FRAC_PI_2,
+                std::f64::consts::FRAC_PI_2,
+                false
+            )
+        );
+    }
+
+    #[test]
+    fn normal_motion_animates_with_bounded_finite_orientation() {
+        assert_eq!(orientation(0., false, 0., 0.), (1., 0., true));
+        let (tilt, spin, animate) = orientation(1., false, 0., 0.);
+        assert!((tilt - (1. + 0.4f64.sin() * 0.25)).abs() < 1e-12);
+        assert_eq!(spin, 0.7);
+        assert!(animate);
+        for elapsed in [-1., f64::NAN, f64::INFINITY, f64::MAX] {
+            let (tilt, spin, _) = orientation(elapsed, false, f64::INFINITY, f64::NAN);
+            assert!(tilt.is_finite() && spin.is_finite());
+            assert!(tilt.abs() <= std::f64::consts::TAU);
+            assert!(spin.abs() <= std::f64::consts::TAU);
+        }
+    }
+
+    #[test]
+    fn invalid_drag_input_cannot_poison_orientation() {
+        for (position, side) in [
+            (point(px(f32::NAN), px(0.)), 140.),
+            (point(px(0.), px(f32::INFINITY)), 140.),
+            (point(px(1.), px(1.)), f32::NAN),
+            (point(px(1.), px(1.)), 0.),
+        ] {
+            let mut rotation = Rotation {
+                last: Some(point(px(0.), px(0.))),
+                tilt: 0.5,
+                spin: 0.75,
+            };
+            rotation.drag_to(position, side);
+            assert_eq!((rotation.tilt, rotation.spin), (0.5, 0.75));
+            assert!(rotation.last.is_none());
+        }
+    }
 
     struct DonutFixture {
         rotation: gpui::Entity<Rotation>,
@@ -236,6 +338,72 @@ mod tests {
                 self.rotation.clone(),
                 cx,
             )
+        }
+    }
+
+    #[gpui::test]
+    fn rendered_donut_cancel_outside_release_and_competing_contact(cx: &mut gpui::TestAppContext) {
+        use gpui::{PlatformInput, TouchEvent, TouchId, TouchPhase};
+        let (view, cx) = cx.add_window_view(|_, cx| DonutFixture {
+            rotation: cx.new(|_| Rotation::default()),
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let start = cx.debug_bounds("interactive-hero-donut").unwrap().center();
+        let moved = start + point(px(20.), px(15.));
+        let outside = start + point(px(300.), px(300.));
+        let dispatch = |cx: &mut gpui::VisualTestContext, id, phase, position| {
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::Touch(TouchEvent {
+                        id: TouchId(id),
+                        phase,
+                        position,
+                        predicted_position: None,
+                        force: None,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            });
+        };
+        for terminal in [TouchPhase::Cancelled, TouchPhase::Ended] {
+            dispatch(cx, 1, TouchPhase::Started, start);
+            dispatch(cx, 1, TouchPhase::Moved, moved);
+            let before = view.read_with(cx, |view, cx| {
+                let state = view.rotation.read(cx);
+                (state.tilt, state.spin)
+            });
+            dispatch(cx, 2, TouchPhase::Started, start);
+            dispatch(cx, 2, TouchPhase::Moved, outside);
+            dispatch(cx, 2, TouchPhase::Ended, outside);
+            view.read_with(cx, |view, cx| {
+                let state = view.rotation.read(cx);
+                assert_eq!(
+                    (state.tilt, state.spin),
+                    before,
+                    "competing contact must not rotate"
+                );
+                assert!(
+                    state.last.is_some(),
+                    "competing release must not end owner drag"
+                );
+            });
+            dispatch(cx, 1, terminal, outside);
+            let released = view.read_with(cx, |view, cx| {
+                let state = view.rotation.read(cx);
+                assert!(state.last.is_none());
+                if terminal == TouchPhase::Cancelled {
+                    assert_eq!((state.tilt, state.spin), before);
+                }
+                (state.tilt, state.spin)
+            });
+            dispatch(cx, 1, TouchPhase::Moved, start);
+            view.read_with(cx, |view, cx| {
+                let state = view.rotation.read(cx);
+                assert_eq!((state.tilt, state.spin), released);
+            });
         }
     }
 
