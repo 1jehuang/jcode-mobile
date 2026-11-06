@@ -11,8 +11,8 @@ functions, and their external files are excluded from production counts.
 Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
-The reviewed snapshot records **65 owners, 112 static event-call sites, and
-163 control/helper-family sites**. Of those owners, 62 have named, explicitly
+The reviewed snapshot records **67 owners, 112 static event-call sites, and
+175 control/helper-family sites**. Of those owners, 64 have named, explicitly
 partial regression evidence and 3 are gap-only. These are inventory counts,
 not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
 as `partial` or `gap_only`.
@@ -247,6 +247,13 @@ No speculative parent-sizing change was made.
 
 Fresh complete-suite validation is required for these integrated changes. The
 earlier 224-test result remains a checkpoint, not acceptance of newer sources.
+The first fresh attempt (`866027ojsx`) caught only inventory drift while another
+session extracted shared composer/suggestion renderers and improved neighboring
+panels and synced-row refresh stability. Those seven changed owner shapes were
+reviewed, not automatically blessed: the ledger now records two shared helper
+owners, precise neighboring-panel geometry/inertness evidence and fake refresh
+ordering/status-layout evidence. The existing scanner guard passed 4 tests with
+1 discovery test ignored (`3021063m81`). A newly compiled full matrix is pending.
 
 ### Initial validation receipt
 
