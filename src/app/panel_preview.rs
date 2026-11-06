@@ -60,6 +60,8 @@ impl MobileApp {
             // otherwise alter the real parked scroll when keyboard/size changes.
             let scroll = ScrollHandle::new();
             scroll.set_offset(parked.scroll.offset());
+            #[cfg(test)]
+            tests::observe_preview_scroll(id, scroll.clone());
             let show_jump = parked.scroll.max_offset().y + parked.scroll.offset().y >= px(56.);
             div().relative().flex_1().min_h_0()
                 .child(div().id("preview-transcript").debug_selector(|| "preview-transcript".into())
@@ -96,6 +98,34 @@ mod tests {
     use super::*;
     use super::super::navigation_coverage::{draw, mount};
     use gpui::{Modifiers, TestAppContext, VisualTestContext, point};
+
+    // Observe the actual private preview handle without changing release code
+    // or substituting the parked handle, whose geometry must remain untouched.
+    thread_local! {
+        static PREVIEW_SCROLL: std::cell::RefCell<Option<ScrollHandle>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn observe_preview_scroll(id: u64, scroll: ScrollHandle) {
+        if id == 0 {
+            PREVIEW_SCROLL.with(|saved| *saved.borrow_mut() = Some(scroll));
+        }
+    }
+
+    fn preview_scroll() -> ScrollHandle {
+        PREVIEW_SCROLL.with(|saved| saved.borrow().clone().expect("preview scroll rendered"))
+    }
+
+    const ENTRY_SELECTORS: [(&str, &str); 18] = [
+        ("entry-0", "preview-entry-0"), ("entry-1", "preview-entry-1"),
+        ("entry-2", "preview-entry-2"), ("entry-3", "preview-entry-3"),
+        ("entry-4", "preview-entry-4"), ("entry-5", "preview-entry-5"),
+        ("entry-6", "preview-entry-6"), ("entry-7", "preview-entry-7"),
+        ("entry-8", "preview-entry-8"), ("entry-9", "preview-entry-9"),
+        ("entry-10", "preview-entry-10"), ("entry-11", "preview-entry-11"),
+        ("entry-12", "preview-entry-12"), ("entry-13", "preview-entry-13"),
+        ("entry-14", "preview-entry-14"), ("entry-15", "preview-entry-15"),
+        ("entry-16", "preview-entry-16"), ("entry-17", "preview-entry-17"),
+    ];
 
     const DRAFT: &str = "Neighbor draft
 Second line with emoji 👩🏽‍💻
@@ -171,9 +201,30 @@ Third output line".into(),
         prepare_destination(&view, cx);
         let destination_composer = cx.debug_bounds("chat-composer").unwrap();
         let destination_left = destination_composer.left();
-        let destination_entries: Vec<_> = ["entry-0", "entry-3", "entry-17"].into_iter()
-            .map(|selector| cx.debug_bounds(selector).expect("destination entry rendered"))
+        let destination_range = view.read_with(cx, |app, _| app.transcript_scroll.max_offset());
+        let destination_offset = view.read_with(cx, |app, _| app.transcript_scroll.offset());
+        let materialized: Vec<_> = ENTRY_SELECTORS.iter()
+            .filter_map(|(selector, preview)| cx.debug_bounds(selector).map(|bounds| (*preview, bounds)))
             .collect();
+        assert_eq!(materialized.len(), view.read_with(cx, |app, _| app.rendered_transcript_rows));
+        assert!(!materialized.is_empty(), "geometry comparison must not be vacuous");
+        // Build a complete oracle, including rows that an enlarged text scale
+        // correctly culls. Restore optimized rendering before making a preview.
+        view.update(cx, |app, cx| { app.disable_transcript_windowing = true; cx.notify(); });
+        draw(cx);
+        let destination_entries: Vec<_> = ENTRY_SELECTORS.iter()
+            .map(|(selector, preview)| (*preview, cx.debug_bounds(selector).expect("full reference row")))
+            .collect();
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.rendered_transcript_rows, ENTRY_SELECTORS.len());
+            assert_eq!(app.transcript_scroll.max_offset(), destination_range);
+            assert_eq!(app.transcript_scroll.offset(), destination_offset);
+        });
+        for (selector, bounds) in &materialized {
+            assert_eq!(*bounds, destination_entries.iter().find(|(id, _)| id == selector).unwrap().1);
+        }
+        view.update(cx, |app, cx| { app.disable_transcript_windowing = false; cx.notify(); });
+        draw(cx);
         let header = cx.debug_bounds("menu").unwrap();
         let git = cx.debug_bounds("git-pull-handle").unwrap();
         park_and_preview(&view, cx);
@@ -182,13 +233,21 @@ Third output line".into(),
         near(composer.origin.y, destination_composer.origin.y, "composer vertical position");
         near(composer.size.height, destination_composer.size.height, "multiline composer height");
         near(composer.size.width, destination_composer.size.width, "composer width");
-        for (selector, destination) in ["preview-entry-0", "preview-entry-3", "preview-entry-17"].into_iter().zip(destination_entries) {
-            let preview = cx.debug_bounds(selector).expect("all history remains in preview");
+        for (selector, _) in &materialized {
+            assert!(cx.debug_bounds(selector).is_some(), "destination row {selector} missing from preview");
+        }
+        let mut compared = 0;
+        for (selector, destination) in destination_entries {
+            let Some(preview) = cx.debug_bounds(selector) else { continue };
+            compared += 1;
             near(preview.origin.y, destination.origin.y, "saved scroll message offset");
             near(preview.origin.x - panel.origin.x, destination.origin.x - destination_left, "message horizontal inset");
             near(preview.size.width, destination.size.width, "message width");
             near(preview.size.height, destination.size.height, "message height");
         }
+        assert!(compared >= materialized.len(), "every materialized preview row must match the complete oracle");
+        assert_eq!(preview_scroll().max_offset(), destination_range, "coalesced preview must retain the complete scroll range");
+        assert_eq!(preview_scroll().offset(), destination_offset);
         assert_eq!(cx.debug_bounds("menu").unwrap(), header);
         assert_eq!(cx.debug_bounds("git-pull-handle").unwrap(), git);
         cx.update(|window, cx| view.update(cx, |app, cx| {
@@ -201,6 +260,7 @@ Third output line".into(),
             assert_eq!(app.parked.len(), 1);
             let parked = &app.parked[0];
             assert_eq!(parked.scroll.offset().y, px(-180.));
+            assert_eq!(parked.scroll.max_offset(), destination_range);
             assert_eq!(parked.preview_composer.read(cx).text(), DRAFT);
             assert!(parked.expanded_tools.contains("preview-fixture"));
             assert!(!parked.follow);
@@ -211,6 +271,10 @@ Third output line".into(),
             assert_eq!(app.transcript_scroll.offset().y, px(-180.));
         }));
         draw(cx);
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.transcript_scroll.max_offset(), destination_range);
+            assert_eq!(app.transcript_scroll.offset(), destination_offset);
+        });
         near(cx.debug_bounds("chat-composer").unwrap().origin.y, composer.origin.y, "focused destination composer");
     }
 
