@@ -18,6 +18,7 @@ const HEADLINE_CHARS: usize = 200;
 const CACHE_ENTRIES: usize = 256;
 const CACHE_SOURCE_BYTES: usize = 1024 * 1024;
 const CACHE_INPUT_BYTES: usize = 128 * 1024;
+const CACHE_ADMISSION_INTERVAL: usize = 16;
 
 thread_local! {
     static HEADLINES: RefCell<HeadlineCache> = RefCell::new(HeadlineCache::default());
@@ -26,7 +27,7 @@ thread_local! {
 /// Reuse unchanged tool inputs across UI frames. Each thread retains at most
 /// 256 exact source keys totaling 1 MiB, plus their bounded headlines. Inputs
 /// larger than 128 KiB bypass the cache without evicting useful keys.
-/// No tool id or hash is used as identity, so streamed edits cannot be stale.
+/// Exact source equality decides identity, including partial streamed edits.
 pub fn cached_headline(input: &str) -> Option<String> {
     if input.len() > CACHE_INPUT_BYTES {
         return headline(input);
@@ -40,10 +41,11 @@ pub fn cached_headline(input: &str) -> Option<String> {
 
 #[derive(Default)]
 struct HeadlineCache {
-    // Least recently used first. Linear exact comparison is bounded by 256
-    // entries and avoids hashing the entire source on every repeated frame.
+    // LRU order keeps repeated sequential frames cheap: their next input is
+    // normally at the front. Avoid hashing entire large sources on hot hits.
     entries: VecDeque<(Box<str>, Option<Box<str>>)>,
     source_bytes: usize,
+    admission_misses: usize,
 }
 
 impl HeadlineCache {
@@ -65,6 +67,19 @@ impl HeadlineCache {
         let result = compute();
         if input.len() > CACHE_INPUT_BYTES {
             return result;
+        }
+        // Admit freely while there is space. Once full, admit only every 16th
+        // miss. A sequential scan larger than capacity therefore cannot evict
+        // the entire working set before the next frame (as LRU does). This is
+        // bounded, deterministic and still gradually adapts to changed inputs.
+        if self.entries.len() >= CACHE_ENTRIES
+            || self.source_bytes + input.len() > CACHE_SOURCE_BYTES
+        {
+            self.admission_misses += 1;
+            if self.admission_misses < CACHE_ADMISSION_INTERVAL {
+                return result;
+            }
+            self.admission_misses = 0;
         }
         while self.entries.len() >= CACHE_ENTRIES
             || self.source_bytes + input.len() > CACHE_SOURCE_BYTES
@@ -234,13 +249,22 @@ mod tests {
     }
 
     #[test]
-    fn cache_evicts_least_recently_used_at_entry_limit() {
+    fn cache_admits_periodically_and_evicts_lru_at_entry_limit() {
         let mut cache = HeadlineCache::default();
         for index in 0..CACHE_ENTRIES {
             let input = format!("tool {index}");
             cache.get_or_insert_with(&input, || headline(&input));
         }
         cache.get_or_insert_with("tool 0", || panic!("expected cached first entry"));
+        for _ in 0..CACHE_ADMISSION_INTERVAL - 1 {
+            cache.get_or_insert_with("new tool", || Some("new".into()));
+            assert!(
+                cache
+                    .entries
+                    .iter()
+                    .any(|(key, _)| key.as_ref() == "tool 1")
+            );
+        }
         cache.get_or_insert_with("new tool", || Some("new".into()));
         assert_eq!(cache.entries.len(), CACHE_ENTRIES);
         assert!(
@@ -264,6 +288,30 @@ mod tests {
     }
 
     #[test]
+    fn overcapacity_sequential_frames_keep_hits() {
+        for count in [320, 1000] {
+            let mut cache = HeadlineCache::default();
+            let inputs: Vec<_> = (0..count).map(|i| format!("tool {i} 界")).collect();
+            for frame in 0..30 {
+                let mut misses = 0;
+                for input in &inputs {
+                    assert_eq!(
+                        cache.get_or_insert_with(input, || {
+                            misses += 1;
+                            headline(input)
+                        }),
+                        headline(input)
+                    );
+                }
+                if frame > 0 {
+                    assert!(count - misses >= 150, "{count} inputs, {misses} misses");
+                }
+                assert_eq!(cache.entries.len(), CACHE_ENTRIES);
+            }
+        }
+    }
+
+    #[test]
     fn cache_bounds_source_bytes_and_bypasses_oversized_inputs() {
         let mut cache = HeadlineCache::default();
         let sources: Vec<_> = (0..CACHE_SOURCE_BYTES / CACHE_INPUT_BYTES)
@@ -277,7 +325,9 @@ mod tests {
             cache.get_or_insert_with(input, || headline(input));
         }
         assert_eq!(cache.source_bytes, CACHE_SOURCE_BYTES);
-        cache.get_or_insert_with("small", || headline("small"));
+        for _ in 0..CACHE_ADMISSION_INTERVAL {
+            cache.get_or_insert_with("small", || headline("small"));
+        }
         assert_eq!(cache.entries.len(), CACHE_SOURCE_BYTES / CACHE_INPUT_BYTES);
         assert!(
             !cache
@@ -338,6 +388,39 @@ mod tests {
     #[ignore = "repeated-frame bounded-cache benchmark, not a timing assertion"]
     fn benchmark_cached_headline_frames() {
         use std::{hint::black_box, time::Instant};
+        let frames: usize = std::env::var("HEADLINE_BENCH_FRAMES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1000);
+        assert!(frames > 0);
+        // Previous implementation, kept here only as a reproducible baseline.
+        #[derive(Default)]
+        struct LinearLru {
+            entries: VecDeque<(Box<str>, Option<Box<str>>)>,
+            bytes: usize,
+        }
+        impl LinearLru {
+            fn get(&mut self, input: &str) -> Option<String> {
+                if let Some(index) = self.entries.iter().position(|(s, _)| s.as_ref() == input) {
+                    let entry = self.entries.remove(index).unwrap();
+                    let result = entry.1.as_deref().map(str::to_owned);
+                    self.entries.push_back(entry);
+                    return result;
+                }
+                let result = headline(input);
+                if input.len() <= CACHE_INPUT_BYTES {
+                    while self.entries.len() >= CACHE_ENTRIES
+                        || self.bytes + input.len() > CACHE_SOURCE_BYTES
+                    {
+                        self.bytes -= self.entries.pop_front().unwrap().0.len();
+                    }
+                    self.bytes += input.len();
+                    self.entries
+                        .push_back((input.into(), result.as_deref().map(Box::from)));
+                }
+                result
+            }
+        }
         for (tools, padding) in [
             (1, 0),
             (32, 0),
@@ -346,6 +429,10 @@ mod tests {
             (80, 2048),
             (CACHE_ENTRIES, 0),
             (CACHE_ENTRIES + 64, 0),
+            (1000, 0),
+            (320, 2048),
+            (32, 32 * 1024),
+            (32, CACHE_INPUT_BYTES),
         ] {
             let inputs: Vec<_> = (0..tools).map(|index| {
                 format!(r#"{{"padding":"{}","path":"src/tool_{index}.rs","intent":"Inspect tool {index}"}}"#, "x".repeat(padding))
@@ -354,19 +441,26 @@ mod tests {
             for input in &inputs {
                 assert_eq!(cached_headline(input), headline(input));
             }
-            for (name, implementation) in [
-                ("uncached", headline as fn(&str) -> Option<String>),
-                ("cached", cached_headline),
-            ] {
+            let mut baseline = LinearLru::default();
+            for input in &inputs {
+                baseline.get(input);
+            }
+            for name in ["uncached", "linear-lru", "cached"] {
                 let start = Instant::now();
-                for _ in 0..1000 {
+                for _ in 0..frames {
                     for input in &inputs {
-                        black_box(implementation(black_box(input)));
+                        let input = black_box(input.as_str());
+                        black_box(match name {
+                            "uncached" => headline(input),
+                            "linear-lru" => baseline.get(input),
+                            _ => cached_headline(input),
+                        });
                     }
                 }
+                let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                 eprintln!(
-                    "frames {name}, {tools} tools, {padding} padding bytes, 1000 frames: {:?}",
-                    start.elapsed()
+                    "frames {name}, {tools} tools, {padding} padding bytes: {elapsed_ms:.3} ms/{frames} frames, {:.6} ms/frame",
+                    elapsed_ms / frames as f64
                 );
             }
         }
