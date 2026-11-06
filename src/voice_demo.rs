@@ -11,7 +11,8 @@ use std::time::Instant;
 
 struct VoiceDemo {
     started: Instant,
-    simulated: f32,
+    elapsed: f64,
+    tick: u32,
     gesture: VoiceGesture,
     raw: f32,
     cycle: i32,
@@ -22,12 +23,42 @@ impl VoiceDemo {
     fn new() -> Self {
         Self {
             started: Instant::now(),
-            simulated: 0.,
+            elapsed: 0.,
+            tick: 0,
             gesture: VoiceGesture::default(),
             raw: 0.,
             cycle: -1,
             phase: Phase::Pulling,
         }
+    }
+
+    /// Advance without wall-clock or native services. The script repeats every
+    /// two nine-second cycles. Reconstruct only the current cycle after a gap:
+    /// its reset makes all earlier history irrelevant, including spring state.
+    /// Integer periodic ticks avoid both f32 increment stalls and huge loops.
+    /// Returns the work count so the catch-up bound is directly testable.
+    fn advance(&mut self, elapsed: f64) -> u32 {
+        const HZ: u32 = 120;
+        const CYCLE: u32 = 9 * HZ;
+        const PERIOD: u32 = 2 * CYCLE;
+        if !elapsed.is_finite() || elapsed < self.elapsed {
+            return 0;
+        }
+        let target = ((elapsed % 18.) * HZ as f64).floor() as u32;
+        if elapsed - self.elapsed >= 9. || self.cycle < 0 {
+            self.tick = target / CYCLE * CYCLE;
+            self.gesture.reset();
+            self.raw = 0.;
+            self.cycle = -1;
+            self.step(self.tick as f32 / HZ as f32, 0.);
+        }
+        let steps = (target + PERIOD - self.tick) % PERIOD;
+        for _ in 0..steps {
+            self.tick = (self.tick + 1) % PERIOD;
+            self.step(self.tick as f32 / HZ as f32, 1. / HZ as f32);
+        }
+        self.elapsed = elapsed;
+        steps
     }
 
     fn step(&mut self, elapsed: f32, dt: f32) {
@@ -86,12 +117,8 @@ impl VoiceDemo {
 
 impl Render for VoiceDemo {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let elapsed = self.started.elapsed().as_secs_f32();
-        // Fixed substeps preserve every crossing even during a slow video frame.
-        while self.simulated + 1. / 120. <= elapsed {
-            self.simulated += 1. / 120.;
-            self.step(self.simulated, 1. / 120.);
-        }
+        let elapsed = self.started.elapsed().as_secs_f64();
+        self.advance(elapsed);
         window.request_animation_frame();
         let t = Theme::pure_black();
         let locked_cycle = self.cycle % 2 == 1;
@@ -114,7 +141,7 @@ impl Render for VoiceDemo {
                     .child("Rhythmic activity preview, not measured audio.\nNo microphone access. No network requests."))
                 .child(div().mt(px(20.)).text_size(px(11.)).text_color(t.ok)
                     .child(format!("SIMULATED / {}", self.phase.label()))))
-            .child(voice_visual::render(self.gesture.pull, self.phase, elapsed, false, &t))
+            .child(voice_visual::render(self.gesture.pull, self.phase, elapsed as f32, false, &t))
             .child(div().px(px(22.)).pt(px(14.)).pb(px(34.)).bg(t.raised)
                 .child(div().p(px(13.)).rounded_lg().border_1().border_color(t.input_border)
                     .text_size(px(11.)).text_color(t.text_muted).child("Preview only · composer controls live in chat")))
@@ -138,4 +165,140 @@ pub fn run() {
         .expect("open voice preview");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_demo_long_uptime_clock_progresses() {
+        let mut demo = VoiceDemo::new();
+        assert!(demo.advance(262_144.) <= 1080);
+        let tick = demo.tick;
+        assert!((1..=2).contains(&demo.advance(262_144. + 1. / 60.)));
+        assert_ne!(demo.tick, tick);
+    }
+
+    fn same(actual: &VoiceDemo, expected: &VoiceDemo) {
+        assert_eq!(actual.cycle, expected.cycle);
+        assert_eq!(actual.phase, expected.phase);
+        assert_eq!(actual.gesture.state, expected.gesture.state);
+        assert!((actual.gesture.pull - expected.gesture.pull).abs() < 0.001);
+        assert!((actual.raw - expected.raw).abs() < 0.001);
+    }
+
+    #[test]
+    fn voice_demo_slow_frames_preserve_fixed_step_semantics() {
+        let mut reference = VoiceDemo::new();
+        let mut slow = VoiceDemo::new();
+        for tick in 1..=4320 {
+            reference.advance(tick as f64 / 120.);
+            if tick % 83 == 0 || tick == 4320 {
+                assert!(slow.advance(tick as f64 / 120.) <= 1080);
+                same(&slow, &reference);
+            }
+        }
+    }
+
+    #[test]
+    fn voice_demo_suspend_reconstructs_current_cycle_not_stale_lock() {
+        for elapsed in [18., 19.7, 23.6, 27., 30.45, 33.2, 35.5, 262_144.] {
+            let mut resumed = VoiceDemo::new();
+            resumed.advance(12.5);
+            assert_eq!(resumed.gesture.state, State::Locked);
+            assert!(resumed.advance(elapsed) <= 1080);
+            let mut fresh = VoiceDemo::new();
+            fresh.advance(elapsed % 18.);
+            same(&resumed, &fresh);
+        }
+    }
+
+    #[test]
+    fn voice_demo_huge_nonfinite_and_backward_time_are_safe() {
+        let mut demo = VoiceDemo::new();
+        demo.advance(3.);
+        for elapsed in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1., 2.] {
+            let tick = demo.tick;
+            assert_eq!(demo.advance(elapsed), 0);
+            assert_eq!(demo.tick, tick);
+            assert_eq!(demo.gesture.state, State::Recording);
+        }
+        for elapsed in [1e12, 1e30, f64::MAX] {
+            assert!(demo.advance(elapsed) <= 1080);
+            assert!(demo.gesture.pull.is_finite());
+            let mut fresh = VoiceDemo::new();
+            fresh.advance(elapsed % 18.);
+            same(&demo, &fresh);
+            assert_eq!(demo.advance(elapsed), 0);
+        }
+    }
+
+    #[test]
+    fn voice_demo_cycle_phases_and_thresholds() {
+        let mut demo = VoiceDemo::new();
+        for (elapsed, state, phase) in [
+            (0.7, State::Idle, Phase::Pulling),
+            (1.62, State::Pulling, Phase::Pulling),
+            (1.63, State::Recording, Phase::Preparing),
+            (2.06, State::Recording, Phase::Recording),
+            (5.48, State::Recording, Phase::Recording),
+            (5.50, State::Finished, Phase::Transcribing),
+            (5.8, State::Idle, Phase::Transcribing),
+            (8.1, State::Idle, Phase::Pulling),
+            (9., State::Idle, Phase::Pulling),
+            (12.38, State::Recording, Phase::Recording),
+            (12.40, State::Locked, Phase::Locked),
+            (15.29, State::Locked, Phase::Locked),
+            (15.31, State::Idle, Phase::Transcribing),
+            (17.1, State::Idle, Phase::Pulling),
+            (18., State::Idle, Phase::Pulling),
+        ] {
+            demo.advance(elapsed);
+            assert_eq!(demo.gesture.state, state, "elapsed={elapsed}");
+            assert_eq!(demo.phase, phase, "elapsed={elapsed}");
+        }
+    }
+
+    #[test]
+    fn voice_demo_exact_phase_boundaries() {
+        let mut demo = VoiceDemo::new();
+        for (elapsed, phase) in [
+            (2.049, Phase::Preparing),
+            (2.05, Phase::Recording),
+            (5.549, Phase::Transcribing),
+            (5.55, Phase::Transcribing),
+            (8.1, Phase::Pulling),
+            (15.299, Phase::Locked),
+            (15.3, Phase::Transcribing),
+            (17.1, Phase::Pulling),
+        ] {
+            demo.advance(elapsed as f64);
+            demo.step(elapsed, 1. / 120.);
+            assert_eq!(demo.phase, phase, "elapsed={elapsed}");
+        }
+    }
+
+    #[gpui::test]
+    fn voice_demo_narrow_preview_geometry(cx: &mut gpui::TestAppContext) {
+        // Construct only the autonomous preview. No app init, capture, networking,
+        // platform application, or microphone fixture is involved.
+        let (view, cx) = cx.add_window_view(|_, _| VoiceDemo::new());
+        for width in [280., 320., 390.] {
+            cx.simulate_resize(size(px(width), px(844.)));
+            for elapsed in [3., 12.5, 15.5] {
+                view.update(cx, |demo, _| {
+                    *demo = VoiceDemo::new();
+                    demo.advance(elapsed);
+                });
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                let bounds = cx.debug_bounds("voice-control").expect("voice status");
+                assert_eq!(bounds.size.width, px(width));
+                assert_eq!(bounds.size.height, px(voice_visual::HEIGHT));
+                assert!(bounds.origin.x >= px(0.));
+                assert!(bounds.origin.y >= px(0.));
+                assert!(bounds.bottom() <= px(844.));
+            }
+        }
+    }
 }
