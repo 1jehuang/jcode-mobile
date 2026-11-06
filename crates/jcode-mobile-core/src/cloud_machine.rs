@@ -29,7 +29,8 @@ pub struct MachineSnapshot {
 // Fixed command only. No interpolation of account, path, or user input. Python
 // reads directory metadata only. gh diagnostics go directly to /dev/null and
 // status is the only authentication information returned. No writes or login.
-pub(crate) const INSPECTION_COMMAND: &str = r#"python3 -I -B - <<'JCODE_MACHINE_INSPECT'
+pub(crate) const INSPECTION_COMMAND: &str = r#"PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; export PATH
+python3 -I -B - <<'JCODE_MACHINE_INSPECT'
 import os, json, shutil, subprocess, itertools
 home = os.path.expanduser('~')
 def safe(s, limit):
@@ -48,7 +49,7 @@ auth = False
 if gh:
     try:
         env = dict(os.environ, GH_PROMPT_DISABLED='1', GIT_TERMINAL_PROMPT='0', GH_NO_UPDATE_NOTIFIER='1')
-        auth = subprocess.run(['gh', 'auth', 'status'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, env=env).returncode == 0
+        auth = subprocess.run(['gh', 'auth', 'status', '--hostname', 'github.com'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, env=env).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         pass
 keys = names(os.path.join(home, '.ssh'), 256)
@@ -175,7 +176,7 @@ mod tests {
             }
         }
         let _cleanup = Cleanup(root.clone());
-        for directory in [".ssh", ".config/gh", "bin", "project"] {
+        for directory in [".ssh", ".config/gh", ".local/bin", "project"] {
             std::fs::create_dir_all(root.join(directory)).unwrap();
         }
         for name in [
@@ -187,10 +188,10 @@ mod tests {
         ] {
             std::fs::write(root.join(name), "NEVER_RETURN_SECRET_CONTENTS").unwrap();
         }
-        let gh = root.join("bin/gh");
+        let gh = root.join(".local/bin/gh");
         std::fs::write(
             &gh,
-            "#!/bin/sh\necho NEVER_RETURN_AUTH_DIAGNOSTICS >&2\nexit 0\n",
+            "#!/bin/sh\n[ \"$*\" = \"auth status --hostname github.com\" ] || exit 1\necho NEVER_RETURN_AUTH_DIAGNOSTICS >&2\nexit 0\n",
         )
         .unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -198,10 +199,7 @@ mod tests {
             .args(["-c", INSPECTION_COMMAND])
             .env_clear()
             .env("HOME", &root)
-            .env(
-                "PATH",
-                format!("{}:/usr/bin:/bin", root.join("bin").display()),
-            )
+            .env("PATH", "/usr/bin:/bin")
             .output()
             .unwrap();
         assert!(output.status.success(), "inspection command failed");
