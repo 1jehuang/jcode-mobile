@@ -14,6 +14,7 @@ fn settle(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
     draw(cx);
     view.update(cx, |app, cx| {
         app.inset_anim = None;
+        app.feel.g.edge_x = 0.;
         cx.notify();
     });
     draw(cx);
@@ -21,8 +22,14 @@ fn settle(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
 
 fn raw_tap(cx: &mut VisualTestContext, position: gpui::Point<gpui::Pixels>) {
     let viewport = cx.update(|window, _| window.viewport_size());
-    assert!(position.x > px(0.) && position.x < viewport.width);
-    assert!(position.y > px(0.) && position.y < viewport.height);
+    assert!(
+        position.x > px(0.) && position.x < viewport.width,
+        "tap {position:?}, viewport {viewport:?}"
+    );
+    assert!(
+        position.y > px(0.) && position.y < viewport.height,
+        "tap {position:?}, viewport {viewport:?}"
+    );
     cx.simulate_event(MouseDownEvent {
         button: MouseButton::Left,
         position,
@@ -93,6 +100,58 @@ fn tap_input(input: &Entity<TextInput>, cx: &mut VisualTestContext) {
     });
     raw_tap(cx, caret.origin + gpui::point(px(2.), px(8.)));
     focused(input, cx);
+}
+
+fn reveal_input(
+    view: &Entity<MobileApp>,
+    input: &Entity<TextInput>,
+    clip: Option<&'static str>,
+    cx: &mut VisualTestContext,
+) {
+    for _ in 0..24 {
+        settle(view, cx);
+        let caret = cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                use gpui::EntityInputHandler;
+                input
+                    .bounds_for_range(0..0, gpui::Bounds::default(), window, cx)
+                    .unwrap()
+            })
+        });
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let keyboard = view.read_with(cx, |app, _| app.keyboard_up);
+        let mut top = px(22.);
+        let mut bottom = viewport.height
+            - px(if keyboard {
+                crate::sim_keyboard::HEIGHT
+            } else {
+                8.
+            });
+        let mut x = viewport.width / 2.;
+        if let Some(selector) = clip {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            top = top.max(bounds.top());
+            bottom = bottom.min(bounds.bottom());
+            x = bounds.center().x;
+        }
+        let point = caret.origin + gpui::point(px(2.), px(8.));
+        if point.y > top + px(4.) && point.y < bottom - px(4.) {
+            raw_tap(cx, point);
+            focused(input, cx);
+            return;
+        }
+        assert!(bottom > top, "input clip collapsed");
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(x, (top + bottom) / 2.),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(
+                px(0.),
+                px(if point.y < top + px(4.) { 80. } else { -80. }),
+            )),
+            touch_phase: gpui::TouchPhase::Moved,
+            modifiers: Modifiers::default(),
+        });
+    }
+    panic!("input never became reachable inside its visible clip");
 }
 
 #[gpui::test]
@@ -289,7 +348,7 @@ fn keyboard_bridge_transfer_editor_preserves_unrelated_draft(cx: &mut TestAppCon
         cx.notify();
     });
     drawer(&view, cx);
-    tap_input(&transfer, cx);
+    reveal_input(&view, &transfer, Some("drawer-overview"), cx);
     settle(&view, cx);
     tap(cx, "sim-key-0");
     assert_eq!(text(&transfer, cx), "q");
@@ -316,7 +375,42 @@ fn keyboard_bridge_apple_link_email_suggestion_and_next_preserve_draft(cx: &mut 
             .update(cx, |input, cx| input.set_text("草稿👩🏽‍💻e\u{301}", cx));
         cx.notify();
     });
-    super::account_coverage::tap(cx, "link-account");
+    // A forced preview keyboard is already visible before any field focuses.
+    // Scroll the settings action above it rather than tapping an occluded bound.
+    for _ in 0..16 {
+        settle(&view, cx);
+        let bounds = cx.debug_bounds("link-account").unwrap();
+        let limit = view.read_with(cx, |app, _| {
+            if app.keyboard_up {
+                844. - crate::sim_keyboard::HEIGHT
+            } else {
+                844.
+            }
+        });
+        if bounds.top() > px(20.) && bounds.bottom() < px(limit) {
+            break;
+        }
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(195.), px(300.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-160.))),
+            touch_phase: gpui::TouchPhase::Moved,
+            modifiers: Modifiers::default(),
+        });
+    }
+    draw(cx);
+    let bounds = cx.debug_bounds("link-account").unwrap();
+    let limit = view.read_with(cx, |app, _| {
+        if app.keyboard_up {
+            844. - crate::sim_keyboard::HEIGHT
+        } else {
+            844.
+        }
+    });
+    assert!(
+        bounds.top() > px(20.) && bounds.bottom() < px(limit),
+        "Apple-link action occluded: {bounds:?}"
+    );
+    tap(cx, "link-account");
     settle(&view, cx);
     let input = cx.update(|window, cx| {
         view.read_with(cx, |app, cx| {
@@ -328,7 +422,7 @@ fn keyboard_bridge_apple_link_email_suggestion_and_next_preserve_draft(cx: &mut 
                 .unwrap()
         })
     });
-    tap_input(&input, cx);
+    reveal_input(&view, &input, None, cx);
     tap(cx, "sim-suggestion");
     assert_eq!(text(&input, cx), "you@example.com");
     let submitted = submissions(&input, cx);
