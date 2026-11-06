@@ -201,6 +201,37 @@ raw touch events**. Receipt: `20261106-012249698-362106`, 108.62 seconds of test
 This corpus exercises the raw campaign's eight surfaces, not every newly inventoried
 service/overlay path. The focused regression suites cover those additional paths.
 
+### Expanded full-suite acceptance
+
+After integrating the surface ledger and fixes, the complete binary suite passed
+all eight configurations on November 6, 2026 (Pacific time):
+
+```sh
+scripts/mobile-fuzz.sh --matrix -- --nocapture
+```
+
+Each process passed **209 tests**, with only the intentionally opt-in inventory
+dump ignored. That is **1,672 passing test executions**, with the reviewed
+production-inventory guard enabled and no test filters/skips. The run took
+336.4 seconds including competing build load. First/final receipts:
+`20261106-014044509-494349` and `20261106-014504189-545062`. Final Clippy of
+the binary and its tests also passed: `20261106-014128835-499822` (warnings remain).
+Validation used local GPUI overrides, not a claim about the unpatched pinned backend.
+
+This pass caught an actual model-sheet click-through at text scale 1.6: a model
+row's center was inside both its actual scroll clip and the account pill underneath.
+Picking the row closed and immediately reopened the sheet via the underlying control.
+The modal now occludes that control. The regression asserts the overlap and successful
+selection. A local-session See More test was also corrected to scroll its real clipped
+overview before tapping, rather than treating offscreen debug bounds as reachability.
+
+A separate Settings test failure reproduced at scheduler seed 47 was caused by
+its seeded entrance animation still moving. Only seeded geometry was settled,
+with the real touch/Chat/tab assertions retained. The corrected test passed
+`SEED=42 ITERATIONS=128`, seeds 42 through 169, receipt
+`20261106-013158332-426759`. This is fixture stabilization, not a production fix
+or evidence of native animation timing.
+
 ## What a passing run means
 
 The suite exercises Rust widget handlers, raw synthetic touch/event routing,

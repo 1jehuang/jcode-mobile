@@ -145,6 +145,17 @@ as production wiring. These are tests of the guard, not mobile UI evidence.
 - A syntactically present named test is not evidence that it passed in the
   current environment. Build/test results must be reported separately.
 
+### Full-suite validation
+
+The final complete headless matrix passed **209 tests in each of eight configurations**,
+**1,672 passing executions**, with this ledger guard enabled and no filters/skips.
+The only ignored test was the opt-in read-only discovery dump. Final receipt:
+`20261106-014504189-545062`. Binary/test Clippy also passed, receipt
+`20261106-014128835-499822` (warnings remain). See `MOBILE_FUZZING.md` for
+raw-corpus replay, minimized model-sheet click-through evidence, and fixture timing
+boundaries. This acceptance used local GPUI overrides and does not clear the
+explicit native/service/visual gaps above.
+
 ### Initial validation receipt
 
 The coordinator ran the inventory guard and synthetic self-tests successfully:
