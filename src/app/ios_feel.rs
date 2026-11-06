@@ -72,6 +72,11 @@ impl MobileApp {
             pushed: self.screen == Screen::Settings,
             sheet_open: self.model_picker && chat,
             at_top,
+            dictate: cfg!(target_os = "ios") && chat && !self.offline
+                && self.account.is_some() && !self.voice.busy && self.voice.recording.is_none()
+                && !self.model_picker && self.tab_menu.is_none() && self.feel.menu.is_none()
+                && self.feel.selection.is_none() && self.feel.rename.is_none()
+                && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5,
             menus: chat
                 && !self.model_picker
                 && self.tab_menu.is_none()
@@ -160,13 +165,14 @@ impl MobileApp {
 
     /// The pull indicator owns connection feedback until it has settled away.
     pub(super) fn feel_reconnect_visible(&self) -> bool {
-        self.feel.g.refreshing.is_some() || self.feel.g.pull > 0.5
+        self.feel.g.refreshing.is_some() || (self.feel.g.pull > 0.5 && !self.feel.g.dictate_pull)
     }
 
     /// The transcript area (empty or not): records bounds for pull to refresh,
     /// shifts content down while pulling and shows the refresh indicator.
     pub(super) fn feel_transcript(&self, body: AnyElement, t: &Theme) -> AnyElement {
         let pull = self.feel.g.pull;
+        let dictate = self.feel.g.dictate_pull;
         let refreshing = self.feel.g.refreshing.is_some();
         let armed = pull >= crate::gestures::PULL_TRIGGER || refreshing;
         let show = pull > 0.5 || refreshing;
@@ -187,6 +193,7 @@ impl MobileApp {
                         .left_0()
                         .right_0()
                         .top(px((pull - 34.).max(0.) / 2.))
+                        .when(dictate, |d| d.top_auto().bottom(px((pull - 34.).max(0.) / 2.)))
                         .h(px(34.))
                         .flex()
                         .items_center()
@@ -203,7 +210,11 @@ impl MobileApp {
                                 .child(self.status_orb.clone()),
                         )
                         .child(label(
-                            if finished {
+                            if dictate && armed {
+                                "Release to dictate"
+                            } else if dictate {
+                                "Scroll past latest to dictate"
+                            } else if finished {
                                 "Connected"
                             } else if refreshing && matches!(self.session.phase, ConnectionPhase::Failed { .. }) {
                                 "Couldn't reconnect"
@@ -219,7 +230,7 @@ impl MobileApp {
                         )),
                 )
             })
-            .child(div().relative().top(px(pull)).flex_1().min_h_0().flex().flex_col().child(body))
+            .child(div().relative().top(px(if dictate { -pull } else { pull })).flex_1().min_h_0().flex().flex_col().child(body))
             .into_any_element()
     }
 
@@ -230,6 +241,7 @@ impl MobileApp {
             }
             Action::DismissSheet => self.model_picker = false,
             Action::Refresh => self.reconnect(cx),
+            Action::Dictate => self.start_overscroll_voice(cx),
             Action::Menu(Target::Message(entry), at) => {
                 self.feel.menu = Some(MsgMenu { entry, at, closing: false });
                 self.feel.menu_anim = 0.;
@@ -384,7 +396,8 @@ impl MobileApp {
                     if phase != DispatchPhase::Capture {
                         return;
                     }
-                    let dy = f(e.delta.pixel_delta(px(20.)).y);
+                    let delta = e.delta.pixel_delta(px(20.));
+                    let dy = f(delta.y);
                     let ended = e.touch_phase == TouchPhase::Ended;
                     let p = e.position;
                     let consumed = h
@@ -396,9 +409,14 @@ impl MobileApp {
                                 // Let the scroll owner unwind its own swipe/list state.
                                 return false;
                             }
+                            if delta.x.abs() > delta.y.abs() && !ended {
+                                return false;
+                            }
                             let (a, consumed) = this.feel.g.wheel(p, dy, ended);
-                            if let Some(Action::Refresh) = a {
-                                this.reconnect(cx);
+                            match a {
+                                Some(Action::Refresh) => this.reconnect(cx),
+                                Some(Action::Dictate) => this.start_overscroll_voice(cx),
+                                _ => {}
                             }
                             if consumed {
                                 cx.notify();
@@ -519,8 +537,10 @@ impl MobileApp {
             self.tab_hold = None;
             self.hold_fired = false;
         }
-        if let Some(Action::Refresh) = a {
-            self.reconnect(cx);
+        match a {
+            Some(Action::Refresh) => self.reconnect(cx),
+            Some(Action::Dictate) => self.start_overscroll_voice(cx),
+            _ => {}
         }
         cx.notify();
         swallow

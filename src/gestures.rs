@@ -38,6 +38,8 @@ pub enum Action {
     DismissSheet,
     /// Pull released past the threshold.
     Refresh,
+    /// Overscroll beyond the newest message released past the threshold.
+    Dictate,
     /// Long press (or right click) on a target, at a window position.
     Menu(Target, Point<Pixels>),
 }
@@ -50,6 +52,8 @@ pub struct Scene {
     pub sheet_open: bool,
     /// Transcript scrolled to the very top (or empty): pull is allowed.
     pub at_top: bool,
+    /// At the newest content and microphone capture is available and idle.
+    pub dictate: bool,
     /// Long-press targets are live (chat screen, no overlay).
     pub menus: bool,
 }
@@ -115,6 +119,7 @@ pub struct Gestures {
     /// Raw pull distance while dragging; `pull` is what is shown.
     pull_raw: f32,
     pub pull: f32,
+    pub dictate_pull: bool,
     pull_armed: bool,
     pub refreshing: Option<Instant>,
     wheel_pull_at: Option<Instant>,
@@ -146,6 +151,7 @@ impl Default for Gestures {
             was_pushed: false,
             pull_raw: 0.,
             pull: 0.,
+            dictate_pull: false,
             pull_armed: false,
             refreshing: None,
             wheel_pull_at: None,
@@ -315,7 +321,10 @@ impl Gestures {
                         self.sheet_y = if y >= 0. { y } else { -rubber(-y, 40.) };
                         self.sheet_target = self.sheet_y;
                     }
-                    Kind::Pull => self.set_pull(f(d.y).max(0.)),
+                    Kind::Pull => {
+                        self.dictate_pull = false;
+                        self.set_pull(f(d.y).max(0.));
+                    }
                 }
             }
             _ => {}
@@ -395,9 +404,13 @@ impl Gestures {
         let fire = self.pull_armed;
         self.pull_armed = false;
         if fire {
-            self.refreshing = Some(now);
             haptics::play(Haptic::Medium);
-            Some(Action::Refresh)
+            if self.dictate_pull {
+                Some(Action::Dictate)
+            } else {
+                self.refreshing = Some(now);
+                Some(Action::Refresh)
+            }
         } else {
             None
         }
@@ -412,13 +425,17 @@ impl Gestures {
     fn wheel_at(&mut self, p: Point<Pixels>, dy: f32, ended: bool, now: Instant) -> (Option<Action>, bool) {
         let pulling = self.wheel_pull_at.is_some();
         if !pulling {
-            let ok = dy > 0. && matches!(self.candidate(p), Some(Kind::Pull)) && !self.dragging();
+            let dictate = dy < 0. && self.scene.dictate && !self.scene.pushed
+                && !self.scene.sheet_open && self.refreshing.is_none()
+                && self.transcript.is_some_and(|b| b.contains(&p));
+            let ok = (dictate || (dy > 0. && matches!(self.candidate(p), Some(Kind::Pull)))) && !self.dragging();
             if !ok {
                 return (None, false);
             }
+            self.dictate_pull = dictate;
         }
         self.wheel_pull_at = Some(now);
-        self.set_pull((self.pull_raw + dy).max(0.));
+        self.set_pull((self.pull_raw + if self.dictate_pull { -dy } else { dy }).max(0.));
         if ended || self.pull_raw <= 0. {
             return (self.release_pull(now), true);
         }
@@ -720,6 +737,46 @@ mod tests {
                 assert_eq!(actions, if cancel { vec![] } else { vec![Action::Refresh] });
                 assert!(g.tick_at(g.scene, start + std::time::Duration::from_secs(1)).0.is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn bottom_overscroll_dictates_only_after_deliberate_release() {
+        let now = Instant::now();
+        let p = point(px(100.), px(200.));
+        for ended in [false, true] {
+            let mut g = configured(Scene { dictate: true, ..Default::default() }, now);
+            assert_eq!(g.wheel_at(p, -40., false, now), (None, true));
+            assert!(!g.pull_armed);
+            assert_eq!(g.wheel_at(p, -160., false, now), (None, true));
+            assert!(g.pull_armed);
+            let action = if ended {
+                g.wheel_at(p, 0., true, now).0
+            } else {
+                g.tick_at(g.scene, now + std::time::Duration::from_millis(181)).0.pop()
+            };
+            assert_eq!(action, Some(Action::Dictate));
+            assert!(g.refreshing.is_none());
+            assert!(g.tick_at(g.scene, now + std::time::Duration::from_secs(1)).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn bottom_overscroll_requires_eligibility_and_cancels_safely() {
+        let now = Instant::now();
+        let p = point(px(100.), px(200.));
+        for scene in [Scene::default(), Scene { dictate: true, pushed: true, ..Default::default() },
+            Scene { dictate: true, sheet_open: true, ..Default::default() }] {
+            let mut g = configured(scene, now);
+            assert_eq!(g.wheel_at(p, -300., true, now), (None, false));
+        }
+        for cancel in [false, true] {
+            let mut g = configured(Scene { dictate: true, ..Default::default() }, now);
+            g.wheel_at(p, -200., false, now);
+            if cancel { g.cancel(); }
+            else { g.wheel_at(p, 200., false, now); }
+            assert_eq!(g.wheel_at(p, 0., true, now).0, None);
+            assert!(g.tick_at(g.scene, now + std::time::Duration::from_secs(1)).0.is_empty());
         }
     }
 

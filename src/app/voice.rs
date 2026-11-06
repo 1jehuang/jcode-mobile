@@ -19,6 +19,19 @@ impl VoiceState {
     }
 }
 impl MobileApp {
+    /// Overscroll only starts capture. Repeated gestures must never stop it.
+    pub(super) fn start_overscroll_voice(&mut self, cx: &mut Context<Self>) {
+        if cfg!(target_os = "ios") && self.scene_allows_voice() {
+            self.toggle_voice(cx);
+        }
+    }
+
+    fn scene_allows_voice(&self) -> bool {
+        self.screen == Screen::Chat && !self.offline && self.account.is_some()
+            && !self.voice.busy && self.voice.recording.is_none()
+            && !self.model_picker && self.tab_menu.is_none()
+    }
+
     fn finish_dictation(&mut self, generation: u64, tab: u64, result: Result<String, String>, cx: &mut Context<Self>) {
         if self.voice.generation != generation || self.active_tab != tab { return; }
         self.voice.busy = false;
