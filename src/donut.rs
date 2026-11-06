@@ -2,7 +2,7 @@
 //! website's own `site-visual` torus field, screened through the 45-degree
 //! halftone lattice with the same gamma, radius and motion.
 
-use std::time::Instant;
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use crate::donut_field::{DonutOptions, render};
 use gpui::{
@@ -43,18 +43,96 @@ fn orientation(elapsed: f64, reduce_motion: bool, tilt: f64, spin: f64) -> (f64,
     )
 }
 
-fn sample(lum: &[f32], gx: f32, gy: f32) -> f32 {
-    let g = GRID as f32;
-    if gx < 0.0 || gy < 0.0 || gx > g - 2.0 || gy > g - 2.0 {
-        return 0.0;
+#[derive(Clone, Copy)]
+struct Sample {
+    offset: usize,
+    fx: f32,
+    fy: f32,
+}
+
+impl Sample {
+    fn new(gx: f32, gy: f32) -> Option<Self> {
+        let g = GRID as f32;
+        if gx < 0.0 || gy < 0.0 || gx > g - 2.0 || gy > g - 2.0 {
+            return None;
+        }
+        let (x0, y0) = (gx.floor() as usize, gy.floor() as usize);
+        let (fx, fy) = (gx - x0 as f32, gy - y0 as f32);
+        Some(Self {
+            offset: x0 + y0 * GRID,
+            fx,
+            fy,
+        })
     }
-    let (x0, y0) = (gx.floor() as usize, gy.floor() as usize);
-    let (fx, fy) = (gx - x0 as f32, gy - y0 as f32);
-    let at = |x: usize, y: usize| lum[x + y * GRID];
-    at(x0, y0) * (1.0 - fx) * (1.0 - fy)
-        + at(x0 + 1, y0) * fx * (1.0 - fy)
-        + at(x0, y0 + 1) * (1.0 - fx) * fy
-        + at(x0 + 1, y0 + 1) * fx * fy
+
+    fn read(self, lum: &[f32]) -> f32 {
+        let Self { offset, fx, fy } = self;
+        // Preserve the original multiply/add order, not precombined weights.
+        lum[offset] * (1.0 - fx) * (1.0 - fy)
+            + lum[offset + 1] * fx * (1.0 - fy)
+            + lum[offset + GRID] * (1.0 - fx) * fy
+            + lum[offset + GRID + 1] * fx * fy
+    }
+}
+
+struct Dot {
+    x: f32,
+    y: f32,
+    sample: Sample,
+}
+
+#[derive(Default)]
+struct DonutCache {
+    lum: Vec<f32>,
+    orientation: Option<(u64, u64)>,
+    width: Option<u32>,
+    dots: Vec<Dot>,
+}
+
+impl DonutCache {
+    fn prepare(&mut self, w: f32, tilt: f64, spin: f64) {
+        let orientation = (tilt.to_bits(), spin.to_bits());
+        if self.orientation != Some(orientation) {
+            self.lum.resize(GRID * GRID, 0.0);
+            // render clears the reused output, including pixels missed this frame.
+            render(field_options(tilt, spin), &mut self.lum);
+            self.orientation = Some(orientation);
+        }
+        if self.width == Some(w.to_bits()) {
+            return;
+        }
+        self.dots.clear();
+        let s = w / CELLS;
+        let half = w / 2.0;
+        let (sin_a, cos_a) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let ext = (CELLS * std::f32::consts::FRAC_1_SQRT_2).ceil() as i32 + 1;
+        for j in -ext..=ext {
+            for i in -ext..=ext {
+                let (i, j) = (i as f32, j as f32);
+                let x = half + (i * cos_a - j * sin_a) * s;
+                let y = half + (i * sin_a + j * cos_a) * s;
+                if x < -s || x > w + s || y < -s || y > w + s {
+                    continue;
+                }
+                if let Some(sample) = Sample::new(x / w * GRID as f32, y / w * GRID as f32) {
+                    self.dots.push(Dot { x, y, sample });
+                }
+            }
+        }
+        self.width = Some(w.to_bits());
+    }
+}
+
+fn field_options(tilt: f64, spin: f64) -> DonutOptions {
+    DonutOptions {
+        columns: GRID,
+        rows: GRID,
+        tilt,
+        spin,
+        steps: 48,
+        refine: true,
+        sharp: false,
+    }
 }
 
 #[derive(Default)]
@@ -62,6 +140,9 @@ struct Rotation {
     last: Option<Point<Pixels>>,
     tilt: f64,
     spin: f64,
+    // The keyed rotation survives element recreation. Keep its renderer cache
+    // alongside it, without notifying the view when only cached pixels change.
+    cache: Rc<RefCell<DonutCache>>,
 }
 
 impl Rotation {
@@ -127,6 +208,7 @@ fn interactive_donut(
 ) -> impl IntoElement {
     let tilt = rotation.read(cx).tilt;
     let spin = rotation.read(cx).spin;
+    let cache = rotation.read(cx).cache.clone();
     let down = rotation.clone();
     let movement = rotation.clone();
     let up = rotation.clone();
@@ -164,7 +246,7 @@ fn interactive_donut(
         .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
             rotation.update(cx, |state, _| state.last = None);
         })
-        .child(donut_canvas(side, ink, started, tilt, spin))
+        .child(donut_canvas(side, ink, started, tilt, spin, cache))
         .child(
             canvas(
                 |_, _, _| {},
@@ -202,7 +284,14 @@ pub fn spinning_donut(side: f32, ink: Hsla, started: Instant) -> impl IntoElemen
     InteractiveDonut { side, ink, started }
 }
 
-fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) -> impl IntoElement {
+fn donut_canvas(
+    side: f32,
+    ink: Hsla,
+    started: Instant,
+    tilt: f64,
+    spin: f64,
+    cache: Rc<RefCell<DonutCache>>,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
@@ -212,49 +301,27 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
                 tilt,
                 spin,
             );
-            // Same orientation as makeDonut().render() on the site.
-            let mut lum = vec![0.0f32; GRID * GRID];
-            render(
-                DonutOptions {
-                    columns: GRID,
-                    rows: GRID,
-                    tilt,
-                    spin,
-                    steps: 48,
-                    refine: true,
-                    sharp: false,
-                },
-                &mut lum,
-            );
             let w = f32::from(bounds.size.width);
+            let mut cache = cache.borrow_mut();
+            cache.prepare(w, tilt, spin);
             let s = w / CELLS;
-            let half = w / 2.0;
-            let (sin_a, cos_a) = std::f32::consts::FRAC_PI_4.sin_cos();
-            let ext = (CELLS * std::f32::consts::FRAC_1_SQRT_2).ceil() as i32 + 1;
-            for j in -ext..=ext {
-                for i in -ext..=ext {
-                    let (i, j) = (i as f32, j as f32);
-                    let px_ = half + (i * cos_a - j * sin_a) * s;
-                    let py_ = half + (i * sin_a + j * cos_a) * s;
-                    if px_ < -s || px_ > w + s || py_ < -s || py_ > w + s {
-                        continue;
-                    }
-                    let v = sample(&lum, px_ / w * GRID as f32, py_ / w * GRID as f32);
-                    if v <= 0.04 {
-                        continue;
-                    }
-                    let r = v.powf(0.85) * s * 0.48;
-                    window.paint_quad(
-                        gpui::fill(
-                            Bounds::new(
-                                point(bounds.origin.x + px(px_ - r), bounds.origin.y + px(py_ - r)),
-                                size(px(2.0 * r), px(2.0 * r)),
-                            ),
-                            ink,
-                        )
-                        .corner_radii(px(r)),
-                    );
+            for dot in &cache.dots {
+                let (px_, py_) = (dot.x, dot.y);
+                let v = dot.sample.read(&cache.lum);
+                if v <= 0.04 {
+                    continue;
                 }
+                let r = v.powf(0.85) * s * 0.48;
+                window.paint_quad(
+                    gpui::fill(
+                        Bounds::new(
+                            point(bounds.origin.x + px(px_ - r), bounds.origin.y + px(py_ - r)),
+                            size(px(2.0 * r), px(2.0 * r)),
+                        ),
+                        ink,
+                    )
+                    .corner_radii(px(r)),
+                );
             }
             if animate {
                 window.request_animation_frame();
@@ -268,6 +335,125 @@ fn donut_canvas(side: f32, ink: Hsla, started: Instant, tilt: f64, spin: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Original sampling/geometry path, intentionally independent of the cache.
+    fn legacy_dots(lum: &[f32], w: f32) -> Vec<(u32, u32, u32)> {
+        let s = w / CELLS;
+        let half = w / 2.0;
+        let (sin_a, cos_a) = std::f32::consts::FRAC_PI_4.sin_cos();
+        let ext = (CELLS * std::f32::consts::FRAC_1_SQRT_2).ceil() as i32 + 1;
+        let mut dots = Vec::new();
+        for j in -ext..=ext {
+            for i in -ext..=ext {
+                let (i, j) = (i as f32, j as f32);
+                let x = half + (i * cos_a - j * sin_a) * s;
+                let y = half + (i * sin_a + j * cos_a) * s;
+                if x < -s || x > w + s || y < -s || y > w + s {
+                    continue;
+                }
+                let (gx, gy) = (x / w * GRID as f32, y / w * GRID as f32);
+                let g = GRID as f32;
+                let v = if gx < 0.0 || gy < 0.0 || gx > g - 2.0 || gy > g - 2.0 {
+                    0.0
+                } else {
+                    let (x0, y0) = (gx.floor() as usize, gy.floor() as usize);
+                    let (fx, fy) = (gx - x0 as f32, gy - y0 as f32);
+                    let at = |x: usize, y: usize| lum[x + y * GRID];
+                    at(x0, y0) * (1.0 - fx) * (1.0 - fy)
+                        + at(x0 + 1, y0) * fx * (1.0 - fy)
+                        + at(x0, y0 + 1) * (1.0 - fx) * fy
+                        + at(x0 + 1, y0 + 1) * fx * fy
+                };
+                if v <= 0.04 {
+                    continue;
+                }
+                let r = v.powf(0.85) * s * 0.48;
+                dots.push(((x - r).to_bits(), (y - r).to_bits(), r.to_bits()));
+            }
+        }
+        dots
+    }
+
+    fn cached_dots(cache: &DonutCache, w: f32) -> Vec<(u32, u32, u32)> {
+        let s = w / CELLS;
+        cache
+            .dots
+            .iter()
+            .filter_map(|dot| {
+                let v = dot.sample.read(&cache.lum);
+                if v <= 0.04 {
+                    return None;
+                }
+                let r = v.powf(0.85) * s * 0.48;
+                Some(((dot.x - r).to_bits(), (dot.y - r).to_bits(), r.to_bits()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cached_fields_and_calibrated_dot_geometry_match_legacy_bits() {
+        let mut cache = DonutCache::default();
+        for (tilt, spin) in [(1., 0.), (1.2, 0.7), (-0.3, 5.9), (1., 0.)] {
+            let mut legacy = vec![0.; GRID * GRID];
+            render(field_options(tilt, spin), &mut legacy);
+            for w in [140., 139.75, 280., 73.125, 140.] {
+                cache.prepare(w, tilt, spin);
+                assert_eq!(cache.lum, legacy, "reused field must clear stale pixels");
+                assert_eq!(cached_dots(&cache, w), legacy_dots(&legacy, w));
+            }
+        }
+    }
+
+    #[test]
+    fn identical_orientation_reuses_field_and_grid_but_drag_invalidates_field() {
+        let mut cache = DonutCache::default();
+        cache.prepare(140., 1., 0.);
+        let field = cache.lum.as_ptr();
+        let grid = cache.dots.as_ptr();
+        // A sentinel proves a cache hit skips rendering, rather than just producing
+        // an equal field. Width changes must not invalidate the luminance field.
+        cache.lum[0] = -123.;
+        cache.prepare(140., 1., 0.);
+        assert_eq!(cache.lum[0], -123.);
+        assert_eq!(cache.dots.as_ptr(), grid);
+        cache.prepare(141., 1., 0.);
+        assert_eq!(cache.lum[0], -123.);
+        cache.prepare(141., 1.5, 0.75);
+        assert_eq!(cache.lum.as_ptr(), field);
+        let mut expected = vec![0.; GRID * GRID];
+        render(field_options(1.5, 0.75), &mut expected);
+        assert_eq!(cache.lum, expected);
+    }
+
+    #[test]
+    #[ignore = "CPU comparison benchmark: run with --ignored --nocapture"]
+    fn benchmark_legacy_vs_cached_donut() {
+        use std::hint::black_box;
+        for reduced in [false, true] {
+            let frames = 100;
+            let mut cache = DonutCache::default();
+            cache.prepare(140., 1., 0.); // Compare steady-state rerenders.
+            let start = Instant::now();
+            for frame in 1..=frames {
+                let (tilt, spin, _) = orientation(frame as f64 / 60., reduced, 0., 0.);
+                let mut lum = vec![0.; GRID * GRID];
+                render(field_options(tilt, spin), &mut lum);
+                black_box(legacy_dots(black_box(&lum), black_box(140.)));
+            }
+            let legacy = start.elapsed();
+            let start = Instant::now();
+            for frame in 1..=frames {
+                let (tilt, spin, _) = orientation(frame as f64 / 60., reduced, 0., 0.);
+                cache.prepare(black_box(140.), black_box(tilt), black_box(spin));
+                black_box(cached_dots(black_box(&cache), black_box(140.)));
+            }
+            let optimized = start.elapsed();
+            eprintln!(
+                "donut reduced={reduced}, {frames} frames: legacy={legacy:?}, cached={optimized:?}, speedup={:.2}x; field allocations {frames} -> 0 (steady state)",
+                legacy.as_secs_f64() / optimized.as_secs_f64()
+            );
+        }
+    }
 
     #[test]
     fn reduced_motion_freezes_time_but_preserves_explicit_rotation() {
@@ -318,6 +504,7 @@ mod tests {
                 last: Some(point(px(0.), px(0.))),
                 tilt: 0.5,
                 spin: 0.75,
+                ..Default::default()
             };
             rotation.drag_to(position, side);
             assert_eq!((rotation.tilt, rotation.spin), (0.5, 0.75));
