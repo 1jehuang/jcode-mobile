@@ -14,6 +14,10 @@ dirs = "6"
 ureq = { version = "3", features = ["json"] }
 # Harness API client, Jcode Cloud control plane and pure-Rust SSH (iOS-safe).
 jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "c725fa31511ed80a8a4c03a9a3a29eee4815e0e1", features = ["ssh-native"] }
+# Match the SDK's pure-Rust SSH stack, with RSA disabled.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+rand = "0.10"
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "macros"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 security-framework = { version = "3", default-features = false }
