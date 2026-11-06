@@ -1460,6 +1460,23 @@ impl MobileApp {
         cx.notify();
     }
 
+    /// Both the active viewport and the inert neighbor shield own the same
+    /// drag. Crossing their boundary must not lose movement or cancellation.
+    fn panel_wheel(&mut self, ev: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
+        if ev.touch_phase == gpui::TouchPhase::Cancelled {
+            self.swipe.cancel(self.content_width(), std::time::Instant::now());
+            cx.notify();
+            return;
+        }
+        let d = ev.delta.pixel_delta(px(20.));
+        if self.swipe.feed(f32::from(d.x), f32::from(d.y), std::time::Instant::now()) {
+            cx.notify();
+        }
+        if ev.touch_phase == gpui::TouchPhase::Ended {
+            self.end_swipe(cx);
+        }
+    }
+
     /// Chat panel that slides with a horizontal swipe and settles into the neighbor tab.
     fn render_chat(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let width = self.content_width();
@@ -1486,21 +1503,7 @@ impl MobileApp {
             .flex_col()
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
-                if ev.touch_phase == gpui::TouchPhase::Cancelled {
-                    this.swipe.cancel(this.content_width(), std::time::Instant::now());
-                    cx.notify();
-                    return;
-                }
-                let d = ev.delta.pixel_delta(px(20.));
-                let now = std::time::Instant::now();
-                if this.swipe.feed(f32::from(d.x), f32::from(d.y), now) {
-                    // Not window.request_animation_frame(): it reads the render
-                    // stack and panics outside render. Render re-arms frames.
-                    cx.notify();
-                }
-                if ev.touch_phase == gpui::TouchPhase::Ended {
-                    this.end_swipe(cx);
-                }
+                this.panel_wheel(ev, cx);
             }))
             .child(
                 div()

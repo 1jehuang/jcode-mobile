@@ -60,7 +60,11 @@ impl MobileApp {
                 .flex_none().child(self.render_composer_for(session, &parked.preview_composer, true, t, window, cx)))
             // Paint an opaque hit-test layer last. The matching visuals are not
             // live controls until navigation commits, and never take IME focus.
-            .child(div().absolute().inset_0().occlude())
+            .child(div().absolute().inset_0().occlude()
+                .on_scroll_wheel(cx.listener(|this, event, _, cx| {
+                    this.panel_wheel(event, cx);
+                    cx.stop_propagation();
+                })))
             .into_any_element())
     }
 }
@@ -186,6 +190,31 @@ Third output line".into(),
         }));
         draw(cx);
         near(cx.debug_bounds("chat-composer").unwrap().origin.y, composer.origin.y, "focused destination composer");
+    }
+
+    #[gpui::test]
+    fn wheel_over_preview_continues_and_commits_without_idle_timeout(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        let panel = cx.debug_bounds("panel-preview-0").unwrap();
+        let at = point(panel.right() - px(30.), panel.top() + px(100.));
+        assert!(at.x > px(0.) && at.x < px(390.));
+        for (phase, dx) in [(gpui::TouchPhase::Moved, 40.), (gpui::TouchPhase::Ended, 0.)] {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: at,
+                delta: gpui::ScrollDelta::Pixels(point(px(dx), px(0.))),
+                modifiers: Modifiers::default(),
+                touch_phase: phase,
+            });
+            draw(cx);
+        }
+        view.read_with(cx, |app, cx| {
+            assert_eq!(app.active_tab, 0, "release over the preview must commit immediately");
+            assert!(!app.swipe.active && app.swipe.last_event.is_none());
+            assert_eq!(app.composer.read(cx).text(), DRAFT);
+            assert_eq!(app.parked.len(), 1);
+        });
     }
 
     #[gpui::test]
