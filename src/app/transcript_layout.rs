@@ -78,8 +78,10 @@ pub(super) fn key(
     }
 }
 
+type Measurements = HashMap<(u64, u64), (Key, Pixels)>;
+
 #[derive(Clone, Default)]
-pub(super) struct Heights(Rc<RefCell<HashMap<(u64, u64), (Key, Pixels)>>>);
+pub(super) struct Heights(Rc<RefCell<Measurements>>);
 
 impl Heights {
     pub fn get(&self, key: Key) -> Option<Pixels> {
