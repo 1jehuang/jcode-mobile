@@ -140,13 +140,17 @@ impl MobileApp {
             return None;
         }
         let offline = self.offline;
+        let auth_generation = self.auth_generation;
         let panel = self.apple_link.get_or_insert_with(|| {
             let panel = cx.new(|cx| {
                 let mut panel = AppleLinkPanel::new(account, cx);
                 panel.offline |= offline;
                 panel
             });
-            cx.subscribe(&panel, |this, _, ev: &LinkedEvent, cx| {
+            cx.subscribe(&panel, move |this, _, ev: &LinkedEvent, cx| {
+                if this.auth_generation != auth_generation {
+                    return;
+                }
                 if let Some(a) = this.account.as_mut() {
                     if a.api_key != ev.api_key || a.api_base != ev.api_base {
                         return;
@@ -641,6 +645,21 @@ mod haptic_tests {
                 app.account.as_ref().unwrap().email.as_deref(),
                 Some("right@example.test")
             )
+        });
+        app.update(cx, |app, _| app.invalidate_auth());
+        replacement.update(cx, |_, cx| {
+            cx.emit(LinkedEvent {
+                api_key: "other-account".into(),
+                api_base: account().api_base,
+                email: Some("late-same-key@example.test".into()),
+            })
+        });
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.account.as_ref().unwrap().email.as_deref(),
+                Some("right@example.test")
+            );
         });
     }
 
