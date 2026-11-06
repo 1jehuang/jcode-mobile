@@ -313,6 +313,24 @@ impl Gestures {
         self.pull_armed = armed;
     }
 
+    /// Abandon pointer recognition without treating cancellation as a release.
+    /// Existing refresh work stays alive, but an armed pull cannot start new work.
+    pub fn cancel(&mut self) {
+        self.drag = Drag::Idle;
+        self.vx = 0.;
+        self.vy = 0.;
+        self.last_t = Instant::now();
+        self.edge_target = 0.;
+        self.pending_back = false;
+        self.sheet_target = 0.;
+        self.pending_dismiss = false;
+        self.sheet_linger = false;
+        self.pull_raw = 0.;
+        self.pull_armed = false;
+        self.wheel_pull_at = None;
+        // Keep visible offsets intact so tick springs them home instead of jumping.
+    }
+
     /// Pointer released. Returns (action, swallow the click).
     pub fn up(&mut self) -> (Option<Action>, bool) {
         let drag = std::mem::replace(&mut self.drag, Drag::Idle);
@@ -487,6 +505,104 @@ mod tests {
         let mut g = Gestures::default();
         g.screen = Bounds::new(point(px(0.), px(0.)), size(px(390.), px(844.)));
         g
+    }
+
+    /// Advance real animation logic deterministically, without sleeping.
+    fn assert_cancel_unwinds(g: &mut Gestures, scene: Scene) {
+        assert!(!g.dragging());
+        assert_eq!(g.up(), (None, false));
+        assert_eq!((g.vx, g.vy), (0., 0.));
+        assert!(!g.pending_back && !g.pending_dismiss && !g.pull_armed);
+        assert_eq!(g.pull_raw, 0.);
+        assert!(g.wheel_pull_at.is_none());
+        for _ in 0..200 {
+            g.last_frame = Instant::now() - std::time::Duration::from_millis(50);
+            assert!(g.tick(scene).0.is_empty(), "cancel must not emit an action");
+        }
+        assert_eq!(g.edge_x, 0.);
+        assert_eq!(g.sheet_y, 0.);
+        assert_eq!(g.pull, if g.refreshing.is_some() { PULL_REST } else { 0. });
+    }
+
+    #[test]
+    fn cancelled_edge_swipe_unwinds_without_back() {
+        let mut g = g();
+        let scene = Scene { pushed: true, ..Default::default() };
+        g.tick(scene);
+        g.edge_x = 0.;
+        g.down(point(px(5.), px(400.)), true);
+        g.moved(point(px(300.), px(400.)));
+        assert!(g.dragging());
+        assert!(g.edge_x > g.width() * 0.35);
+        g.cancel();
+        assert_eq!(g.edge_x, 295., "cancellation must spring, not jump");
+        assert_cancel_unwinds(&mut g, scene);
+    }
+
+    #[test]
+    fn cancelled_sheet_drag_unwinds_without_dismiss() {
+        let mut g = g();
+        let scene = Scene { sheet_open: true, ..Default::default() };
+        g.sheet = Some(Bounds::new(point(px(0.), px(300.)), size(px(390.), px(500.))));
+        g.tick(scene);
+        g.sheet_y = 0.;
+        g.down(point(px(200.), px(310.)), true);
+        g.moved(point(px(200.), px(610.)));
+        assert!(g.dragging());
+        assert!(g.sheet_y > 110.);
+        g.cancel();
+        assert_eq!(g.sheet_y, 300.);
+        assert_cancel_unwinds(&mut g, scene);
+    }
+
+    #[test]
+    fn cancelled_armed_pull_unwinds_without_refresh() {
+        let mut g = g();
+        let scene = Scene { at_top: true, ..Default::default() };
+        g.transcript = Some(Bounds::new(point(px(0.), px(100.)), size(px(390.), px(600.))));
+        g.tick(scene);
+        g.down(point(px(100.), px(200.)), true);
+        g.moved(point(px(100.), px(420.)));
+        assert!(g.pull_armed);
+        let pull = g.pull;
+        g.cancel();
+        assert_eq!(g.pull, pull);
+        assert_cancel_unwinds(&mut g, scene);
+        assert!(g.refreshing.is_none());
+    }
+
+    #[test]
+    fn cancelled_pending_press_does_not_open_menu() {
+        let mut g = g();
+        let scene = Scene { menus: true, ..Default::default() };
+        g.tick(scene);
+        g.hits.push((Target::Message(7), Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)))));
+        g.down(point(px(10.), px(10.)), false);
+        if let Drag::Pending { t0, .. } = &mut g.drag {
+            *t0 = Instant::now() - std::time::Duration::from_secs(1);
+        } else {
+            panic!("expected pending press");
+        }
+        g.cancel();
+        assert_cancel_unwinds(&mut g, scene);
+    }
+
+    #[test]
+    fn cancelled_wheel_pull_clears_idle_release_and_preserves_existing_refresh() {
+        let mut g = g();
+        let scene = Scene { at_top: true, ..Default::default() };
+        g.transcript = Some(Bounds::new(point(px(0.), px(100.)), size(px(390.), px(600.))));
+        g.tick(scene);
+        assert_eq!(g.wheel(point(px(100.), px(200.)), 220., false), (None, true));
+        assert!(g.pull_armed && g.wheel_pull_at.is_some());
+        g.cancel();
+        assert_cancel_unwinds(&mut g, scene);
+        assert!(g.refreshing.is_none());
+        let refresh = Instant::now();
+        g.refreshing = Some(refresh);
+        g.cancel();
+        assert_cancel_unwinds(&mut g, scene);
+        assert_eq!(g.refreshing, Some(refresh));
     }
 
     #[test]

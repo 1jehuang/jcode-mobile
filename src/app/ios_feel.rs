@@ -411,6 +411,13 @@ impl MobileApp {
                     let claim = h
                         .update(cx, |this, cx| {
                             this.sync_gestures();
+                            if e.phase == TouchPhase::Cancelled {
+                                this.feel.g.cancel();
+                                this.tab_hold = None;
+                                this.hold_fired = false;
+                                cx.notify();
+                                return true;
+                            }
                             if this.feel.selection.is_some() {
                                 return false;
                             }
