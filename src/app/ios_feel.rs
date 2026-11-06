@@ -457,7 +457,9 @@ impl MobileApp {
                     }
                     let (p, b) = (e.position, e.button);
                     h.update(cx, |this, cx| {
-                        if b == MouseButton::Left && this.git_down(p) { return; }
+                        if b == MouseButton::Left && this.feel.menu.is_none()
+                            && this.feel.selection.is_none() && this.feel.rename.is_none()
+                            && this.git_down(p) { return; }
                         if this.git_info.open { return; }
                         this.sync_gestures();
                         match b {
@@ -560,6 +562,11 @@ impl MobileApp {
                     let claim = h
                         .update(cx, |this, cx| {
                             if this.git_info.open { return false; }
+                            // Modal controls can overlap the recorded Git handle.
+                            // Do not claim their raw touch before hit testing reaches
+                            // the overlay (notably selection's top-right Done button).
+                            if this.feel.selection.is_some() || this.feel.rename.is_some()
+                                || this.feel.menu.is_some() { return false; }
                             if e.phase == TouchPhase::Started && this.git_down(e.start_position) {
                                 this.git_move(e.position, cx);
                                 return true;
@@ -878,6 +885,7 @@ impl MobileApp {
                 .cursor_pointer().child(label(text, t.text_strong, 14.))
         };
         div()
+            .occlude()
             .absolute().inset_0().p(px(16.)).pt(px(60.)).pb(px(32.))
             .bg(t.background).flex().flex_col().gap(px(8.))
             .child(
@@ -1006,6 +1014,7 @@ impl MobileApp {
         };
         div()
             .id("rename-overlay")
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
