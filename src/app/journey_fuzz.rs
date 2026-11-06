@@ -29,7 +29,7 @@ fn seeded_stateful_account_tab_draft_and_pending_prompt_journeys(cx: &mut TestAp
         let mut active = 0_u64;
         view.update(cx, |app, cx| app.adopt_account(account(), cx));
         for step in 0..256 {
-            let action = next(&mut random) % 10;
+            let action = next(&mut random) % 12;
             let choice = next(&mut random);
             cx.update(|window, cx| {
                 view.update(cx, |app, cx| {
@@ -102,6 +102,31 @@ fn seeded_stateful_account_tab_draft_and_pending_prompt_journeys(cx: &mut TestAp
                                     [choice as usize % 4],
                             );
                             app.cancel(cx);
+                        }
+                        9 => {
+                            let ready = choice & 1 == 0;
+                            app.session.phase = if ready {
+                                ConnectionPhase::Connected
+                            } else {
+                                ConnectionPhase::Connecting
+                            };
+                            app.session.session_id = ready.then(|| format!("fixture-{active}"));
+                            let before = (
+                                app.composer.read(cx).text().to_string(),
+                                app.composer.read(cx).selected_text().to_string(),
+                            );
+                            app.flush_pending_send(cx);
+                            if ready {
+                                model.get_mut(&active).unwrap().pending = None;
+                            }
+                            let after = (
+                                app.composer.read(cx).text().to_string(),
+                                app.composer.read(cx).selected_text().to_string(),
+                            );
+                            assert_eq!(
+                                after, before,
+                                "dispatch altered draft/selection seed={initial} step={step}"
+                            );
                         }
                         _ => {
                             let before = app.account.clone();

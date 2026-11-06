@@ -47,6 +47,12 @@ mod lifecycle_coverage;
 #[cfg(test)]
 mod journey_fuzz;
 #[cfg(test)]
+mod status_coverage;
+#[cfg(test)]
+mod modal_ownership_coverage;
+#[cfg(test)]
+mod input_event_coverage;
+#[cfg(test)]
 mod coverage_inventory;
 #[cfg(test)]
 mod scroll_tests;
@@ -750,6 +756,7 @@ impl MobileApp {
                 }))
             }));
         div()
+            .occlude()
             .absolute()
             .inset_0()
             .flex()
@@ -1669,15 +1676,21 @@ impl MobileApp {
     }
 
     /// Provisioning/connecting line shown on an empty session.
-    fn connection_status(&self, t: &Theme) -> AnyElement {
-        let text = match &self.session.phase {
-            ConnectionPhase::Connected | ConnectionPhase::Failed { .. } => return div().into_any_element(),
+    fn connection_status_text(&self) -> Option<String> {
+        Some(match &self.session.phase {
+            ConnectionPhase::Connected | ConnectionPhase::Failed { .. } => return None,
             ConnectionPhase::Connecting => "Connecting to Jcode Cloud…".to_string(),
             ConnectionPhase::Provisioning { message } => message.clone(),
             ConnectionPhase::Reconnecting { attempt } => format!("Reconnecting ({attempt})…"),
             ConnectionPhase::Disconnected => "Disconnected".into(),
-        };
-        orb_row(&self.status_orb, text, t.text_muted).into_any_element()
+        })
+    }
+
+    fn connection_status(&self, t: &Theme) -> AnyElement {
+        let Some(text) = self.connection_status_text() else { return div().into_any_element(); };
+        orb_row(&self.status_orb, text, t.text_muted)
+            .id("connection-status").debug_selector(|| "connection-status".into())
+            .into_any_element()
     }
 
     fn activity(&self) -> Option<&'static str> {
