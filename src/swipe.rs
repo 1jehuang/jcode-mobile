@@ -281,7 +281,11 @@ mod tests {
         assert!(matches!(s.release(390.0, true, true, now), Release::Switch(1)));
         // New panel enters subtly rather than crossing the whole screen.
         let (o, moving) = s.offset(390.0, true, true, now);
-        assert!(moving && o > 0.0 && o <= 48.0);
+        if crate::system::reduce_motion() {
+            assert_eq!((o, moving), (0.0, false));
+        } else {
+            assert!(moving && o > 0.0 && o <= 48.0);
+        }
         let (o, moving) = s.offset(390.0, true, true, now + SETTLE);
         assert!(!moving && o == 0.0);
     }
@@ -338,6 +342,11 @@ mod tests {
         let before = s.offset(390.0, false, true, now).0;
         s.release(390.0, false, true, now);
         let after = s.offset(390.0, false, true, now).0;
-        assert_eq!(before, after);
+        if crate::system::reduce_motion() {
+            // Accessibility removes the settling animation immediately.
+            assert_eq!(after, 0.0);
+        } else {
+            assert_eq!(before, after);
+        }
     }
 }
