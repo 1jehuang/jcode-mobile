@@ -3498,9 +3498,12 @@ dependencies = [
  "dirs 6.0.0",
  "jcode-harness-api",
  "jcode-sdk",
+ "rand 0.10.3",
+ "russh",
  "security-framework",
  "serde",
  "serde_json",
+ "tokio",
  "ureq",
  "uuid",
 ]

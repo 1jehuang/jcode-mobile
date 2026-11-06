@@ -5,6 +5,36 @@
 //! owns on-device account persistence.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+// Keep a pinned, authenticated SSH master in memory briefly. Each tab still
+// gets an independent API channel because the bridge attaches one session per
+// channel. Reusing a JcodeClient itself would silently detach other tabs.
+struct WarmTarget<T> {
+    account: Account,
+    ssh: T,
+    expires: Instant,
+}
+
+impl<T: Clone> WarmTarget<T> {
+    fn for_account(&self, account: &Account, now: Instant) -> Option<T> {
+        (self.account == *account && self.expires > now).then(|| self.ssh.clone())
+    }
+}
+
+type CachedSsh = WarmTarget<crate::cloud_ssh::CloudSsh>;
+static WARM_TARGET: OnceLock<Mutex<Option<CachedSsh>>> = OnceLock::new();
+static COLD_CONNECT: Mutex<()> = Mutex::new(());
+const TARGET_TTL: Duration = Duration::from_secs(5 * 60);
+
+fn warm_target() -> &'static Mutex<Option<CachedSsh>> {
+    WARM_TARGET.get_or_init(|| Mutex::new(None))
+}
+
+fn clear_warm_target() {
+    *warm_target().lock().unwrap() = None;
+}
 
 pub use jcode_sdk::cloud::{
     Account, CloudClient, DEFAULT_API_BASE, DeviceLogin, PushDevice, PushEnvironment, push_token_hex,
@@ -64,6 +94,7 @@ impl AccountStore {
         self.save_file(account)
     }
     pub fn clear(&self) {
+        clear_warm_target();
         #[cfg(target_os = "ios")]
         keychain::clear();
         self.clear_file();
@@ -102,7 +133,9 @@ impl AccountStore {
 #[cfg(target_os = "ios")]
 mod keychain {
     use super::Account;
-    use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
+    use security_framework::passwords::{
+        delete_generic_password, get_generic_password, set_generic_password,
+    };
 
     const SERVICE: &str = "sh.jcode.mobile";
     const ACCOUNT: &str = "account";
@@ -186,7 +219,11 @@ pub fn delete_account(account: &Account) -> Result<(), String> {
     let text = resp.body_mut().read_to_string().unwrap_or_default();
     let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
     let message = body["error"]["message"].as_str().unwrap_or_default();
-    Err(if message.is_empty() { format!("Account deletion failed (HTTP {status})") } else { message.to_string() })
+    Err(if message.is_empty() {
+        format!("Account deletion failed (HTTP {status})")
+    } else {
+        message.to_string()
+    })
 }
 
 /// Wake the account's host and open an SDK client over in-process SSH.
@@ -195,29 +232,68 @@ pub fn connect(
     progress: &dyn Fn(&str),
     cancelled: &dyn Fn() -> bool,
 ) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
-    jcode_sdk::cloud::connect(&client_for(account), account, progress, cancelled)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn account_store_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("jm-acct-{}", std::process::id()));
-        let store = AccountStore::new(dir.join("a.json"));
-        let acct = Account { api_key: "k".into(), email: Some("e@x".into()), api_base: DEFAULT_API_BASE.into() };
-        store.save(&acct).unwrap();
-        assert_eq!(store.load(), Some(acct));
-        store.clear();
-        assert!(store.load().is_none());
+    let check_cancelled = || {
+        if cancelled() {
+            Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"))
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
+    let cached = {
+        let cache = warm_target().lock().unwrap();
+        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
+    };
+    if let Some(ssh) = cached {
+        progress("Connecting to your Jcode Cloud machine…");
+        match ssh.open_client() {
+            Ok(client) => {
+                check_cancelled()?;
+                return Ok(client);
+            }
+            // A stale target goes back through the authenticated control plane.
+            // Its validated pins, never TOFU, authorize the next connection.
+            Err(_) => clear_warm_target(),
+        }
     }
-
-    #[test]
-    fn client_identifies_as_ios_app() {
-        assert_eq!(client().client_name, "jcode-ios");
-        assert_eq!(client().api_base, DEFAULT_API_BASE);
+    // Concurrent new tabs must not all register new keys and hit the cloud's
+    // instance-connect rate limit. Recheck after waiting for another opener.
+    let _opening = COLD_CONNECT.lock().unwrap();
+    check_cancelled()?;
+    let cached = {
+        let cache = warm_target().lock().unwrap();
+        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
+    };
+    if let Some(ssh) = cached {
+        if let Ok(client) = ssh.open_client() {
+            check_cancelled()?;
+            return Ok(client);
+        }
+        clear_warm_target();
     }
+    check_cancelled()?;
+    let mut cloud = client_for(account);
+    cloud.poll_interval = Duration::from_millis(250);
+    let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)?;
+    let target = cloud.wait_for_host(account, key.public_openssh(), progress, cancelled)?;
+    check_cancelled()?;
+    progress("Connecting to your Jcode Cloud machine…");
+    let ssh = crate::cloud_ssh::CloudSsh::connect(target, key)?;
+    check_cancelled()?;
+    let client = ssh.open_client()?;
+    check_cancelled()?;
+    let expires = Instant::now() + TARGET_TTL;
+    *warm_target().lock().unwrap() = Some(WarmTarget { account: account.clone(), ssh, expires });
+    // Expire idle masters even when the user never opens another tab. Live
+    // channels retain their own master handles and are not interrupted.
+    std::thread::spawn(move || {
+        std::thread::sleep(TARGET_TTL);
+        let mut cache = warm_target().lock().unwrap();
+        if cache.as_ref().is_some_and(|entry| entry.expires == expires) {
+            *cache = None;
+        }
+    });
+    Ok(client)
 }
 
 /// Register this phone's APNs token with the account.
@@ -233,4 +309,50 @@ pub fn unregister_push(account: &Account, token_hex: &str) -> Result<(), String>
 /// Reset the server-side unread badge counter.
 pub fn reset_badge(account: &Account) -> Result<(), String> {
     client_for(account).reset_push_badge(account).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_store_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("jm-acct-{}", std::process::id()));
+        let store = AccountStore::new(dir.join("a.json"));
+        let acct =
+            Account { api_key: "k".into(), email: Some("e@x".into()), api_base: DEFAULT_API_BASE.into() };
+        store.save(&acct).unwrap();
+        assert_eq!(store.load(), Some(acct));
+        store.clear();
+        assert!(store.load().is_none());
+    }
+
+    #[test]
+    fn warm_master_is_scoped_to_credentials_endpoint_and_expiry() {
+        let account = Account { api_key: "key-a".into(), email: None, api_base: DEFAULT_API_BASE.into() };
+        let now = Instant::now();
+        let entry = WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL };
+        assert_eq!(entry.for_account(&account, now), Some(7));
+        assert_eq!(entry.for_account(&account, now + TARGET_TTL), None);
+        let mut other = account.clone();
+        other.api_key = "key-b".into();
+        assert_eq!(entry.for_account(&other, now), None);
+        other = account.clone();
+        other.api_base = "https://other.invalid/v1".into();
+        assert_eq!(entry.for_account(&other, now), None);
+    }
+
+    #[test]
+    fn cancelled_connection_does_not_contact_cloud() {
+        let account =
+            Account { api_key: "unused".into(), email: None, api_base: "http://127.0.0.1:1".into() };
+        let result = connect(&account, &|_| panic!("cancelled connection reported progress"), &|| true);
+        assert!(matches!(result, Err(e) if e.kind == jcode_sdk::ErrorKind::Cancelled));
+    }
+
+    #[test]
+    fn client_identifies_as_ios_app() {
+        assert_eq!(client().client_name, "jcode-ios");
+        assert_eq!(client().api_base, DEFAULT_API_BASE);
+    }
 }

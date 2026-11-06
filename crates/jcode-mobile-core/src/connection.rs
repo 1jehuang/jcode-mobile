@@ -248,8 +248,7 @@ fn run(
         if inbox.lock().unwrap().stopped {
             break;
         }
-        let last_error: String;
-        match outcome {
+        let last_error: String = match outcome {
             Ok((client, session)) => {
                 let sid = session.session_id.clone();
                 target_session = Some(sid.clone());
@@ -265,15 +264,15 @@ fn run(
                 if session_loop(&client, &sid, &stream, &inbox, &emit) {
                     break;
                 }
-                last_error = "Connection lost".into();
+                "Connection lost".into()
             }
             Err(Failure::Stopped) => break,
             Err(Failure::Fatal(reason)) => {
                 phase(ConnectionPhase::Failed { reason });
                 return;
             }
-            Err(Failure::Retry(e)) => last_error = e,
-        }
+            Err(Failure::Retry(e)) => e,
+        };
         attempt += 1;
         if let Some(max) = config.max_reconnect_attempts
             && attempt > max
