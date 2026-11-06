@@ -54,7 +54,12 @@ the image or build context.
 
 The isolated `~/.local/share/jcode-mobile-build/bin` contains `justrust`,
 `rcodesign`, `ios-clang`, and `rustup`, with `cargo`, `rustc`, and `rustdoc`
-symlinks to `rustup`. These are tools, not credentials. Cargo cache and build
+symlinks to `rustup`. On the managed host, use the real
+`~/.local/libexec/justrust-cloud-hosted.bin` as the isolated `bin/justrust`, not
+its hosted-policy wrapper in `~/.local/bin/justrust`. The host wrapper stays
+unchanged. This separate invocation is for the unsupported Apple cross-target,
+not a bypass of hosted billing or tenant isolation. These are tools, not
+credentials. Cargo cache and build
 state are separate from the account's existing configuration. The runner mounts
 only the repository, these tools, the SDK/toolchains, and signing profiles.
 
