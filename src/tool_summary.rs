@@ -15,19 +15,20 @@ const SUBJECT_KEYS: [&str; 7] = [
     "target",
 ];
 const HEADLINE_CHARS: usize = 200;
-const CACHE_ENTRIES: usize = 64;
-const CACHE_SOURCE_BYTES: usize = 128 * 1024;
+const CACHE_ENTRIES: usize = 256;
+const CACHE_SOURCE_BYTES: usize = 1024 * 1024;
+const CACHE_INPUT_BYTES: usize = 128 * 1024;
 
 thread_local! {
     static HEADLINES: RefCell<HeadlineCache> = RefCell::new(HeadlineCache::default());
 }
 
 /// Reuse unchanged tool inputs across UI frames. Each thread retains at most
-/// 64 exact source keys totaling 128 KiB, plus their bounded headlines. Inputs
-/// larger than the byte budget bypass the cache without evicting useful keys.
+/// 256 exact source keys totaling 1 MiB, plus their bounded headlines. Inputs
+/// larger than 128 KiB bypass the cache without evicting useful keys.
 /// No tool id or hash is used as identity, so streamed edits cannot be stale.
 pub fn cached_headline(input: &str) -> Option<String> {
-    if input.len() > CACHE_SOURCE_BYTES {
+    if input.len() > CACHE_INPUT_BYTES {
         return headline(input);
     }
     HEADLINES.with(|cache| {
@@ -39,7 +40,7 @@ pub fn cached_headline(input: &str) -> Option<String> {
 
 #[derive(Default)]
 struct HeadlineCache {
-    // Least recently used first. Linear exact comparison is bounded by 64
+    // Least recently used first. Linear exact comparison is bounded by 256
     // entries and avoids hashing the entire source on every repeated frame.
     entries: VecDeque<(Box<str>, Option<Box<str>>)>,
     source_bytes: usize,
@@ -62,7 +63,7 @@ impl HeadlineCache {
             return result;
         }
         let result = compute();
-        if input.len() > CACHE_SOURCE_BYTES {
+        if input.len() > CACHE_INPUT_BYTES {
             return result;
         }
         while self.entries.len() >= CACHE_ENTRIES
@@ -265,23 +266,39 @@ mod tests {
     #[test]
     fn cache_bounds_source_bytes_and_bypasses_oversized_inputs() {
         let mut cache = HeadlineCache::default();
-        let a = "a".repeat(CACHE_SOURCE_BYTES / 2);
-        let b = "b".repeat(CACHE_SOURCE_BYTES / 2);
-        for input in [&a, &b] {
+        let sources: Vec<_> = (0..CACHE_SOURCE_BYTES / CACHE_INPUT_BYTES)
+            .map(|index| {
+                char::from(b'a' + index as u8)
+                    .to_string()
+                    .repeat(CACHE_INPUT_BYTES)
+            })
+            .collect();
+        for input in &sources {
             cache.get_or_insert_with(input, || headline(input));
         }
         assert_eq!(cache.source_bytes, CACHE_SOURCE_BYTES);
         cache.get_or_insert_with("small", || headline("small"));
-        assert_eq!(cache.entries.len(), 2);
-        assert!(!cache.entries.iter().any(|(key, _)| key.as_ref() == a));
-        assert_eq!(cache.source_bytes, CACHE_SOURCE_BYTES / 2 + 5);
-        let oversized = "🦀".repeat(CACHE_SOURCE_BYTES / 4 + 1);
+        assert_eq!(cache.entries.len(), CACHE_SOURCE_BYTES / CACHE_INPUT_BYTES);
+        assert!(
+            !cache
+                .entries
+                .iter()
+                .any(|(key, _)| key.as_ref() == sources[0])
+        );
+        assert_eq!(
+            cache.source_bytes,
+            CACHE_SOURCE_BYTES - CACHE_INPUT_BYTES + 5
+        );
+        let oversized = "🦀".repeat(CACHE_INPUT_BYTES / 4 + 1);
         assert_eq!(
             cache.get_or_insert_with(&oversized, || headline(&oversized)),
             headline(&oversized)
         );
-        assert_eq!(cache.source_bytes, CACHE_SOURCE_BYTES / 2 + 5);
-        assert_eq!(cache.entries.len(), 2);
+        assert_eq!(
+            cache.source_bytes,
+            CACHE_SOURCE_BYTES - CACHE_INPUT_BYTES + 5
+        );
+        assert_eq!(cache.entries.len(), CACHE_SOURCE_BYTES / CACHE_INPUT_BYTES);
         for index in 0..1000 {
             let input = format!("{index}{}", "界".repeat(index));
             cache.get_or_insert_with(&input, || headline(&input));
@@ -312,7 +329,7 @@ mod tests {
                 }
             }
         }
-        let oversized = format!(r#"{{"intent":"{}"}}"#, "界".repeat(CACHE_SOURCE_BYTES));
+        let oversized = format!(r#"{{"intent":"{}"}}"#, "界".repeat(CACHE_INPUT_BYTES));
         assert_eq!(cached_headline(&oversized), headline(&oversized));
     }
 
@@ -321,7 +338,15 @@ mod tests {
     #[ignore = "repeated-frame bounded-cache benchmark, not a timing assertion"]
     fn benchmark_cached_headline_frames() {
         use std::{hint::black_box, time::Instant};
-        for (tools, padding) in [(1, 0), (32, 0), (32, 2048), (64, 0), (80, 0)] {
+        for (tools, padding) in [
+            (1, 0),
+            (32, 0),
+            (32, 2048),
+            (80, 0),
+            (80, 2048),
+            (CACHE_ENTRIES, 0),
+            (CACHE_ENTRIES + 64, 0),
+        ] {
             let inputs: Vec<_> = (0..tools).map(|index| {
                 format!(r#"{{"padding":"{}","path":"src/tool_{index}.rs","intent":"Inspect tool {index}"}}"#, "x".repeat(padding))
             }).collect();
