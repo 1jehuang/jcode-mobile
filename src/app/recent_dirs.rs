@@ -1,11 +1,12 @@
-//! Empty-session quick nav: the blank middle of a fresh tab lists the cloud
-//! directories used most recently, and tapping one restarts the tab there.
+//! Empty-session quick nav: resume recent/live conversations or start in a
+//! recently used cloud directory.
 
 use gpui::{AnyElement, Context, Window, div, prelude::*, px, svg};
 use jcode_mobile_core::Request;
 use jcode_mobile_core::jcode_sdk::SessionInfo;
 
 use super::MobileApp;
+use super::a11y::A11yExt as _;
 use crate::theme::Theme;
 
 const MAX_DIRS: usize = 5;
@@ -155,19 +156,58 @@ impl MobileApp {
         let list = lists.max_by_key(|l| l.len())?;
         let current = self.session.working_dir.as_deref().map(|d| d.trim_end_matches('/'));
         let dirs: Vec<String> = recent_dirs(list).into_iter().filter(|d| Some(d.trim_end_matches('/')) != current).collect();
-        if dirs.is_empty() {
+        let sessions = suggested_sessions(list, self.session.session_id.as_deref());
+        if dirs.is_empty() && sessions.is_empty() {
             return None;
         }
         let mut col = div()
+            .id("start-suggestions")
+            .min_h_0()
+            .max_h(px(360.))
+            .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .child(div().pl(px(2.)).pb(px(2.)).text_size(crate::system::fs(11.)).text_color(t.text_muted).child("Recent directories"));
+            .gap(px(6.));
+        if !sessions.is_empty() {
+            col = col.child(super::label("Pick up where you left off", t.text_muted, 11.).pl(px(2.)).pb(px(2.)));
+        }
+        for (i, session) in sessions.into_iter().enumerate() {
+            let sid = session.session_id.clone();
+            let live = session.status == "running" || session.user_connected;
+            let action = if live { "Attach" } else { "Resume" };
+            let title = super::sidebar::session_title(session);
+            let (location, _) = crate::labels::cloud_location(session.working_dir.as_deref());
+            col = col.child(
+                div()
+                    .id(("suggested-session", i))
+                    .a11y_button(format!("{action} {title}"))
+                    .flex_none()
+                    .min_h(px(52.))
+                    .px(px(12.))
+                    .py(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(12.))
+                    .bg(t.surface)
+                    .cursor_pointer()
+                    .child(div().flex_none().size(px(6.)).rounded_full().bg(if live { t.accent } else { t.text_muted }))
+                    .child(div().flex_1().min_w_0().flex().flex_col()
+                        .child(super::label(title, t.text, 13.5).truncate())
+                        .child(super::label(format!("{} · {location}", if live { "Running" } else { "Recent" }), t.text_muted, 11.).truncate()))
+                    .child(super::label(action, t.accent, 12.).flex_none())
+                    .on_click(cx.listener(move |this, _, _, cx| this.drawer_open_session(sid.clone(), cx))),
+            );
+        }
+        if !dirs.is_empty() {
+            col = col.child(super::label("Recent directories", t.text_muted, 11.).pl(px(2.)).pt(px(6.)).pb(px(2.)));
+        }
         for (i, dir) in dirs.into_iter().enumerate() {
             let (name, parent) = crate::labels::cloud_location(Some(&dir));
             col = col.child(
                 div()
                     .id(("recent-dir", i))
+                    .flex_none()
                     .h(px(44.))
                     .px(px(12.))
                     .flex()
@@ -197,6 +237,21 @@ impl MobileApp {
     }
 }
 
+/// Keep live sessions first, then the most recently active conversations.
+fn suggested_sessions<'a>(sessions: &'a [SessionInfo], current: Option<&str>) -> Vec<&'a SessionInfo> {
+    let mut rows: Vec<_> = sessions.iter()
+        .filter(|s| !s.archived && s.parent_session_id.is_none() && Some(s.session_id.as_str()) != current)
+        .collect();
+    rows.sort_by_key(|s| std::cmp::Reverse((
+        s.status == "running" || s.user_connected,
+        s.updated_at_ms.or(s.last_active_at_ms).map(|v| v.max(0) as u64)
+            .or_else(|| super::sidebar::created_ms(&s.session_id)).unwrap_or(0),
+    )));
+    rows.dedup_by(|a, b| a.session_id == b.session_id);
+    rows.truncate(3);
+    rows
+}
+
 /// Distinct working dirs, newest session first.
 fn recent_dirs(sessions: &[SessionInfo]) -> Vec<String> {
     let mut rows: Vec<&SessionInfo> = sessions.iter().filter(|s| s.parent_session_id.is_none()).collect();
@@ -212,4 +267,35 @@ fn recent_dirs(sessions: &[SessionInfo]) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggestions_prioritize_live_then_activity_and_hide_ineligible_sessions() {
+        let sessions: Vec<SessionInfo> = serde_json::from_value(serde_json::json!([
+            {"session_id":"current", "status":"running", "updated_at_ms":1000},
+            {"session_id":"archived", "status":"running", "archived":true},
+            {"session_id":"agent", "status":"running", "parent_session_id":"owner"},
+            {"session_id":"old", "status":"idle", "updated_at_ms":1},
+            {"session_id":"recent", "status":"idle", "updated_at_ms":100},
+            {"session_id":"running", "status":"running", "last_active_at_ms":2},
+            {"session_id":"connected", "status":"idle", "user_connected":true, "updated_at_ms":3}
+        ])).unwrap();
+        let ids: Vec<_> = suggested_sessions(&sessions, Some("current"))
+            .iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["connected", "running", "recent"]);
+    }
+
+    #[test]
+    fn suggestions_allow_missing_metadata_and_empty_lists() {
+        assert!(suggested_sessions(&[], None).is_empty());
+        let sessions = serde_json::from_value::<Vec<SessionInfo>>(serde_json::json!([
+            {"session_id":"session_older_1700000000000", "status":"idle"},
+            {"session_id":"session_newer_1700000001000", "status":"idle"}
+        ])).unwrap();
+        assert_eq!(suggested_sessions(&sessions, None)[0].session_id, "session_newer_1700000001000");
+    }
 }
