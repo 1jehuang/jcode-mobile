@@ -119,3 +119,39 @@ are coalesced, but an identical result from a later turn remains deliverable.
 
 `APNS_KEY_P8` (PEM contents), `APNS_KEY_ID`, `APNS_TEAM_ID=TAS6ARKDN7`.
 Without them `/v1/push/send` returns `503 push_not_configured`.
+
+## Release validation
+
+Validated on November 6, 2026:
+
+- Mobile core: 47 library tests passed, including stale-turn prevention,
+  queued-follow-up context, duplicate coalescing, and preview formatting.
+- API Worker: 13 push tests and 415 total API tests passed.
+- Wrangler 4.107.0 `deploy --dry-run` bundled the configured Worker successfully
+  without uploading or changing remote resources.
+- Eight isolated workerd runtime cases passed with the production
+  `2025-01-01` compatibility date and `nodejs_compat` flag. Coverage includes
+  all four event kinds, repeated labels/Markdown/lines, preserved caveats and
+  negative values, session/turn routing metadata, and complete emoji clusters.
+
+These checks do not establish delivery or appearance on a physical iPhone.
+The local device probe could not connect to usbmuxd. The API checkout also
+contains a broader managed-cloud branch, so a production rollout must review
+the whole release rather than blindly deploy a notification-only change.
+No production deployment or live test push was performed.
+
+After an approved API rollout and installation of the updated mobile build,
+use an owner's test account and paired iPhone to check:
+
+1. Background/lock the phone and trigger completion, error, input-needed, and
+   wake events in a clearly named test session. Check that title, subtitle,
+   and body each add distinct information, including long and emoji previews.
+2. Check foreground behavior: the visible session suppresses its banner,
+   while an event for another session can still present one.
+3. Tap a banner and verify the correct session opens. Use inline Reply/Answer
+   and verify it reaches that session, not the currently selected tab.
+4. Confirm local fallback and APNs do not both announce the same event, and
+   that later turns with identical results are still deliverable.
+5. Inspect grouped notifications and badge reset behavior after foregrounding.
+
+Do not send test pushes to other users or use production secrets in test logs.
