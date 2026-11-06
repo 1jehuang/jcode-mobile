@@ -220,7 +220,7 @@ impl MobileApp {
                 .rounded(px(10.))
                 .bg(t.surface)
                 .child(div().flex_none().text_size(crate::system::fs(13.)).text_color(t.text_muted).child("⌕"))
-                .child(div().flex_1().min_w_0().child(self.drawer_search.clone())),
+                .child(div().id("drawer-search-input").debug_selector(|| "drawer-search-input".into()).flex_1().min_w_0().child(self.drawer_search.clone())),
         )
     }
 

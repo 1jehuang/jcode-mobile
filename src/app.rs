@@ -1195,7 +1195,7 @@ impl MobileApp {
                                 .child(div().flex_1().h(px(1.)).bg(t.border)),
                         )
                     })
-                    .child(if code_step { self.code.clone() } else { self.email.clone() })
+                    .child(div().id(if code_step { "code-input" } else { "email-input" }).debug_selector(move || if code_step { "code-input".into() } else { "email-input".into() }).w_full().child(if code_step { self.code.clone() } else { self.email.clone() }))
                     .child(
                         outline_button(
                             "submit-sign-in",
@@ -1899,7 +1899,7 @@ impl MobileApp {
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
-                    .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    .child(div().id("composer-input").debug_selector(|| "composer-input".into()).flex_1().min_w_0().child(self.composer.clone()))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")

@@ -150,7 +150,7 @@ impl MobileApp {
                             .bg(t.field)
                             .border_1()
                             .border_color(t.input_border)
-                            .child(div().flex_1().min_w_0().child(self.dir_input.clone()))
+                            .child(div().id("dir-input").debug_selector(|| "dir-input".into()).flex_1().min_w_0().child(self.dir_input.clone()))
                             .child(
                                 div()
                                     .id("dir-go")
