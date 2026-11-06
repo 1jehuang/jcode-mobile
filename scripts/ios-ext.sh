@@ -9,7 +9,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="$1"; APP_ID="$2"; BUILD_NUMBER="$3"
 
-(cd ios-ext && env -u SDKROOT swift build --build-system native --swift-sdk arm64-apple-ios -c release 2>&1 \
+(cd ios-ext && env -u SDKROOT swift build --build-system native \
+  --swift-sdks-path "${SWIFT_SDKS_PATH:-$HOME/.swiftpm/swift-sdks}" \
+  --swift-sdk arm64-apple-ios -c release 2>&1 \
   | grep -vE "lld: warning: This version of lld|deprecated and will be removed") || exit 1
 BIN=ios-ext/.build/arm64-apple-ios/release
 
