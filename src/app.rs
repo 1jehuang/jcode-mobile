@@ -1431,7 +1431,7 @@ impl MobileApp {
                 .px(px(16.))
                 .pb(px(14.))
                 .gap(px(12.))
-                .child(self.connection_status(t))
+                .when(!self.feel_reconnect_visible(), |d| d.child(self.connection_status(t)))
                 .when_some(self.session.error_banner.clone(), |d, e| {
                     d.child(banner(&e, t.error, t).id("err-empty").on_click(cx.listener(|this, _, _, cx| {
                         this.session.apply_intent(LocalIntent::DismissError);
@@ -1514,7 +1514,7 @@ impl MobileApp {
             .flex_col()
             .size_full()
             .child(self.render_header(t, cx))
-            .when(!empty && !matches!(self.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
+            .when(!empty && !self.feel_reconnect_visible() && !matches!(self.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
                 d.child(div().px(px(14.)).py(px(6.)).border_b_1().border_color(t.border)
                     .child(self.connection_status(t)))
             })

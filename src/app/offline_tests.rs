@@ -3,6 +3,27 @@ use super::*;
 use gpui::TestAppContext;
 
 #[gpui::test]
+fn pull_reconnect_owns_status_until_indicator_settles(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx)
+    });
+    view.update(cx, |app, _| {
+        assert!(!app.feel_reconnect_visible());
+        app.feel.g.pull = crate::gestures::PULL_TRIGGER;
+        assert!(app.feel_reconnect_visible(), "pull preview must suppress duplicate status");
+        app.feel.g.refreshing = Some(std::time::Instant::now());
+        app.feel.g.pull = 0.;
+        assert!(app.feel_reconnect_visible(), "refresh owns status even before layout catches up");
+        app.feel.g.refreshing = None;
+        app.feel.g.pull = 12.;
+        assert!(app.feel_reconnect_visible(), "settling indicator still owns status");
+        app.feel.g.pull = 0.;
+        assert!(!app.feel_reconnect_visible(), "normal status returns once settled");
+    });
+}
+
+#[gpui::test]
 fn fuzz_instances_block_external_actions_and_preserve_stored_credentials(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {
