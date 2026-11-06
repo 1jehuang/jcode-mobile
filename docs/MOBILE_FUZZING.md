@@ -104,6 +104,58 @@ hosted justrust transport. Do not bypass justrust billing or
 isolation. The runner never reconfigures HOME or wipes user state to simulate a
 clean account.
 
+## Targeted interaction regressions
+
+The raw-touch suite covers onboarding focus dismissal, safe offline drafts,
+overlay recovery, cancelled drawer and tab pans, auxiliary field keyboard
+routing, long-press tab menus and rename recovery, cancelled armed pull-to-refresh,
+and screen changes while an edge gesture is captured. The seeded campaigns
+cycle eight surfaces at 320×568, 390×844, 844×390, and 568×320, with multi-contact
+sequences, cancellation, out-of-bounds positions, and mid-contact resizing.
+
+Initial runs reproduced a drawer cancellation that could still idle-commit and
+auxiliary text fields that neither opened nor received the simulated keyboard.
+Independent Unicode input modeling also exposed composition-relative UTF-16
+selection offsets. Fixed regressions additionally cover stale edge captures after
+navigation and cancelled tab/pull gestures. A fully settled keyboard-layout
+regression then exposed rename actions at y=270.5..310.5 beneath the keyboard
+starting at y=232 on a 320×568 phone. The rename card now sizes within its available
+width, centers in the keyboard-reduced viewport, and scrolls when necessary.
+These checks assert interaction state and recovery, not rendered pixels or the
+complete iOS event stack.
+
+### Recorded stress run
+
+On November 5, 2026 (Pacific time), this expanded campaign passed:
+
+```sh
+JCODE_MOBILE_FUZZ_SEEDS=8 JCODE_MOBILE_FUZZ_STEPS=256 \
+  scripts/mobile-fuzz.sh deterministic_raw_touch_campaigns -- --nocapture
+```
+
+Seeds 362108240712 through 362108240719 completed **2,048 cases, 3,056
+contacts, and 9,192 raw touch events** across eight surfaces and four dimensions.
+The justrust receipt is `20261105-223207311-3528788` (93.81 seconds of tests).
+Separately, all eight raw interaction tests passed in each of the eight
+appearance/Reduce Motion/text-scale configurations (**64 test executions**):
+
+```sh
+scripts/mobile-fuzz.sh --matrix app::interaction_fuzz -- --nocapture
+```
+
+This matrix includes the fully settled keyboard rename workflow, not just the
+pre-animation layout. Its final process receipt is
+`20261105-223927784-3585469`. Two older swipe assertions were also corrected to
+expect immediate settling under Reduce Motion, rather than requiring animation.
+The complete binary suite also passed
+`scripts/mobile-fuzz.sh --matrix -- --nocapture`: 97 tests in each dark configuration and 98 in each light
+configuration, **780 passing test executions** in total. A concurrent drawer
+footer regression was added between the two appearance halves, accounting for
+the count difference. The final process receipt is
+`20261105-224115802-3596545`; the eight-process run took 164.82 seconds.
+
+Receipts describe finite test coverage, not an absence-of-bugs guarantee.
+
 ## What a passing run means
 
 The suite exercises Rust widget handlers, raw synthetic touch/event routing,
