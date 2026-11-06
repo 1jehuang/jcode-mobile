@@ -7,6 +7,18 @@ pub const TAB_GAP: f32 = 6.0;
 pub const TAB_HEIGHT: f32 = 28.0;
 const ACTIVE_MAX: f32 = 208.0;
 
+/// Indicator coordinates within the exposed part of a tab. Previous-session
+/// progress fills from the right, next-session progress from the left.
+/// Keep even crowded tabs clipped to their own visible area.
+pub fn indicator(visible: f32, direction: i32, progress: f32) -> (f32, f32, f32) {
+    let visible = visible.max(0.0);
+    let inset = (visible / 12.0).min(6.0);
+    let track = (visible - 2.0 * inset - 2.0).max(0.0);
+    let fill = track * progress.clamp(0.0, 1.0);
+    let left = inset + if direction < 0 { track - fill } else { 0.0 };
+    (left, fill, track)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabGeometry {
     pub left: f32,
@@ -111,6 +123,21 @@ pub fn step_toward(current: &mut TabGeometry, target: TabGeometry, dt: f32) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_is_directional_clamped_and_inside_exposed_tab() {
+        for visible in [0., 1., 6., 14., 40., 208.] {
+            for progress in [-1., 0., 0.5, 1., 2.] {
+                let (left, fill, track) = indicator(visible, 1, progress);
+                let (right, reverse_fill, reverse_track) = indicator(visible, -1, progress);
+                assert_eq!((fill, track), (reverse_fill, reverse_track));
+                assert!(fill >= 0. && fill <= track);
+                assert!(left >= 0. && left + fill <= visible);
+                assert!(right >= left && right + fill <= visible);
+                assert!((right - left - (track - fill)).abs() < 0.001);
+            }
+        }
+    }
 
     #[test]
     fn single_tab_is_capped_and_centered() {

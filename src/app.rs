@@ -1213,21 +1213,24 @@ impl MobileApp {
                     .child(div().absolute().left_0().right_0()
                         .top(px((44. - g.height) / 2.)).h(px(g.height))
                         .rounded_full().border_1()
-                        .border_color(if focused { t.border } else { gpui::transparent_black() })
+                        .border_color(if focused { t.accent.opacity(0.5) } else { gpui::transparent_black() })
                         .bg(bg))
                     .child(content)
                     // Keep feedback inside the exposed portion of overlapping
                     // tabs so even a narrow destination remains visible.
-                    .when_some(swipe_progress, |d, progress| {
+                    .when(focused || swipe_progress.is_some(), |d| {
+                        let direction = preview.map(|(direction, _)| direction).unwrap_or(1);
+                        let progress = if focused { 1.0 } else { swipe_progress.unwrap_or(0.0) };
+                        let (fill_left, fill_width, track_width) = tabs::indicator(visible, direction, progress);
                         d.child(div().absolute()
                             .left(px(exp_left - g.left + pad))
                             .bottom(px(7.))
-                            .w(px((visible - 2. * pad).max(0.)))
-                            .h(px(3.)).rounded_full()
+                            .w(px(track_width))
+                            .h(px(2.)).rounded_full()
                             .bg(t.accent.opacity(0.2))
-                            .child(div().h_full().rounded_full()
-                                .w(px((visible - 2. * pad).max(0.) * progress))
-                                .bg(t.accent)))
+                            .child(div().absolute().left(px(fill_left - pad))
+                                .h_full().rounded_full().w(px(fill_width))
+                                .bg(t.accent.opacity(if focused { 0.65 } else { 1.0 }))))
                     })
                     .child(self.feel_tab_hit(id))
                     // Hold opens tab options, like iOS context menus; tap switches.
