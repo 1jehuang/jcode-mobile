@@ -7,15 +7,20 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId,
-    MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, SharedString, WrappedLine, Style,
-    TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, px,
+    MouseButton, MouseDownEvent, PaintQuad, Pixels, Point, SharedString, Style, TextRun,
+    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px,
     relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::Theme;
 
-actions!(text_input, [Backspace, Delete, Left, Right, SelectAll, Home, End, Paste, Copy, Cut, Submit]);
+actions!(
+    text_input,
+    [
+        Backspace, Delete, Left, Right, SelectAll, Home, End, Paste, Copy, Cut, Submit
+    ]
+);
 
 pub fn bind_keys(cx: &mut App) {
     use gpui::KeyBinding;
@@ -102,7 +107,14 @@ impl TextInput {
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         let content = text.into();
         let end = content.len();
-        self.restore_draft(InputDraft { content, selected_range: end..end, scroll_y: px(0.) }, cx);
+        self.restore_draft(
+            InputDraft {
+                content,
+                selected_range: end..end,
+                scroll_y: px(0.),
+            },
+            cx,
+        );
     }
 
     /// Save text, selection/caret and vertical scroll without transient IME state.
@@ -128,7 +140,11 @@ impl TextInput {
         let start = boundary(draft.selected_range.start);
         let end = boundary(draft.selected_range.end);
         self.selected_range = start.min(end)..start.max(end);
-        self.scroll_y = if self.content.is_empty() { px(0.) } else { draft.scroll_y.max(px(0.)) };
+        self.scroll_y = if self.content.is_empty() {
+            px(0.)
+        } else {
+            draft.scroll_y.max(px(0.))
+        };
         self.marked_range = None;
         self.selection_anchor = None;
         self.last_layout = None;
@@ -256,7 +272,9 @@ impl TextInput {
         }
         let local = position - self.last_origin;
         let local = point(local.x, local.y.max(px(0.)));
-        line.closest_index_for_position(local, lh).unwrap_or_else(|i| i).min(self.content.len())
+        line.closest_index_for_position(local, lh)
+            .unwrap_or_else(|i| i)
+            .min(self.content.len())
     }
 
     fn last_line_height(&self) -> Option<Pixels> {
@@ -291,7 +309,9 @@ impl TextInput {
         self.offset_to_utf16(r.start)..self.offset_to_utf16(r.end)
     }
     fn range_from_utf16(&self, r: &Range<usize>) -> Range<usize> {
-        self.offset_from_utf16(r.start)..self.offset_from_utf16(r.end)
+        let start = self.offset_from_utf16(r.start);
+        let end = self.offset_from_utf16(r.end);
+        start.min(end)..start.max(end)
     }
     fn previous_boundary(&self, offset: usize) -> usize {
         self.content
@@ -327,7 +347,10 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        Some(UTF16Selection { range: self.range_to_utf16(&self.selected_range), reversed: false })
+        Some(UTF16Selection {
+            range: self.range_to_utf16(&self.selected_range),
+            reversed: false,
+        })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -404,7 +427,26 @@ impl EntityInputHandler for TextInput {
             (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
+            // UIKit's selection is relative to the marked text, not the
+            // document. Converting against the document can split UTF-8 or
+            // even put the caret beyond the end when its prefix is Unicode.
+            .map(|r| {
+                let boundary = |offset| {
+                    let mut units = 0;
+                    let mut bytes = 0;
+                    for ch in new_text.chars() {
+                        if units >= offset {
+                            break;
+                        }
+                        units += ch.len_utf16();
+                        bytes += ch.len_utf8();
+                    }
+                    bytes
+                };
+                let start = boundary(r.start);
+                let end = boundary(r.end);
+                start.min(end)..start.max(end)
+            })
             .map(|r| r.start + range.start..r.end + range.start)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         cx.notify();
@@ -424,7 +466,10 @@ impl EntityInputHandler for TextInput {
         let a = line.position_for_index(range.start, lh)?;
         let b = line.position_for_index(range.end, lh).unwrap_or(a);
         let o = self.last_origin;
-        Some(Bounds::from_corners(o + a, o + point(b.x.max(a.x), b.y + lh)))
+        Some(Bounds::from_corners(
+            o + a,
+            o + point(b.x.max(a.x), b.y + lh),
+        ))
     }
 
     fn character_index_for_point(
@@ -522,11 +567,20 @@ impl Element for TextElement {
             });
             let lines = window
                 .text_system()
-                .shape_text(display.clone(), font_size, std::slice::from_ref(&run), width, None)
+                .shape_text(
+                    display.clone(),
+                    font_size,
+                    std::slice::from_ref(&run),
+                    width,
+                    None,
+                )
                 .ok()
                 .and_then(|l| l.into_iter().next())
                 .map_or(1, |l| l.wrap_boundaries().len() + 1);
-            size(width.unwrap_or_default(), lh * lines.clamp(1, max_lines) as f32)
+            size(
+                width.unwrap_or_default(),
+                lh * lines.clamp(1, max_lines) as f32,
+            )
         });
         (id, ())
     }
@@ -563,9 +617,16 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = match input.marked_range.as_ref().filter(|_| !empty && !input.secure) {
+        let runs = match input
+            .marked_range
+            .as_ref()
+            .filter(|_| !empty && !input.secure)
+        {
             Some(m) => [
-                TextRun { len: m.start, ..run.clone() },
+                TextRun {
+                    len: m.start,
+                    ..run.clone()
+                },
                 TextRun {
                     len: m.end - m.start,
                     underline: Some(UnderlineStyle {
@@ -575,7 +636,10 @@ impl Element for TextElement {
                     }),
                     ..run.clone()
                 },
-                TextRun { len: display.len() - m.end, ..run },
+                TextRun {
+                    len: display.len() - m.end,
+                    ..run
+                },
             ]
             .into_iter()
             .filter(|r| r.len > 0)
@@ -602,11 +666,16 @@ impl Element for TextElement {
         } else if !input.read_only && caret.y + lh > scroll_y + bounds.size.height {
             scroll_y = caret.y + lh - bounds.size.height;
         }
-        scroll_y = scroll_y.min((content_h - bounds.size.height).max(px(0.))).max(px(0.));
+        scroll_y = scroll_y
+            .min((content_h - bounds.size.height).max(px(0.)))
+            .max(px(0.));
         let origin = bounds.origin - point(px(0.), scroll_y);
         let (selection, cursor) = if sel.is_empty() {
             let c = origin + pos(sel.start);
-            (vec![], Some(fill(Bounds::new(c, size(px(2.), lh)), theme.accent)))
+            (
+                vec![],
+                Some(fill(Bounds::new(c, size(px(2.), lh)), theme.accent)),
+            )
         } else {
             let (a, b) = (pos(sel.start), pos(sel.end));
             let right = bounds.size.width;
@@ -616,9 +685,15 @@ impl Element for TextElement {
             } else {
                 rects.push(Bounds::from_corners(a, point(right, a.y + lh)));
                 if b.y > a.y + lh {
-                    rects.push(Bounds::from_corners(point(px(0.), a.y + lh), point(right, b.y)));
+                    rects.push(Bounds::from_corners(
+                        point(px(0.), a.y + lh),
+                        point(right, b.y),
+                    ));
                 }
-                rects.push(Bounds::from_corners(point(px(0.), b.y), point(b.x, b.y + lh)));
+                rects.push(Bounds::from_corners(
+                    point(px(0.), b.y),
+                    point(b.x, b.y + lh),
+                ));
             }
             let rects = rects
                 .into_iter()
@@ -626,7 +701,13 @@ impl Element for TextElement {
                 .collect();
             (rects, None)
         };
-        PrepaintState { line: Some(line), cursor, selection, origin, scroll_y }
+        PrepaintState {
+            line: Some(line),
+            cursor,
+            selection,
+            origin,
+            scroll_y,
+        }
     }
 
     fn paint(
@@ -640,17 +721,31 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus = self.input.read(cx).focus_handle.clone();
-        window.handle_input(&focus, ElementInputHandler::new(bounds, self.input.clone()), cx);
+        window.handle_input(
+            &focus,
+            ElementInputHandler::new(bounds, self.input.clone()),
+            cx,
+        );
         let line = prepaint.line.take().unwrap();
         let origin = prepaint.origin;
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for s in prepaint.selection.drain(..) {
                 window.paint_quad(s)
             }
-            line.paint(origin, px(LINE_HEIGHT), gpui::TextAlign::Left, None, window, cx).ok();
+            line.paint(
+                origin,
+                px(LINE_HEIGHT),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .ok();
             // UITextInteraction owns the iOS caret and selection handles.
             // Drawing our own caret as well produces two out-of-sync cursors.
-            if !cfg!(target_os = "ios") && !self.input.read(cx).read_only && focus.is_focused(window)
+            if !cfg!(target_os = "ios")
+                && !self.input.read(cx).read_only
+                && focus.is_focused(window)
                 && let Some(c) = prepaint.cursor.take()
             {
                 window.paint_quad(c);
@@ -697,7 +792,10 @@ impl Render for TextInput {
                     cx.notify();
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.selection_anchor = None))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.selection_anchor = None),
+            )
             .w_full()
             .when(!self.bare, |d| {
                 d.px(px(16.))
@@ -705,7 +803,11 @@ impl Render for TextInput {
                     .rounded(px(22.))
                     .bg(theme.field)
                     .border_1()
-                    .border_color(if focused { theme.border_focus } else { theme.input_border })
+                    .border_color(if focused {
+                        theme.border_focus
+                    } else {
+                        theme.input_border
+                    })
             })
             .py(px(if self.bare { 10. } else { 11. }))
             .text_size(crate::system::fs(14.))
@@ -812,6 +914,239 @@ mod ios_keyboard_tests {
         input.read_with(cx, |t, _| t.content.to_string())
     }
 
+    // Deliberately no widget offset helpers: build a scalar boundary table
+    // independently, including the platform's round-up for half a surrogate.
+    fn model_range(text: &str, range: Range<usize>) -> Range<usize> {
+        let boundaries: Vec<_> = std::iter::once((0, 0))
+            .chain(text.char_indices().map(|(byte, ch)| {
+                (
+                    text[..byte].encode_utf16().count() + ch.len_utf16(),
+                    byte + ch.len_utf8(),
+                )
+            }))
+            .collect();
+        let offset = |unit| {
+            boundaries
+                .iter()
+                .find(|(u, _)| *u >= unit)
+                .map_or(text.len(), |(_, b)| *b)
+        };
+        let a = offset(range.start);
+        let b = offset(range.end);
+        a.min(b)..a.max(b)
+    }
+
+    #[derive(Default)]
+    struct Model {
+        text: String,
+        selection: Range<usize>,
+        marked: Option<Range<usize>>,
+    }
+
+    impl Model {
+        fn replace(
+            &mut self,
+            explicit: Option<Range<usize>>,
+            value: &str,
+            mark: bool,
+            selection: Option<Range<usize>>,
+        ) {
+            let range = explicit
+                .map(|r| model_range(&self.text, r))
+                .or(self.marked.clone())
+                .unwrap_or(self.selection.clone());
+            self.text.replace_range(range.clone(), value);
+            let end = range.start + value.len();
+            self.selection = if mark {
+                selection
+                    .map(|r| model_range(value, r))
+                    .map(|r| range.start + r.start..range.start + r.end)
+                    .unwrap_or(end..end)
+            } else {
+                end..end
+            };
+            self.marked = (mark && !value.is_empty()).then_some(range.start..end);
+        }
+    }
+
+    #[gpui::test]
+    fn seeded_unicode_handler_sequences(cx: &mut TestAppContext) {
+        let (_input, cx) = setup(cx);
+        const VALUES: &[&str] = &[
+            "",
+            "a",
+            "😀",
+            "é",
+            "e\u{301}",
+            "👍🏽",
+            "👩‍👩‍👧‍👦",
+            "🇯🇵",
+            "日本",
+            "\n",
+            "one\ntwo",
+            "\r\n",
+            "\u{301}",
+        ];
+        for seed in [1_u64, 0x12345678, 0xfeedbeef, 0xdeadbeefcafebabe] {
+            let mut rng = seed;
+            let mut next = || {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng as usize
+            };
+            let mut model = Model::default();
+            with_handler(cx, |t, _, cx| {
+                t.set_text("", cx);
+                t.max_lines = 5;
+            });
+            for step in 0..256 {
+                let action = next() % 12;
+                let value = VALUES[next() % VALUES.len()];
+                let limit = model.text.encode_utf16().count() + 4;
+                // Include reversed, out-of-bounds and surrogate-interior ranges.
+                let range = next() % limit..next() % limit;
+                let relative = next() % 10..next() % 10;
+                let context = format!(
+                    "seed={seed:#x} step={step} action={action} value={value:?} range={range:?} relative={relative:?}"
+                );
+                match action {
+                    0 | 1 => {
+                        model.replace(None, value, false, None);
+                        with_handler(cx, |t, w, cx| t.replace_text_in_range(None, value, w, cx));
+                    }
+                    2 => {
+                        model.replace(Some(range.clone()), value, false, None);
+                        with_handler(cx, |t, w, cx| {
+                            t.replace_text_in_range(Some(range.clone()), value, w, cx)
+                        });
+                    }
+                    3 => {
+                        model.selection = model_range(&model.text, range.clone());
+                        with_handler(cx, |t, w, cx| {
+                            t.set_selected_text_range(range.clone(), w, cx)
+                        });
+                    }
+                    4 | 5 => {
+                        let explicit = (action == 5).then_some(range.clone());
+                        model.replace(explicit.clone(), value, true, Some(relative.clone()));
+                        with_handler(cx, |t, w, cx| {
+                            t.replace_and_mark_text_in_range(
+                                explicit,
+                                value,
+                                Some(relative.clone()),
+                                w,
+                                cx,
+                            )
+                        });
+                    }
+                    6 => {
+                        model.marked = None;
+                        with_handler(cx, |t, w, cx| t.unmark_text(w, cx));
+                    }
+                    7 | 8 => {
+                        if model.selection.is_empty() {
+                            let caret = model.selection.start;
+                            let boundaries: Vec<_> =
+                                model.text.grapheme_indices(true).map(|(i, _)| i).collect();
+                            if action == 7 {
+                                model.selection.start = boundaries
+                                    .into_iter()
+                                    .filter(|i| *i < caret)
+                                    .last()
+                                    .unwrap_or(0);
+                            } else {
+                                model.selection.end = boundaries
+                                    .into_iter()
+                                    .find(|i| *i > caret)
+                                    .unwrap_or(model.text.len());
+                            }
+                        }
+                        model.replace(None, "", false, None);
+                        if action == 7 {
+                            delete_backward(cx);
+                        } else {
+                            with_handler(cx, |t, w, cx| t.delete(&Delete, w, cx));
+                        }
+                    }
+                    9 => {
+                        // Mobile insertText treats a lone newline as Submit.
+                        if value != "\n" {
+                            model.replace(None, value, false, None);
+                        }
+                        insert_text(cx, value);
+                    }
+                    10 => {
+                        model.selection = 0..model.text.len();
+                        with_handler(cx, |t, w, cx| t.select_all(&SelectAll, w, cx));
+                    }
+                    _ => {
+                        let expected = model_range(&model.text, range.clone());
+                        let mut actual = None;
+                        let result = with_handler(cx, |t, w, cx| {
+                            t.text_for_range(range.clone(), &mut actual, w, cx)
+                        });
+                        assert_eq!(
+                            result.as_deref(),
+                            Some(&model.text[expected.clone()]),
+                            "{context}"
+                        );
+                        let units = |b| model.text[..b].encode_utf16().count();
+                        assert_eq!(
+                            actual,
+                            Some(units(expected.start)..units(expected.end)),
+                            "{context}"
+                        );
+                    }
+                }
+                with_handler(cx, |t, w, cx| {
+                    assert_eq!(t.text(), model.text, "{context}");
+                    assert_eq!(t.selected_range, model.selection, "{context}");
+                    assert_eq!(t.marked_range, model.marked, "{context}");
+                    for r in std::iter::once(&t.selected_range).chain(t.marked_range.iter()) {
+                        assert!(
+                            r.start <= r.end && r.end <= t.content.len(),
+                            "{context}: {r:?}"
+                        );
+                        assert!(
+                            t.content.is_char_boundary(r.start)
+                                && t.content.is_char_boundary(r.end),
+                            "{context}: {r:?}"
+                        );
+                    }
+                    let units = |b| model.text[..b].encode_utf16().count();
+                    assert_eq!(
+                        t.selected_text_range(false, w, cx).unwrap().range,
+                        units(model.selection.start)..units(model.selection.end),
+                        "{context}"
+                    );
+                    assert_eq!(
+                        t.marked_text_range(w, cx),
+                        model.marked.as_ref().map(|r| units(r.start)..units(r.end)),
+                        "{context}"
+                    );
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn marked_selection_uses_inserted_text_not_unicode_prefix(cx: &mut TestAppContext) {
+        let (_input, cx) = setup(cx);
+        with_handler(cx, |t, w, cx| {
+            t.set_text("😀", cx);
+            t.replace_and_mark_text_in_range(None, "é", Some(1..1), w, cx);
+            assert_eq!(t.selected_range, 6..6);
+            t.replace_and_mark_text_in_range(None, "😀", Some(99..0), w, cx);
+            assert_eq!(t.selected_range, 4..8);
+            assert_eq!(t.marked_range, Some(4..8));
+            t.replace_text_in_range(Some(99..0), "ok", w, cx);
+            assert_eq!(t.text(), "ok");
+            assert_eq!(t.selected_range, 2..2);
+            assert_eq!(t.marked_range, None);
+        });
+    }
+
     #[gpui::test]
     fn draft_roundtrip_preserves_unicode_selection_and_scroll(cx: &mut TestAppContext) {
         let (input, cx) = setup(cx);
@@ -852,9 +1187,14 @@ mod ios_keyboard_tests {
     fn draft_restore_clamps_unicode_offsets_and_preserves_caret(cx: &mut TestAppContext) {
         let (input, cx) = setup(cx);
         input.update(cx, |t, cx| {
-            t.restore_draft(InputDraft {
-                content: "a😀é".into(), selected_range: 3..usize::MAX, scroll_y: px(0.),
-            }, cx);
+            t.restore_draft(
+                InputDraft {
+                    content: "a😀é".into(),
+                    selected_range: 3..usize::MAX,
+                    scroll_y: px(0.),
+                },
+                cx,
+            );
             assert_eq!(t.selected_range, 1..7);
             assert_eq!(t.selected_text(), "😀é");
             t.move_to(5, cx);
@@ -955,7 +1295,9 @@ mod ios_keyboard_tests {
         let (input, cx) = setup(cx);
         insert_text(cx, "teh");
         // UIKit: replaceRange:withText: on the misspelled word, then a space.
-        with_handler(cx, |t, w, cx| t.replace_text_in_range(Some(0..3), "the", w, cx));
+        with_handler(cx, |t, w, cx| {
+            t.replace_text_in_range(Some(0..3), "the", w, cx)
+        });
         insert_text(cx, " ");
         assert_eq!(text(&input, cx), "the ");
         let sel = with_handler(cx, |t, w, cx| t.selected_text_range(false, w, cx)).unwrap();
@@ -983,12 +1325,22 @@ mod ios_keyboard_tests {
         let (input, cx) = setup(cx);
         insert_text(cx, "😀");
         // Japanese kana composition: setMarkedText then commit via insertText.
-        with_handler(cx, |t, w, cx| t.replace_and_mark_text_in_range(None, "に", Some(1..1), w, cx));
-        with_handler(cx, |t, w, cx| t.replace_and_mark_text_in_range(None, "日本", Some(2..2), w, cx));
-        assert_eq!(with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)), Some(2..4));
+        with_handler(cx, |t, w, cx| {
+            t.replace_and_mark_text_in_range(None, "に", Some(1..1), w, cx)
+        });
+        with_handler(cx, |t, w, cx| {
+            t.replace_and_mark_text_in_range(None, "日本", Some(2..2), w, cx)
+        });
+        assert_eq!(
+            with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)),
+            Some(2..4)
+        );
         with_handler(cx, |t, w, cx| t.replace_text_in_range(None, "日本", w, cx));
         assert_eq!(text(&input, cx), "😀日本");
-        assert_eq!(with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)), None);
+        assert_eq!(
+            with_handler(cx, |t, w, cx| t.marked_text_range(w, cx)),
+            None
+        );
         // Emoji is 2 UTF-16 units, caret after it is utf16 4.
         let sel = with_handler(cx, |t, w, cx| t.selected_text_range(false, w, cx)).unwrap();
         assert_eq!(sel.range, 4..4);
@@ -1017,7 +1369,10 @@ mod ios_keyboard_tests {
         });
         with_handler(cx, |t, w, cx| {
             t.copy(&Copy, w, cx);
-            assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("hello 😀\nworld"));
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+                Some("hello 😀\nworld")
+            );
             t.backspace(&Backspace, w, cx);
             t.delete(&Delete, w, cx);
             t.cut(&Cut, w, cx);
@@ -1029,7 +1384,10 @@ mod ios_keyboard_tests {
             t.set_selected_text_range(6..8, w, cx);
             assert_eq!(t.selected_text(), "😀");
             t.copy(&Copy, w, cx);
-            assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("😀"));
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+                Some("😀")
+            );
         });
     }
 
