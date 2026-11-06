@@ -92,6 +92,7 @@ For simulator packaging, the script supports `SIM=1`. The device development hel
 
 ## Further reading
 
+- [Cloud machine and GitHub access](docs/CLOUD_MACHINE.md)
 - [Touch preview](docs/TOUCH_PREVIEW.md)
 - [Mobile fuzzing](docs/MOBILE_FUZZING.md)
 - [Synced continuation](docs/SYNCED_CONTINUATION.md)

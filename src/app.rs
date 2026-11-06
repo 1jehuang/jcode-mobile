@@ -28,6 +28,7 @@ mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
 mod voice;
+mod cloud_machine;
 #[cfg(test)]
 mod interaction_fuzz;
 #[cfg(test)]
@@ -82,6 +83,7 @@ pub struct MobileApp {
     started: std::time::Instant,
     composer: Entity<TextInput>,
     voice: voice::VoiceState,
+    cloud_machine: cloud_machine::MachineState,
     /// Desktop preview's simulated software keyboard state.
     sim_kb: crate::sim_keyboard::SimKeyboard,
     /// Animated bottom inset (keyboard slide), eased toward the target.
@@ -293,6 +295,7 @@ impl MobileApp {
             kb_config: Default::default(),
             composer,
             voice: voice::VoiceState::default(),
+            cloud_machine: cloud_machine::MachineState::default(),
             active_tab: 0,
             next_tab: 1,
             parked: Vec::new(),
@@ -470,6 +473,7 @@ impl MobileApp {
 
     fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
         if self.offline { return; }
+        self.cloud_machine = cloud_machine::MachineState::default();
         if let Some(c) = self.connection.take() {
             c.stop();
         }
@@ -831,6 +835,7 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.cloud_machine = cloud_machine::MachineState::default();
         self.cancel_voice();
         if !self.offline {
             ios_system::forget_index();
@@ -1949,6 +1954,7 @@ impl MobileApp {
             ("Tokens", Some(format!("↑{} ↓{}", s.token_input, s.token_output))),
         ];
         let apple_link = self.render_apple_link(cx);
+        let machine = self.render_cloud_machine(t, cx);
         div()
             .flex()
             .flex_col()
@@ -2012,6 +2018,7 @@ impl MobileApp {
                                 cx.notify()
                             },
                         )))
+                        .child(machine)
                         .children(apple_link)
                         .child(
                             outline_button("sign-out", "Sign out", true, t)
