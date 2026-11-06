@@ -11,8 +11,8 @@ functions, and their external files are excluded from production counts.
 Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
-The reviewed snapshot records **67 owners, 112 static event-call sites, and
-175 control/helper-family sites**. Of those owners, 64 have named, explicitly
+The reviewed snapshot records **68 owners, 113 static event-call sites, and
+175 control/helper-family sites**. Of those owners, 65 have named, explicitly
 partial regression evidence and 3 are gap-only. These are inventory counts,
 not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
 as `partial` or `gap_only`.
@@ -250,10 +250,33 @@ earlier 224-test result remains a checkpoint, not acceptance of newer sources.
 The first fresh attempt (`866027ojsx`) caught only inventory drift while another
 session extracted shared composer/suggestion renderers and improved neighboring
 panels and synced-row refresh stability. Those seven changed owner shapes were
-reviewed, not automatically blessed: the ledger now records two shared helper
-owners, precise neighboring-panel geometry/inertness evidence and fake refresh
-ordering/status-layout evidence. The existing scanner guard passed 4 tests with
-1 discovery test ignored (`3021063m81`). A newly compiled full matrix is pending.
+reviewed, not automatically blessed: the ledger records shared composer and
+suggestion helper owners, precise neighboring-panel geometry/inertness evidence
+and fake refresh ordering/status-layout evidence. The existing scanner guard
+passed 4 tests with 1 discovery test ignored (`3021063m81`).
+
+The next full run (`330321c861`, receipt `20261106-023530624-1026313`)
+finished with 251 passed, 2 failed and 1 ignored. Both failures were investigated:
+
+- The code-entry fixture focused its editor and immediately touched Use other
+  email while the keyboard inset was still moving. Only that seeded inset is
+  settled now; real down/up events and state assertions remain unchanged. The
+  same deterministic scheduler campaign failed at seed 42 before the fix
+  (`20261106-023749289-1053482`) and passed seeds 42 through 169 afterward
+  (`20261106-024210250-1108090`). All seven account tests also passed eight cells.
+- The faithful neighboring preview added an inert hit-test shield that swallowed
+  wheel cancellation when a swipe crossed into the revealed panel. Its shield
+  now forwards wheel movement, cancellation and Ended to the shared panel handler
+  and stops propagation. The original strict cancellation regression passes,
+  and a new regression asserts exactly one movement delta and an immediate
+  Ended commit rather than an eventual idle timeout. Three preview regressions
+  passed all eight cells (`7745092gl3`); source remains inert to editor/tool taps.
+
+Concurrent performance changes added a parsed-markdown renderer helper and
+windowed-transcript reference-geometry tests. These are recorded as partial
+state/layout evidence, not pixel equivalence or native scroll acceptance. The
+newly compiled inventory guard passed 4 tests with 1 discovery ignored, receipt
+`20261106-024332312-1126874`. Fresh complete matrix acceptance remains pending.
 
 ### Initial validation receipt
 

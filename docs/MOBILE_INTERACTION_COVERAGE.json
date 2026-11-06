@@ -101,6 +101,13 @@
           "tests": [
             "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
           ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "tests": [
+            "src/app/performance_tests.rs::windowed_transcript_preserves_geometry_scrolling_edits_and_resize"
+          ],
+          "note": "Rendered windowed transcript compares non-windowed reference bounds and scroll extent after modeled offsets, edits, resize and a large jump. Direct offsets are not native scrolling acceptance."
         }
       ],
       "coverage_scope": "partial",
@@ -1137,26 +1144,36 @@
       "coverage": [
         {
           "kind": "state_model_mocked",
+          "note": "Rendered offline neighboring panel compares saved-scroll message and multiline composer bounds against the destination and preserves draft/tool/follow state. This is geometry/state evidence, not pixel equivalence.",
           "tests": [
             "src/app/panel_preview.rs::tests::saved_scroll_and_multiline_draft_preview_match_destination_geometry"
-          ],
-          "note": "Rendered offline neighboring panel compares saved-scroll message and multiline composer bounds against the destination and preserves draft/tool/follow state. This is geometry/state evidence, not pixel equivalence."
+          ]
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Clicks inside the neighboring panel must not expand tools, send, focus either editor or change parked scroll/draft state.",
+          "tests": [
+            "src/app/panel_preview.rs::tests::preview_taps_do_not_expand_send_or_focus_either_editor"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every transcript role/reasoning combination, native swipe delivery and transition-frame pixels remain unverified.",
+          "tests": []
         },
         {
           "kind": "hit_tested",
           "tests": [
-            "src/app/panel_preview.rs::tests::preview_taps_do_not_expand_send_or_focus_either_editor"
+            "src/app/interaction_fuzz.rs::cancelled_pan_does_not_commit_drawer_or_tab_navigation",
+            "src/app/panel_preview.rs::tests::wheel_over_preview_continues_and_commits_without_idle_timeout"
           ],
-          "note": "Clicks inside the neighboring panel must not expand tools, send, focus either editor or change parked scroll/draft state."
-        },
-        {
-          "kind": "gap",
-          "tests": [],
-          "note": "Every transcript role/reasoning combination, native swipe delivery and transition-frame pixels remain unverified."
+          "note": "Wheel movement, cancellation and Ended over the inert neighboring shield continue the shared swipe exactly once; cancelled gestures cannot idle-commit."
         }
       ],
       "coverage_scope": "partial",
-      "events": {},
+      "events": {
+        "on_scroll_wheel": 1
+      },
       "handler": false,
       "owner": "src/app/panel_preview.rs::impl:MobileApp::render_panel_preview",
       "renderer": true
@@ -1722,12 +1739,45 @@
           "kind": "gap",
           "note": "Every markdown list/link/code combination and long-content visual branch still needs focused rendering evidence.",
           "tests": []
+        },
+        {
+          "kind": "state_model_mocked",
+          "tests": [
+            "src/markdown.rs::tests::cache_reuses_unchanged_parse_and_invalidates_every_stream_prefix",
+            "src/markdown.rs::tests::cache_bounds_bytes_and_bypasses_oversized_or_amplified_input",
+            "src/markdown.rs::tests::cache_evicts_least_recently_used_entries_and_releases_them"
+          ],
+          "note": "Bounded cache compares parsed structures and streaming invalidation, not pixels or every markdown rendering branch."
         }
       ],
       "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/markdown.rs::render",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Phone transcript fixtures exercise rendered markdown bounds and parser tests preserve literal/code behavior. These are not exhaustive rendered-markdown snapshots.",
+          "tests": [
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone",
+            "src/markdown.rs::tests::code_is_literal_and_matches_exact_backtick_runs",
+            "src/markdown.rs::tests::escapes_stay_literal_not_formatting"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Every markdown list/link/code combination and long-content visual branch still needs focused rendering evidence.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::render_parsed",
       "renderer": true
     },
     {
@@ -1984,7 +2034,7 @@
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
     "control_site_count": 175,
-    "event_site_count": 112,
-    "owner_count": 67
+    "event_site_count": 113,
+    "owner_count": 68
   }
 }
