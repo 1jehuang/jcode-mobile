@@ -27,6 +27,10 @@ use crate::theme::Theme;
 #[path = "voice_controls_tests.rs"]
 mod voice_controls_tests;
 
+#[cfg(test)]
+#[path = "overlay_coverage.rs"]
+mod overlay_coverage;
+
 #[derive(Default)]
 struct Recorded {
     screen: Option<Bounds<Pixels>>,
@@ -54,6 +58,7 @@ pub(super) struct Feel {
     rename: Option<(u64, Entity<TextInput>)>,
     selection: Option<Entity<TextInput>>,
     focus_rename: bool,
+    blur_rename: bool,
     toast: Option<(String, Instant)>,
     last: Option<Instant>,
 }
@@ -393,6 +398,11 @@ impl MobileApp {
         }
         if self.feel.toast.is_some() || self.feel.g.refreshing.is_some() {
             anim = true;
+        }
+        if std::mem::take(&mut self.feel.blur_rename) {
+            window.blur(cx);
+            window.dismiss_virtual_keyboard();
+            cx.notify();
         }
         if std::mem::take(&mut self.feel.focus_rename)
             && let Some((_, input)) = &self.feel.rename
@@ -744,6 +754,12 @@ impl MobileApp {
         self.session.transcript.iter().find(|e| e.id == entry).map(|e| e.text.clone())
     }
 
+    fn can_retry_entry(&self, entry: u64) -> bool {
+        self.retry_text(entry).is_some()
+            && !self.session.is_processing
+            && self.session.phase == ConnectionPhase::Connected
+    }
+
     fn render_msg_menu(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(m) = &self.feel.menu else { return div().into_any_element() };
         let entry = m.entry;
@@ -755,12 +771,11 @@ impl MobileApp {
         let left = (sx - mw / 2.).clamp(12., (f(screen.size.width) - mw - 12.).max(12.));
         let below = sy + 14. + mh < f(screen.size.height) - 40.;
         let top = if below { sy + 14. } else { (sy - 14. - mh).max(60.) };
-        let can_retry = self.retry_text(entry).is_some()
-            && !self.session.is_processing
-            && self.session.phase == ConnectionPhase::Connected;
+        let can_retry = self.can_retry_entry(entry);
         let row = |id: &'static str, text: &'static str, glyph: &'static str, enabled: bool| {
             div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .h(px(44.))
                 .px(px(14.))
                 .flex()
@@ -777,6 +792,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("msg-menu-dismiss")
+                    .debug_selector(|| "msg-menu-dismiss".into())
                     .absolute()
                     .inset_0()
                     .bg(gpui::black().opacity(0.25 * a))
@@ -832,7 +848,7 @@ impl MobileApp {
                     })))
                     .child(row("msg-retry", "Retry", "↻", can_retry).when(can_retry, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(text) = this.retry_text(entry) {
+                            if this.can_retry_entry(entry) && let Some(text) = this.retry_text(entry) {
                                 this.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
                                 this.send(|id| Request::Message { id, content: text });
                                 this.follow = true;
@@ -858,7 +874,7 @@ impl MobileApp {
     fn render_text_selection(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(input) = &self.feel.selection else { return div().into_any_element() };
         let button = |id: &'static str, text: &'static str| {
-            div().id(id).px(px(12.)).h(px(44.)).flex().items_center()
+            div().id(id).debug_selector(move || id.into()).px(px(12.)).h(px(44.)).flex().items_center()
                 .cursor_pointer().child(label(text, t.text_strong, 14.))
         };
         div()
@@ -875,7 +891,7 @@ impl MobileApp {
                     }))),
             )
             .child(
-                div().id("selection-scroll").flex_1().min_h_0().overflow_y_scroll()
+                div().id("selection-scroll").debug_selector(|| "selection-scroll".into()).flex_1().min_h_0().overflow_y_scroll()
                     .child(input.clone()),
             )
             .child(
@@ -912,14 +928,23 @@ impl MobileApp {
             TextInputEvent::Changed => cx.notify(),
         })
         .detach();
+        self.feel.g.cancel();
+        self.feel.menu = None;
+        self.feel.menu_anim = 0.;
+        self.feel.selection = None;
         self.tab_menu = None;
         self.feel.rename = Some((id, input));
+        self.feel.blur_rename = false;
         self.feel.focus_rename = true;
         cx.notify();
     }
 
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
         let Some((id, input)) = self.feel.rename.take() else { return };
+        self.feel.focus_rename = false;
+        // Submit is an entity event without a Window. Finish its keyboard
+        // dismissal in feel_wrap, including native iOS keyboard presentation.
+        self.feel.blur_rename = true;
         let title = input.read(cx).text().trim().to_string();
         let title = (!title.is_empty()).then_some(title);
         let (conn, session) = if id == self.active_tab {
@@ -934,8 +959,8 @@ impl MobileApp {
             let t2 = title.clone();
             c.send(|id| Request::RenameSession { id, title: t2 });
         }
-        if let (Some(s), Some(t)) = (session, title) {
-            s.session_title = Some(t);
+        if let Some(s) = session {
+            s.session_title = title;
         }
         haptics::play(Haptic::Success);
         cx.notify();
@@ -1012,11 +1037,18 @@ impl MobileApp {
                         div()
                             .flex()
                             .gap(px(8.))
-                            .child(button("rename-cancel", "Cancel", false).on_click(cx.listener(|this, _, _, cx| {
+                            .child(button("rename-cancel", "Cancel", false).on_click(cx.listener(|this, _, window, cx| {
                                 this.feel.rename = None;
+                                this.feel.focus_rename = false;
+                                window.blur(cx);
+                                window.dismiss_virtual_keyboard();
                                 cx.notify()
                             })))
-                            .child(button("rename-save", "Save", true).on_click(cx.listener(|this, _, _, cx| this.commit_rename(cx)))),
+                            .child(button("rename-save", "Save", true).on_click(cx.listener(|this, _, window, cx| {
+                                this.commit_rename(cx);
+                                window.blur(cx);
+                                window.dismiss_virtual_keyboard();
+                            }))),
                     ),
             )
             .into_any_element()
