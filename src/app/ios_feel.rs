@@ -23,6 +23,10 @@ use crate::haptics::{self, Haptic};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
 
+#[cfg(test)]
+#[path = "voice_controls_tests.rs"]
+mod voice_controls_tests;
+
 #[derive(Default)]
 struct Recorded {
     screen: Option<Bounds<Pixels>>,
@@ -40,6 +44,10 @@ struct MsgMenu {
 #[derive(Default)]
 pub(super) struct Feel {
     pub g: Gestures,
+    pub voice_gesture: crate::voice_gesture::VoiceGesture,
+    pub voice_wheel_at: Option<Instant>,
+    voice_phased: bool,
+    pub(super) voice_pan_ended: bool,
     rec: Rc<RefCell<Recorded>>,
     menu: Option<MsgMenu>,
     menu_anim: f32,
@@ -60,6 +68,64 @@ fn recorder(rec: Rc<RefCell<Recorded>>, put: fn(&mut Recorded, Bounds<Pixels>)) 
 }
 
 impl MobileApp {
+    fn apply_voice_gesture(&mut self, actions: Vec<crate::voice_gesture::Action>, cx: &mut Context<Self>) {
+        use crate::voice_gesture::Action as VoiceAction;
+        for action in actions {
+            match action {
+                VoiceAction::Start => {
+                    haptics::play(Haptic::Light);
+                    self.start_overscroll_voice(cx);
+                }
+                VoiceAction::Lock => {
+                    haptics::play(Haptic::Medium);
+                    self.lock_overscroll_voice(cx);
+                }
+                VoiceAction::Finish => {
+                    haptics::play(Haptic::Light);
+                    self.finish_overscroll_voice(cx);
+                }
+                VoiceAction::Cancel => self.cancel_voice(),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Capture only the deliberate overscroll, not ordinary scrolling or the
+    /// post-release fling. Explicit touch phases never use an idle timeout.
+    fn feel_voice_wheel(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) -> bool {
+        if event.touch_phase == TouchPhase::Started {
+            self.feel.voice_pan_ended = false;
+            self.feel.voice_phased = true;
+        }
+        let tracking = self.feel.voice_wheel_at.is_some();
+        if event.touch_phase == TouchPhase::Cancelled {
+            self.feel.voice_pan_ended = true;
+            if tracking {
+                self.cancel_voice();
+                cx.notify();
+            }
+            return tracking;
+        }
+        let ended = event.touch_phase == TouchPhase::Ended;
+        if ended { self.feel.voice_pan_ended = true; }
+        let delta = event.delta.pixel_delta(px(20.));
+        if !tracking {
+            let eligible = cfg!(target_os = "ios") && self.scene_allows_voice()
+                && self.scene().menus && !ended && !self.feel.voice_pan_ended
+                && self.feel.g.refreshing.is_none()
+                && self.feel.g.transcript.is_some_and(|b| b.contains(&event.position))
+                && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5
+                && delta.y < px(0.) && delta.y.abs() >= delta.x.abs();
+            if !eligible { return false; }
+            self.feel.g.cancel();
+            self.feel.voice_gesture.reset();
+        }
+        self.feel.voice_wheel_at = if ended { None } else { Some(Instant::now()) };
+        let actions = self.feel.voice_gesture.feed(f(delta.y), ended);
+        self.apply_voice_gesture(actions, cx);
+        true
+    }
+
     pub(super) fn focused_rename_input(&self, window: &Window, cx: &gpui::App) -> Option<Entity<TextInput>> {
         self.feel.rename.as_ref().map(|(_, input)| input)
             .filter(|input| input.read(cx).is_focused(window)).cloned()
@@ -72,11 +138,8 @@ impl MobileApp {
             pushed: self.screen == Screen::Settings,
             sheet_open: self.model_picker && chat,
             at_top: at_top && !self.dir_picker,
-            dictate: cfg!(target_os = "ios") && chat && !self.offline
-                && self.account.is_some() && !self.voice.busy && self.voice.recording.is_none()
-                && !self.model_picker && !self.dir_picker && self.tab_menu.is_none() && self.feel.menu.is_none()
-                && self.feel.selection.is_none() && self.feel.rename.is_none()
-                && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5,
+            // Voice has its own held/locked lifecycle, separate from reconnect.
+            dictate: false,
             menus: chat
                 && !self.model_picker
                 && !self.dir_picker
@@ -179,6 +242,21 @@ impl MobileApp {
         let show = pull > 0.5 || refreshing;
         let progress = (pull / crate::gestures::PULL_TRIGGER).clamp(0., 1.);
         let finished = refreshing && self.session.phase == ConnectionPhase::Connected;
+        let voice_pull = self.feel.voice_gesture.pull;
+        let voice_visible = self.feel.voice_gesture.active() || voice_pull > 0.5
+            || (self.voice.auto_send && (self.voice.busy || self.voice.recording.is_some()));
+        let voice_phase = if self.voice.has_error() {
+            crate::voice_visual::Phase::Error
+        } else if self.voice.starting {
+            crate::voice_visual::Phase::Preparing
+        } else if self.voice.busy {
+            crate::voice_visual::Phase::Transcribing
+        } else if self.voice.locked {
+            crate::voice_visual::Phase::Locked
+        } else if self.voice.recording.is_some() {
+            crate::voice_visual::Phase::Recording
+        } else { crate::voice_visual::Phase::Pulling };
+        let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
         div()
             .relative()
             .flex_1()
@@ -231,7 +309,11 @@ impl MobileApp {
                         )),
                 )
             })
-            .child(div().relative().top(px(if dictate { -pull } else { pull })).flex_1().min_h_0().flex().flex_col().child(body))
+            .child(div().relative().top(px(if voice_visible { -voice_pull.min(108.) } else if dictate { -pull } else { pull })).flex_1().min_h_0().flex().flex_col().child(body))
+            .when(voice_visible, |d| d.child(
+                div().absolute().left_0().right_0().bottom_0().h(px(crate::voice_visual::HEIGHT))
+                    .child(crate::voice_visual::render(voice_pull, voice_phase, elapsed, crate::system::reduce_motion(), t))
+            ))
             .into_any_element()
     }
 
@@ -279,6 +361,22 @@ impl MobileApp {
         let now = Instant::now();
         let dt = self.feel.last.map_or(0., |l| now.duration_since(l).as_secs_f32().min(0.05));
         self.feel.last = Some(now);
+        // Opening another route discards a held/locked recording. Changes to
+        // microphone busy state itself do not cancel the held gesture.
+        if (self.feel.voice_gesture.active() || self.voice.auto_send) && !self.scene().menus {
+            self.cancel_voice();
+        }
+        if !self.feel.voice_phased && self.feel.voice_wheel_at.is_some_and(|at| now.duration_since(at).as_secs_f32() > 0.18) {
+            self.feel.voice_wheel_at = None;
+            let actions = self.feel.voice_gesture.release();
+            self.apply_voice_gesture(actions, cx);
+        }
+        if crate::system::reduce_motion() {
+            self.feel.voice_gesture.snap_to_target();
+        } else {
+            anim |= self.feel.voice_gesture.tick(dt);
+        }
+        anim |= self.voice.busy || self.voice.recording.is_some() || self.feel.voice_wheel_at.is_some();
         let menu_target = match &self.feel.menu {
             Some(m) if !m.closing => 1.,
             _ => 0.,
@@ -405,6 +503,9 @@ impl MobileApp {
                     let consumed = h
                         .update(cx, |this, cx| {
                             this.sync_gestures();
+                            if this.feel_voice_wheel(e, cx) {
+                                return true;
+                            }
                             if e.touch_phase == TouchPhase::Cancelled {
                                 this.feel.g.cancel();
                                 cx.notify();

@@ -21,6 +21,9 @@ mod haptics;
 mod gestures;
 mod share;
 mod voice_capture;
+mod voice_gesture;
+mod voice_visual;
+mod voice_demo;
 
 use std::borrow::Cow;
 
@@ -55,6 +58,10 @@ impl gpui::AssetSource for Assets {
 }
 
 fn main() {
+    if std::env::var_os("JCODE_VOICE_DEMO").is_some() {
+        voice_demo::run();
+        return;
+    }
     // First thing: capture panics to disk, upload last run's report in the background.
     let crash_path = jcode_mobile_core::crash::default_path();
     jcode_mobile_core::crash::install_hook(crash_path.clone());
