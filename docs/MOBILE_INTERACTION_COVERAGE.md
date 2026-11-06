@@ -245,8 +245,8 @@ push still moving. Tests settle only that presentation after its first render,
 then retain full physical bounds assertions and real scrolling to expose fields.
 No speculative parent-sizing change was made.
 
-Fresh complete-suite validation is required for these integrated changes. The
-earlier 224-test result remains a checkpoint, not acceptance of newer sources.
+The earlier 224-test result was a checkpoint, not acceptance of newer sources.
+Fresh integration validation below was required for these changes.
 The first fresh attempt (`866027ojsx`) caught only inventory drift while another
 session extracted shared composer/suggestion renderers and improved neighboring
 panels and synced-row refresh stability. Those seven changed owner shapes were
@@ -276,7 +276,32 @@ Concurrent performance changes added a parsed-markdown renderer helper and
 windowed-transcript reference-geometry tests. These are recorded as partial
 state/layout evidence, not pixel equivalence or native scroll acceptance. The
 newly compiled inventory guard passed 4 tests with 1 discovery ignored, receipt
-`20261106-024332312-1126874`. Fresh complete matrix acceptance remains pending.
+`20261106-024332312-1126874`.
+
+### Final integrated configuration acceptance
+
+The complete matrix passed on November 6, 2026: **276 tests in each of eight
+configurations, 2,208 passing executions**, zero failures and zero filtered
+tests. Each cell ignored the read-only inventory dump and seven opt-in timing
+benchmarks; those are not behavioral passes. Task `153022kk55` finished in
+317.69 seconds, first receipt `20261106-024913084-1183937`, final receipt
+`20261106-025352472-1220505`. The matrix includes dark/light appearance,
+Reduce Motion off/on and text scales 1.0/1.6. Shared-core tests also passed all
+55 tests, receipt `20261106-025152571-1205014`.
+
+The final source integration is `11525ca` plus the behavior-identical measured
+height map type-alias/lint cleanup `afd9271`. Earlier canceled and server-reload
+interrupted matrix attempts are not counted. These results establish the
+asserted offline handler/state/layout outcomes, not exhaustive possible
+interactions, device pixels, live services or actual UIKit acceptance.
+
+The final maximum bounded raw-touch replay also passed, seed 42 through 49 at
+256 cases per seed: **2,048 cases, 3,056 contacts and 9,192 raw events**.
+Task `4111690iyd`, receipt `20261106-025331205-1217597`, completed in
+129.34 seconds. This is one focused campaign test (283 other tests filtered),
+not another full-suite run. Final explicit binary/test Clippy passed with
+existing warnings, receipt `20261106-025444073-1226367`. Native/provider/pixel
+acceptance remains the separate pending checklist.
 
 ### Initial validation receipt
 

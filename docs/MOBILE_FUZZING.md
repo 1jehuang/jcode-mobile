@@ -232,7 +232,7 @@ with the real touch/Chat/tab assertions retained. The corrected test passed
 `20261106-013158332-426759`. This is fixture stabilization, not a production fix
 or evidence of native animation timing.
 
-### Follow-up local gap closure and current acceptance
+### Earlier local gap-closure checkpoint
 
 Continuing the explicit ledger gaps found and fixed sibling directory/Git/tab-menu
 click-through and stale TextInput drag selection after release outside the field.
@@ -244,8 +244,9 @@ The complete updated matrix passed **224 tests in each of eight configurations**
 **1,792 passing executions**, zero failures and zero filtered tests. Only the
 opt-in read-only inventory dump is ignored. First/final receipts:
 `20261106-020356082-743189` and `20261106-020744417-771073` (263.4 seconds).
-The reviewed guard now inventories 65 owners, 112 static event sites and 163
-control/helper-family sites, with 59 partial-evidence owners and six gap-only.
+At that checkpoint, the reviewed guard inventoried 65 owners, 112 static event
+sites and 163 control/helper-family sites, with 59 partial-evidence owners and
+six gap-only owners.
 These are structural counts, not behavioral coverage percentages.
 
 Shared core tests passed 55 tests in `20261106-020432636-748202`; binary/test
@@ -254,6 +255,36 @@ justrust fallback was used after the documented hosted billing-route 404. See
 `MOBILE_INTERACTION_COVERAGE.md` for focused red/green receipts and exact limits.
 No native-service acceptance is implied, and standalone fixed-style keyboard
 fixtures do not establish visual Dynamic Type/theme/motion coverage.
+
+### Final integrated interaction checkpoint, November 6, 2026
+
+After motion/timing fixes, real app keyboard bridge coverage, neighboring-panel
+shield routing and the final transcript performance integration, the complete
+matrix passed **276 tests per cell across eight cells: 2,208 passing executions**.
+Zero tests failed or were filtered. Each process ignored eight opt-in tests:
+seven timing benchmarks and the read-only inventory discovery report. Ignored
+benchmarks are not interaction evidence.
+
+Task `153022kk55` completed in 317.69 seconds, with first/final receipts
+`20261106-024913084-1183937` / `20261106-025352472-1220505`. Source integration
+`11525ca` was followed only by the behavior-identical map type alias in `afd9271`.
+The core library separately passed 55 tests in `20261106-025152571-1205014`.
+Canceled or infrastructure-interrupted attempts are not counted.
+
+The reviewed ledger now contains **68 owners, 113 static event-call sites and
+175 control/helper-family sites**, with 65 explicitly partial evidence owners
+and three native-channel/startup-only gap owners. Every partial row still has
+bounded evidence, not an assertion that every branch or sequence is covered.
+The device/service checklist below remains pending. See the inventory document
+for minimized red/green failures and focused scheduler/keyboard receipts.
+
+A separate final maximum bounded raw-touch campaign passed seeds 42 through 49,
+256 cases per seed: **2,048 cases, 3,056 contacts and 9,192 raw events**. Receipt
+`20261106-025331205-1217597`, task `4111690iyd`, 129.34 seconds. This is one
+focused campaign test with 283 others filtered out, not a full-suite result.
+Final binary/test Clippy passed with existing warnings in
+`20261106-025444073-1226367`. None of these counts includes native/provider
+acceptance or ignored benchmarks.
 
 ## What a passing run means
 
