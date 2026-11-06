@@ -114,7 +114,6 @@ pub struct MobileApp {
     follow_max: gpui::Pixels,
     /// Long-press on a tab: generation of the pending hold timer.
     tab_hold: Option<u64>,
-    hold_gen: u64,
     /// The hold already fired, so the release must not also count as a tap.
     hold_fired: bool,
     /// Tab whose options sheet is open.
@@ -312,7 +311,6 @@ impl MobileApp {
             follow_last: std::time::Instant::now(),
             follow_max: px(0.),
             tab_hold: None,
-            hold_gen: 0,
             hold_fired: false,
             tab_menu: None,
             feel: Default::default(),
@@ -601,25 +599,6 @@ impl MobileApp {
             }
         }
         cx.notify();
-    }
-
-    fn start_tab_hold(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.hold_gen += 1;
-        let generation = self.hold_gen;
-        self.tab_hold = Some(generation);
-        self.hold_fired = false;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(450)).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.tab_hold == Some(generation) {
-                    this.tab_hold = None;
-                    this.hold_fired = true;
-                    this.tab_menu = Some(id);
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     fn render_tab_menu(&self, id: u64, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1231,10 +1210,7 @@ impl MobileApp {
                         .bg(bg))
                     .child(content)
                     .child(self.feel_tab_hit(id))
-                    // Hold opens tab options, like iOS context menus; tap switches.
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        this.start_tab_hold(id, cx)
-                    }))
+                    // The root recognizer owns hold-to-scrub; quick taps switch.
                     .on_mouse_up(gpui::MouseButton::Left, cx.listener(|this, _, _, _| this.tab_hold = None))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.tab_hold = None;

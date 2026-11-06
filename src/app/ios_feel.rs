@@ -371,6 +371,7 @@ impl MobileApp {
                     let active = h
                         .update(cx, |this, cx| {
                             this.feel.g.moved(p);
+                            this.feel_scrub_tabs(cx);
                             let d = this.feel.g.dragging();
                             if d {
                                 cx.notify();
@@ -383,11 +384,11 @@ impl MobileApp {
                     }
                 });
                 let h = this.clone();
-                window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
                     if phase != DispatchPhase::Capture || e.button != MouseButton::Left {
                         return;
                     }
-                    let swallow = h.update(cx, |this, cx| this.feel_up(cx)).unwrap_or(false);
+                    let swallow = h.update(cx, |this, cx| this.feel_up(window, cx)).unwrap_or(false);
                     if swallow {
                         cx.stop_propagation();
                     }
@@ -452,18 +453,22 @@ impl MobileApp {
                                 TouchPhase::Started => {
                                     let want = this.feel.g.wants_touch_drag(e.start_position);
                                     if want {
-                                        this.feel.g.down(e.start_position, true);
+                                        if this.feel.g.tab_scrub().is_none() {
+                                            this.feel.g.down(e.start_position, true);
+                                        }
                                         this.feel.g.moved(e.position);
+                                        this.feel_scrub_tabs(cx);
                                     }
                                     want
                                 }
                                 TouchPhase::Moved => {
                                     this.feel.g.moved(e.position);
+                                    this.feel_scrub_tabs(cx);
                                     cx.notify();
                                     true
                                 }
                                 _ => {
-                                    this.feel_up(cx);
+                                    this.feel_up(window, cx);
                                     true
                                 }
                             }
@@ -476,19 +481,32 @@ impl MobileApp {
                 });
                 let h = this.clone();
                 window.on_mouse_event(move |e: &LongPressEvent, phase, window, cx| {
-                    if phase != DispatchPhase::Capture || e.phase != TouchPhase::Started {
+                    if phase != DispatchPhase::Capture {
                         return;
                     }
                     let p = e.start_position;
                     let took = h
                         .update(cx, |this, cx| {
                             this.sync_gestures();
+                            if e.phase != TouchPhase::Started {
+                                if this.feel.g.tab_scrub().is_none() { return false; }
+                                match e.phase {
+                                    TouchPhase::Moved => {
+                                        this.feel.g.moved(e.position);
+                                        this.feel_scrub_tabs(cx);
+                                    }
+                                    TouchPhase::Cancelled => this.feel.g.cancel(),
+                                    _ => { this.feel_up(window, cx); }
+                                }
+                                cx.notify();
+                                return true;
+                            }
                             match this.feel.g.long_press(p) {
                                 Some(a) => {
                                     this.feel_apply(a, window, cx);
                                     true
                                 }
-                                None => false,
+                                None => this.feel.g.tab_scrub().is_some(),
                             }
                         })
                         .unwrap_or(false);
@@ -531,7 +549,18 @@ impl MobileApp {
             .into_any_element()
     }
 
-    fn feel_up(&mut self, cx: &mut Context<Self>) -> bool {
+    fn feel_scrub_tabs(&mut self, cx: &mut Context<Self>) {
+        let Some((origin, dx)) = self.feel.g.tab_scrub() else { return };
+        let Some(index) = self.tab_order.iter().position(|id| *id == origin) else { return };
+        let index = crate::tabs::scrub_index(index, self.tab_order.len(), dx);
+        let id = self.tab_order[index];
+        if id != self.active_tab {
+            self.focus_tab(id, cx);
+            haptics::play(Haptic::Light);
+        }
+    }
+
+    fn feel_up(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let (a, swallow) = self.feel.g.up();
         if swallow {
             // The tab hold timer must not eat the next tap either.
@@ -541,6 +570,7 @@ impl MobileApp {
         match a {
             Some(Action::Refresh) => self.reconnect(cx),
             Some(Action::Dictate) => self.start_overscroll_voice(cx),
+            Some(a @ Action::Menu(..)) => self.feel_apply(a, window, cx),
             _ => {}
         }
         cx.notify();

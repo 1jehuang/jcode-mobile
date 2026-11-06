@@ -635,6 +635,41 @@ fn hold_tab(cx: &mut VisualTestContext, id: u64, at: Point<Pixels>) {
 }
 
 #[gpui::test]
+fn raw_held_tab_scrubs_sessions_without_menu_or_release_click(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx)
+    });
+    resize(&view, cx, (390., 844.));
+    install_surface(&view, cx, Surface::Chat);
+    view.update(cx, |app, cx| {
+        app.new_tab(cx);
+        app.new_tab(cx);
+        app.focus_tab(0, cx);
+    });
+    draw(cx);
+    let at = cx.debug_bounds("tab-0").unwrap().center();
+    touch(cx, 900, TouchPhase::Started, at);
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(501));
+    cx.run_until_parked();
+    draw(cx);
+    view.read_with(cx, |app, _| {
+        assert!(app.feel.g.tab_scrub().is_some());
+        assert!(app.tab_menu.is_none());
+    });
+    let end = at + point(px(90.), px(0.));
+    touch(cx, 900, TouchPhase::Moved, end);
+    view.read_with(cx, |app, _| assert_eq!(app.active_tab, 2));
+    touch(cx, 900, TouchPhase::Ended, end);
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.active_tab, 2);
+        assert!(app.tab_menu.is_none());
+        assert!(app.feel.g.tab_scrub().is_none());
+    });
+}
+
+#[gpui::test]
 fn raw_long_press_tab_menu_rename_cancel_and_recovery(cx: &mut TestAppContext) {
     cx.update(init);
     for (step, dimensions) in [(320., 568.), (390., 844.)].into_iter().enumerate() {

@@ -71,6 +71,8 @@ enum Drag {
     /// Pointer down, not yet decided.
     Pending { start: Point<Pixels>, t0: Instant, kind: Option<Kind>, target: Option<Target>, touch: bool },
     Active { kind: Kind, start: Point<Pixels> },
+    /// A held tab scrubs through sessions without opening a menu.
+    Tabs { id: u64, start: Point<Pixels>, moved: bool },
     /// Gesture consumed (menu opened, drag finished); swallow the release.
     Swallow,
     /// Pointer moved without a gesture: let it be.
@@ -183,7 +185,29 @@ impl Gestures {
     }
 
     pub fn dragging(&self) -> bool {
-        matches!(self.drag, Drag::Active { .. })
+        matches!(self.drag, Drag::Active { .. } | Drag::Tabs { .. })
+    }
+
+    /// Held tab and horizontal travel relative to the original session.
+    pub fn tab_scrub(&self) -> Option<(u64, f32)> {
+        match self.drag {
+            Drag::Tabs { id, start, .. } => Some((id, f(self.last_pos.x - start.x))),
+            _ => None,
+        }
+    }
+
+    fn arm_hold(&mut self, target: Target, p: Point<Pixels>) -> Option<Action> {
+        haptics::play(Haptic::Medium);
+        match target {
+            Target::Tab(id) => {
+                self.drag = Drag::Tabs { id, start: p, moved: false };
+                None
+            }
+            _ => {
+                self.drag = Drag::Swallow;
+                Some(Action::Menu(target, p))
+            }
+        }
     }
 
     /// Fraction of the sheet still on screen (1 open, 0 gone).
@@ -259,7 +283,7 @@ impl Gestures {
     /// Whether a touch drag starting here should be claimed (stealing it
     /// from scrolling). Pulls stay with the scroll view on touch.
     pub fn wants_touch_drag(&self, p: Point<Pixels>) -> bool {
-        matches!(self.candidate(p), Some(Kind::Edge | Kind::Sheet))
+        self.tab_scrub().is_some() || matches!(self.candidate(p), Some(Kind::Edge | Kind::Sheet))
     }
 
     pub fn right_click(&mut self, p: Point<Pixels>) -> Option<Action> {
@@ -278,9 +302,7 @@ impl Gestures {
             return None;
         }
         let t = self.hit(p)?;
-        self.drag = Drag::Swallow;
-        haptics::play(Haptic::Medium);
-        Some(Action::Menu(t, p))
+        self.arm_hold(t, p)
     }
 
     pub fn moved(&mut self, p: Point<Pixels>) {
@@ -290,6 +312,10 @@ impl Gestures {
     fn moved_at(&mut self, p: Point<Pixels>, now: Instant) {
         self.track(p, now);
         match self.drag {
+            Drag::Tabs { id, start, moved } => {
+                let d = p - start;
+                self.drag = Drag::Tabs { id, start, moved: moved || f(d.x).abs().max(f(d.y).abs()) >= SLOP };
+            }
             Drag::Pending { start, kind, .. } => {
                 let d = p - start;
                 let (dx, dy) = (f(d.x), f(d.y));
@@ -368,7 +394,8 @@ impl Gestures {
         let drag = std::mem::replace(&mut self.drag, Drag::Idle);
         match drag {
             Drag::Active { kind, .. } => (self.release(kind, now), true),
-            Drag::Swallow => (None, true),
+            Drag::Tabs { id, start, moved: false } => (Some(Action::Menu(Target::Tab(id), start)), true),
+            Drag::Swallow | Drag::Tabs { .. } => (None, true),
             _ => (None, false),
         }
     }
@@ -489,9 +516,7 @@ impl Gestures {
             && now.duration_since(t0).as_secs_f32() >= LONG_PRESS_SECS
             && scene.menus
         {
-            self.drag = Drag::Swallow;
-            haptics::play(Haptic::Medium);
-            out.push(Action::Menu(t, start));
+            out.extend(self.arm_hold(t, start));
         }
         let pending_press = matches!(self.drag, Drag::Pending { target: Some(_), touch: false, .. });
 
@@ -549,6 +574,34 @@ impl Gestures {
 mod tests {
     use super::*;
     use gpui::{point, px, size};
+
+    #[test]
+    fn tab_hold_arms_scrubbing_for_mouse_and_touch_and_swallows_release() {
+        let now = Instant::now();
+        let p = point(px(100.), px(20.));
+        let scene = Scene { menus: true, ..Default::default() };
+        for touch in [false, true] {
+            let mut g = configured(scene, now);
+            g.hits.push((Target::Tab(9), Bounds::new(p, size(px(100.), px(44.)))));
+            g.down_at(p, touch, now);
+            assert_eq!(g.tab_scrub(), None);
+            if touch {
+                assert_eq!(g.long_press(p), None);
+            } else {
+                assert!(g.tick_at(scene, now + std::time::Duration::from_millis(450)).0.is_empty());
+            }
+            assert_eq!(g.tab_scrub(), Some((9, 0.)));
+            assert!(g.wants_touch_drag(p));
+            g.moved_at(point(px(200.), px(80.)), now + std::time::Duration::from_millis(500));
+            assert_eq!(g.tab_scrub(), Some((9, 100.)));
+            assert_eq!(g.up_at(now), (None, true));
+            assert_eq!(g.tab_scrub(), None);
+            g.long_press(p);
+            g.cancel();
+            assert_eq!(g.tab_scrub(), None);
+            assert_eq!(g.up_at(now), (None, false));
+        }
+    }
 
     fn g() -> Gestures {
         let mut g = Gestures::default();

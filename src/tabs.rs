@@ -7,6 +7,13 @@ pub const TAB_GAP: f32 = 6.0;
 pub const TAB_HEIGHT: f32 = 28.0;
 const ACTIVE_MAX: f32 = 208.0;
 
+/// Hold then slide one session per 44px. Anchor to the original tab so
+/// animated tab widths cannot cause selection to oscillate under the finger.
+pub fn scrub_index(origin: usize, count: usize, dx: f32) -> usize {
+    let steps = (dx / 44.0).trunc() as isize;
+    origin.saturating_add_signed(steps).min(count.saturating_sub(1))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabGeometry {
     pub left: f32,
@@ -131,6 +138,17 @@ pub fn step_toward(current: &mut TabGeometry, target: TabGeometry, dt: f32) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_scrub_is_deliberate_reversible_and_clamped() {
+        assert_eq!(scrub_index(2, 5, 43.), 2);
+        assert_eq!(scrub_index(2, 5, 44.), 3);
+        assert_eq!(scrub_index(2, 5, -44.), 1);
+        assert_eq!(scrub_index(2, 5, 0.), 2);
+        assert_eq!(scrub_index(2, 5, -10_000.), 0);
+        assert_eq!(scrub_index(2, 5, 10_000.), 4);
+        assert_eq!(scrub_index(0, 1, 500.), 0);
+    }
 
     #[test]
     fn swipe_morph_transfers_size_and_stays_bounded_in_both_directions() {
