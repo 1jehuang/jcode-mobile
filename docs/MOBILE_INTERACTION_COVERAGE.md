@@ -11,9 +11,9 @@ functions, and their external files are excluded from production counts.
 Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
-The reviewed snapshot records **65 owners, 111 static event-call sites, and
-149 control/helper-family sites**. Of those owners, 57 have named, explicitly
-partial regression evidence and 8 are gap-only. These are inventory counts,
+The reviewed snapshot records **65 owners, 112 static event-call sites, and
+163 control/helper-family sites**. Of those owners, 59 have named, explicitly
+partial regression evidence and 6 are gap-only. These are inventory counts,
 not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
 as `partial` or `gap_only`.
 
@@ -58,11 +58,11 @@ external entry points.
 | Transcript tool/jump/error controls | `transcript_tool_control_expands_and_collapses_visible_output`, `transcript_jump_control_restores_follow_without_discarding_draft`, `transcript_and_empty_error_banners_dismiss_safely_offline` hit-test all three focused control families | Every tool status, streamed content update and long-output nesting combination is not enumerated. |
 | Composer metadata routes | `metadata_picker_actions_preserve_each_tabs_unsent_draft` hit-tests model, account and location paths while switching between draft-owning tabs | Effort is a decorative label with no event handler. Every actual model/account route-availability combination is not enumerated. |
 | Header, session tabs, drawer entry | `header_new_session_is_inert_without_account_and_parks_existing_draft` hit-tests header new-session for signed-out/signed-in and draft restore. `drawer_new_switch_close_refresh_and_account_hit_test` exercises drawer/tab navigation controls | Native long-hold timing, accessibility activation, and every tab overflow viewport are not exhaustive. |
-| Session drawer, search and directory groups | `drawer_directory_groups_and_search_hit_test`, `drawer_directory_new_button_does_not_toggle_group` hit-test result/group paths after search text is supplied synthetically | The search input itself is not hit-tested by those set_text fixtures. Cloud refresh, native input and every interruption sequence remain separate coverage. |
+| Session drawer, search and directory groups | `drawer_directory_groups_and_search_hit_test`, `drawer_directory_new_button_does_not_toggle_group` hit-test result/group paths after search text is supplied synthetically | `drawer_search_pointer_focus_routes_typed_filter_and_result` separately drives actual pointer focus, routed typing/Home/Delete and result activation. Cloud refresh, native IME and every interruption sequence remain separate coverage. |
 | Drawer modal scroll containment | `drawer_scroll_does_not_move_transcript_or_release_follow` injects wheel input across list/pinned/scrim areas | Native momentum and multi-touch transitions still require device checks. |
 | Directory sheet and new-session offer | `directory_sheet_hit_test_invalid_same_valid_and_dismiss`, `directory_recent_row_and_start_suggestions_hit_test`, `new_session_directory_offer_preserves_draft_until_create` | Actual remote path validation and directory listing use services. Fixtures do not prove the remote directory exists. |
 | Model picker and route variants | `model_picker_bare_selection_same_selection_and_dismiss_hit_test`, `model_picker_unavailable_route_is_inert_and_available_route_selects` | Provider provisioning and actual model changes across a live connection are not exercised. |
-| Tab action menu | `tab_menu_switch_close_others_and_disabled_fork_hit_test` covers switch/close-others/disabled-fork routes | Enabled remote fork, clipboard availability, native hold recognition, and every destructive-close interleaving are separate checks. |
+| Tab action menu | `tab_menu_switch_close_others_and_disabled_fork_hit_test` and `tab_menu_owns_overlaps_and_local_actions` cover switch/close-others/disabled-fork, direct dismiss, synthetic clipboard copy, last/current close variants and overlapping underlying controls | Enabled remote fork, native clipboard ownership, native hold recognition, and every destructive-close interleaving are separate checks. |
 | Message hold menu and retry | `raw_message_hold_copy_and_cancel_preserve_transcript_and_draft`, `raw_disabled_retry_is_inert_and_enabled_retry_resends_correct_prompt`, `stale_enabled_retry_handler_rechecks_processing_before_sending` | Fixture local intents do not prove server retry delivery or native clipboard behavior. |
 | Read-only text selection | `selection_is_read_only_copyable_and_done_releases_focus`, `read_only_transcript_can_select_and_copy_but_not_edit` | Native selection handles, iOS copy menu, VoiceOver, and keyboard hardware combinations need device checks. |
 | Rename sheet | `rename_save_cancel_empty_unicode_and_settled_keyboard_viewports`, `rename_submit_commits_once_and_releases_editor_focus`, `rename_transition_discards_selection_menu_and_pending_gesture` | Real keyboard show/hide timing, predictive input and server rename acknowledgment are not exercised. |
@@ -145,9 +145,9 @@ as production wiring. These are tests of the guard, not mobile UI evidence.
 - A syntactically present named test is not evidence that it passed in the
   current environment. Build/test results must be reported separately.
 
-### Full-suite validation
+### Full-suite checkpoint before additional local regressions
 
-The final complete headless matrix passed **209 tests in each of eight configurations**,
+The complete headless matrix at the earlier checkpoint passed **209 tests in each of eight configurations**,
 **1,672 passing executions**, with this ledger guard enabled and no filters/skips.
 The only ignored test was the opt-in read-only discovery dump. Final receipt:
 `20261106-014504189-545062`. Binary/test Clippy also passed, receipt
@@ -155,6 +155,30 @@ The only ignored test was the opt-in read-only discovery dump. Final receipt:
 raw-corpus replay, minimized model-sheet click-through evidence, and fixture timing
 boundaries. This acceptance used local GPUI overrides and does not clear the
 explicit native/service/visual gaps above.
+
+### Additional local findings after that checkpoint
+
+Continuing the explicit local-gap review found directory-sheet, Git-panel and
+tab-menu click-through as well as stale text-selection dragging after a release
+outside the field. These are additional real interaction bugs, not evidence
+that the earlier finite campaign was exhaustive. Directory/Git/tab-menu ownership
+regressions passed all eight configurations (three tests per configuration,
+phone widths 320 and 390), receipt `20261106-015441426-663809`. Removing the
+directory/Git fixes made the final two corresponding regressions fail again,
+receipt `20261106-015455664-666726`. Initial uncorrected modal ownership failed
+all three tests, receipt `20261106-015148286-632315`.
+
+Additional focused coverage includes connection-phase status text and bounded
+phone/landscape presentation; rendered dictation cancellation across synthetic
+start/busy flags; offline email/code submit boundaries; actual pointer-focused
+composer/search/directory/onboarding editing; and standalone rendered software
+keyboard callbacks. The earlier 209-test checkpoint does not validate these
+newer source changes. A fresh full-suite receipt is required after integration.
+
+Standalone software-keyboard tests use fixed renderer styling. Repeating them
+under the eight environment configurations is not evidence that Dynamic Type,
+Reduce Motion or appearance visually changes that keyboard. App-level layout
+fixtures and native UIKit keyboard acceptance remain distinct.
 
 ### Initial validation receipt
 

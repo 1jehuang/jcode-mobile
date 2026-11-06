@@ -23,15 +23,25 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {
+        "debug_selector:literal:connection-status": 1,
+        "id:literal:connection-status": 1
+      },
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "Injected connection phases assert exact disconnected/connecting/provisioning/reconnecting status text, absent ready/error status, and bounded rendered presentation across narrow portrait and landscape fixtures. No real connection or pixel/animation acceptance is implied.",
+          "tests": [
+            "src/app/status_coverage.rs::every_connection_phase_has_explicit_status_and_bounded_phone_presentation"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "Connecting, provisioning, reconnecting and disconnected status rendering has no focused per-phase assertion. Existing refresh-ownership tests cover a separate gating predicate, not this helper output.",
+          "note": "Every activity/orb animation branch, visual appearance and live connection timing remain outside these focused layout assertions.",
           "tests": []
         }
       ],
-      "coverage_scope": "gap_only",
+      "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/app.rs::impl:MobileApp::connection_status",
@@ -104,9 +114,11 @@
       "controls": {
         "debug_selector:literal:chat-composer": 1,
         "debug_selector:literal:chat-metadata": 1,
+        "debug_selector:literal:composer-input": 1,
         "debug_selector:literal:location": 1,
         "id:literal:chat-composer": 1,
         "id:literal:chat-metadata": 1,
+        "id:literal:composer-input": 1,
         "id:literal:location": 1,
         "pill:literal:cancel-dictation": 1,
         "pill:literal:pill-account": 1,
@@ -136,8 +148,15 @@
         },
         {
           "kind": "gap",
-          "note": "The rendered cancel-dictation button and every simultaneous metadata/voice gesture combination do not have independent hit-target evidence here.",
+          "note": "Every simultaneous metadata/voice gesture combination and native recording cancellation timing are not independently covered.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "The rendered Cancel dictation button is touched repeatedly across synthetic starting/busy voice flags; cancellation clears flags/status and preserves Unicode draft, tab and transcript. No Recording or microphone is acquired.",
+          "tests": [
+            "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -271,8 +290,10 @@
     },
     {
       "controls": {
+        "debug_selector:dynamic:if": 1,
         "debug_selector:literal:google": 1,
         "debug_selector:literal:use-other-email": 1,
+        "id:dynamic:if": 1,
         "id:literal:google": 1,
         "id:literal:sign-in": 1,
         "id:literal:sign-in-form": 1,
@@ -303,8 +324,22 @@
         },
         {
           "kind": "gap",
-          "note": "The submit-sign-in hit target readiness/validation states and every code/email form branch do not have dedicated raw-hit assertions in the named auth completion tests.",
+          "note": "Actual email/code validation, authentication startup readiness and live provider outcomes remain outside the offline early-return fixture.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Rendered submit is touched for seven email/code/busy fixture states and use-other-email is activated when available. Assertions prove offline early-return isolation and reset only, not validation readiness, real auth startup or provider success.",
+          "tests": [
+            "src/app/local_control_coverage.rs::sign_in_submit_touch_preserves_email_code_and_busy_at_offline_boundary"
+          ]
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Email/code fields receive pointer focus, typed fixture text and Return; Submit event is counted and raw outside touch dismisses focus. Authentication remains guarded offline.",
+          "tests": [
+            "src/app/input_event_coverage.rs::onboarding_fields_pointer_focus_typing_submit_and_outside_dismiss"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -332,15 +367,16 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered tab actions cover switch, close others, disabled fork and rename routes with local state. Row helper IDs describe control families, not every runtime tab instance.",
+          "note": "Rendered tab actions cover switch, close others, disabled fork and rename routes with local state. Row helper IDs describe control families, not every runtime tab instance. Actual overlapping metadata/header points, direct dismiss, synthetic clipboard copy, disabled last-close and active-close preserving another tab draft are also exercised.",
           "tests": [
             "src/app/navigation_coverage.rs::tab_menu_switch_close_others_and_disabled_fork_hit_test",
-            "src/app/overlay_coverage.rs::rename_save_cancel_empty_unicode_and_settled_keyboard_viewports"
+            "src/app/overlay_coverage.rs::rename_save_cancel_empty_unicode_and_settled_keyboard_viewports",
+            "src/app/modal_ownership_coverage.rs::tab_menu_owns_overlaps_and_local_actions"
           ]
         },
         {
           "kind": "gap",
-          "note": "Enabled remote fork, direct dismiss-scrim activation, system clipboard transfer and every close-current/last-tab variant are not all covered through this menu hit target.",
+          "note": "Enabled remote fork, native clipboard ownership, OS hold recognition and every destructive-close interleaving remain unverified.",
           "tests": []
         }
       ],
@@ -431,12 +467,19 @@
       "controls": {},
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "Injected connection phases assert exact disconnected/connecting/provisioning/reconnecting status text, absent ready/error status, and bounded rendered presentation across narrow portrait and landscape fixtures. No real connection or pixel/animation acceptance is implied.",
+          "tests": [
+            "src/app/status_coverage.rs::every_connection_phase_has_explicit_status_and_bounded_phone_presentation"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "Activity/status orb rows render during app fixtures, but animation state, status text placement and every activity branch lack focused assertions.",
+          "note": "Every activity/orb animation branch, visual appearance and live connection timing remain outside these focused layout assertions.",
           "tests": []
         }
       ],
-      "coverage_scope": "gap_only",
+      "coverage_scope": "partial",
       "events": {},
       "handler": false,
       "owner": "src/app.rs::orb_row",
@@ -725,22 +768,23 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Panel close/reopen and scroll containment at panel/header boundaries are exercised offline without changing transcript/follow/voice state.",
+          "note": "Panel close/reopen and scroll containment at panel/header boundaries are exercised offline without changing transcript/follow/voice state. Raw overlap points verify modal ownership; rendered Refresh and Done are reached within the real panel clip using offline fixture state.",
           "tests": [
             "src/app/git_info_tests.rs::git_pull_threshold_cancel_and_session_invalidation",
-            "src/app/git_info.rs::lifecycle_tests::git_overlay_wheel_at_boundaries_never_scrolls_or_releases_transcript"
+            "src/app/git_info.rs::lifecycle_tests::git_overlay_wheel_at_boundaries_never_scrolls_or_releases_transcript",
+            "src/app/modal_ownership_coverage.rs::git_overlay_owns_metadata_header_and_controls"
           ]
         },
         {
           "kind": "state_model_mocked",
-          "note": "Refresh generation/context/account invalidation and sanitized errors use injected Git snapshots/results, not the rendered refresh hit target or real SSH.",
+          "note": "Refresh generation/context/account invalidation and sanitized errors use injected Git snapshots/results, not real SSH.",
           "tests": [
             "src/app/git_info.rs::lifecycle_tests::mocked_git_results_reject_stale_refresh_account_tab_session_and_directory"
           ]
         },
         {
           "kind": "gap",
-          "note": "Rendered refresh-button action and scroll of a large populated real Git snapshot lack a focused hit-target regression.",
+          "note": "Large populated remote Git snapshots, real SSH refresh completion and every scroll/content combination remain unverified.",
           "tests": []
         }
       ],
@@ -1053,24 +1097,35 @@
       "controls": {
         "debug_selector:literal:dir-dismiss": 1,
         "debug_selector:literal:dir-go": 1,
+        "debug_selector:literal:dir-input": 1,
+        "debug_selector:literal:dir-list": 1,
         "debug_selector:macro:format:literal:dir-row-{i}": 1,
         "id:literal:dir-dismiss": 1,
         "id:literal:dir-go": 1,
+        "id:literal:dir-input": 1,
         "id:literal:dir-list": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Directory row/go/dismiss controls are hit-tested for invalid, same and valid fixture paths and a recent-row selection.",
+          "note": "Directory row/go/dismiss controls are hit-tested for invalid, same and valid fixture paths and a recent-row selection. Raw overlapping header/metadata contacts verify sheet ownership, with actual directory-list clip reachability.",
           "tests": [
             "src/app/navigation_coverage.rs::directory_sheet_hit_test_invalid_same_valid_and_dismiss",
-            "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test"
+            "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test",
+            "src/app/modal_ownership_coverage.rs::directory_overlay_owns_metadata_and_header_touches"
           ]
         },
         {
           "kind": "platform_device_required",
           "note": "Real remote directory discovery/validation and connection changes need service integration.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Directory input is pointer-focused and receives routed select-all, typed path and Return/Go, asserting trimmed directory change without transport.",
+          "tests": [
+            "src/app/input_event_coverage.rs::directory_go_keyboard_event_changes_directory_without_transport"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1170,7 +1225,10 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {
+        "debug_selector:literal:drawer-search-input": 1,
+        "id:literal:drawer-search-input": 1
+      },
       "coverage": [
         {
           "kind": "state_model_mocked",
@@ -1182,8 +1240,15 @@
         },
         {
           "kind": "gap",
-          "note": "Focused rendered search-field caret placement, keyboard edits and IME interaction do not have a dedicated search hit-target regression.",
+          "note": "Native IME, every caret/selection position and search interruption/momentum combination remain unverified.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "The actual search field is pointer-focused, receives routed typed text and Home/Delete, filters fixture results and opens the matching result without transport. Native IME/keyboard rendering is not exercised.",
+          "tests": [
+            "src/app/input_event_coverage.rs::drawer_search_pointer_focus_routes_typed_filter_and_result"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1607,7 +1672,11 @@
       "renderer": false
     },
     {
-      "controls": {},
+      "controls": {
+        "debug_selector:literal:sim-keyboard": 1,
+        "debug_selector:literal:sim-suggestion": 1,
+        "debug_selector:macro:format:literal:sim-key-{index}": 1
+      },
       "coverage": [
         {
           "kind": "state_model_mocked",
@@ -1620,13 +1689,22 @@
         },
         {
           "kind": "gap",
-          "note": "Per-key rendered tap routes, symbol/email-layout combinations and blank-key propagation are not individually hit-tested.",
+          "note": "Every app-field integration, gesture arbitration, viewport clipping, visual/accessibility configuration and native software keyboard path is not proven by standalone renderer callbacks.",
           "tests": []
         },
         {
           "kind": "platform_device_required",
           "note": "UIKit keyboard/IME/autocorrect/system dictation behavior is outside the simulated keyboard and needs device checks.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Standalone rendered mouse-down key callbacks and reducer state are checked across letters/shift/symbol/email/number/code layouts, suggestion fills and blank-area focus/ancestor propagation. Fixed keyboard styling does not consume app text-scale/motion/appearance configuration, so matrix repetition is not visual accessibility proof. No native bridge or app text delivery is implied by this standalone fixture.",
+          "tests": [
+            "src/sim_keyboard.rs::tests::rendered_pointer_routes_every_key_in_all_layouts",
+            "src/sim_keyboard.rs::tests::rendered_suggestions_and_blank_area_preserve_focus",
+            "src/sim_keyboard.rs::tests::rendered_shift_and_mode_transitions_survive_redraw"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1653,8 +1731,17 @@
         },
         {
           "kind": "gap",
-          "note": "Each of the eleven action registration sites and every mouse selection/caret route is not independently paired with a rendered hit-target regression.",
+          "note": "Every multiline boundary, click count, registered action and simultaneous pointer/native selection route is not independently covered.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Rendered desktop pointer focus, Unicode drag selection, outside release then later drag, grapheme edits and field focus transfer are driven by real GPUI mouse/key events. This is not UIKit selection handles or every multiline/click/action combination.",
+          "tests": [
+            "src/app/input_event_coverage.rs::text_input_pointer_release_outside_clears_selection_gesture",
+            "src/app/input_event_coverage.rs::composer_desktop_mouse_drag_unicode_selection_and_outside_release",
+            "src/app/input_event_coverage.rs::composer_pointer_caret_unicode_keyboard_edit_and_focus_transfer"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1662,7 +1749,8 @@
         "on_action": 11,
         "on_mouse_down": 1,
         "on_mouse_move": 1,
-        "on_mouse_up": 1
+        "on_mouse_up": 1,
+        "on_mouse_up_out": 1
       },
       "handler": false,
       "owner": "src/text_input.rs::impl:Render for TextInput::render",
@@ -1681,8 +1769,17 @@
         },
         {
           "kind": "gap",
-          "note": "No focused regression is assigned specifically to rendered TextInput mouse-down click-to-index, multiline boundary selection or pointer-drag combinations.",
+          "note": "Every multiline boundary, click count, registered action and simultaneous pointer/native selection route is not independently covered.",
           "tests": []
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Rendered desktop pointer focus, Unicode drag selection, outside release then later drag, grapheme edits and field focus transfer are driven by real GPUI mouse/key events. This is not UIKit selection handles or every multiline/click/action combination.",
+          "tests": [
+            "src/app/input_event_coverage.rs::text_input_pointer_release_outside_clears_selection_gesture",
+            "src/app/input_event_coverage.rs::composer_desktop_mouse_drag_unicode_selection_and_outside_release",
+            "src/app/input_event_coverage.rs::composer_pointer_caret_unicode_keyboard_edit_and_focus_transfer"
+          ]
         }
       ],
       "coverage_scope": "partial",
@@ -1737,8 +1834,8 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 149,
-    "event_site_count": 111,
+    "control_site_count": 163,
+    "event_site_count": 112,
     "owner_count": 65
   }
 }

@@ -47,6 +47,8 @@ mod lifecycle_coverage;
 #[cfg(test)]
 mod journey_fuzz;
 #[cfg(test)]
+mod local_control_coverage;
+#[cfg(test)]
 mod status_coverage;
 #[cfg(test)]
 mod modal_ownership_coverage;
