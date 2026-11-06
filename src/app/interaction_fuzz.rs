@@ -623,3 +623,262 @@ fn auxiliary_fields_show_keyboard_and_receive_typing(cx: &mut TestAppContext) {
     }
     eprintln!("auxiliary keyboard regression complete cases=3 keypresses=3");
 }
+
+fn hold_tab(cx: &mut VisualTestContext, id: u64, at: Point<Pixels>) {
+    touch(cx, id, TouchPhase::Started, at);
+    // Poll the scheduled timer before advancing GPUI's deterministic clock.
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(501));
+    cx.run_until_parked();
+    draw(cx);
+    touch(cx, id, TouchPhase::Ended, at);
+}
+
+#[gpui::test]
+fn raw_long_press_tab_menu_rename_cancel_and_recovery(cx: &mut TestAppContext) {
+    cx.update(init);
+    for (step, dimensions) in [(320., 568.), (390., 844.)].into_iter().enumerate() {
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 20.,
+                    bottom: 0.,
+                },
+                window,
+                cx,
+            )
+        });
+        replay(0x4c4f4e4750524553, step, Surface::Chat, dimensions, || {
+            resize(&view, cx, dimensions);
+            install_surface(&view, cx, Surface::Chat);
+            view.update(cx, |app, cx| {
+                app.session.session_title = Some("Original tab".into());
+                app.composer
+                    .update(cx, |input, cx| input.set_text(DRAFT, cx));
+                cx.notify();
+            });
+            draw(cx);
+            let tab = cx.debug_bounds("tab-0").expect("tab long-press target");
+            hold_tab(cx, 100, tab.center());
+            view.read_with(cx, |app, _| {
+                assert_eq!(
+                    app.tab_menu,
+                    Some(app.active_tab),
+                    "raw long press did not open tab menu"
+                )
+            });
+            let rename = cx
+                .debug_bounds("tm-rename")
+                .expect("rename action in actual tab menu");
+            tap(cx, 101, rename.center());
+            draw(cx);
+            let input = cx.update(|window, cx| {
+                view.read_with(cx, |app, cx| {
+                    assert!(app.tab_menu.is_none(), "rename left tab menu open");
+                    app.focused_rename_input(window, cx)
+                        .expect("rename editor focused")
+                })
+            });
+            input.update(cx, |input, cx| input.select_all_text(cx));
+            cx.update(|window, cx| {
+                view.update(cx, |app, cx| {
+                    app.sim_key(
+                        crate::sim_keyboard::Key::Char("Renamed 👋".into()),
+                        window,
+                        cx,
+                    )
+                });
+                window.draw(cx).clear(cx);
+            });
+            view.read_with(cx, |app, cx| {
+                assert_eq!(
+                    input.read(cx).text(),
+                    "Renamed 👋",
+                    "rename keyboard routing failed"
+                );
+                assert_eq!(
+                    app.composer.read(cx).text(),
+                    DRAFT,
+                    "rename typing leaked to composer"
+                );
+                if std::env::var("JCODE_MOBILE_KEYBOARD").ok().as_deref() != Some("0") {
+                    assert!(app.keyboard_up, "rename focus did not present keyboard");
+                }
+            });
+            let cancel = cx
+                .debug_bounds("rename-cancel")
+                .expect("rename cancel rendered");
+            tap(cx, 102, cancel.center());
+            assert!(
+                cx.debug_bounds("rename-card").is_none(),
+                "cancel did not remove rename card"
+            );
+            view.read_with(cx, |app, cx| {
+                assert_eq!(
+                    app.session.session_title.as_deref(),
+                    Some("Original tab"),
+                    "cancel committed title"
+                );
+                assert_eq!(app.composer.read(cx).text(), DRAFT);
+            });
+            // Verify another real long press works after modal cancellation,
+            // rather than resetting overlay flags directly in the fixture.
+            let tab = cx
+                .debug_bounds("tab-0")
+                .expect("tab reachable after rename cancellation");
+            hold_tab(cx, 103, tab.center());
+            view.read_with(cx, |app, _| assert_eq!(app.tab_menu, Some(app.active_tab)));
+            let dismiss = cx
+                .debug_bounds("tm-dismiss")
+                .expect("tab menu dismissal target");
+            tap(cx, 104, dismiss.center());
+            view.read_with(cx, |app, _| {
+                assert!(
+                    app.tab_menu.is_none(),
+                    "menu did not recover after rename cancellation"
+                )
+            });
+            assert_invariants(&view, cx);
+        });
+    }
+    eprintln!(
+        "raw-long-press rename complete seed=0x4c4f4e4750524553 cases=2 contacts=10 events=20 keypresses=2 holds=4"
+    );
+}
+
+#[gpui::test]
+fn cancelled_armed_wheel_pull_never_refreshes(cx: &mut TestAppContext) {
+    cx.update(init);
+    let dimensions = (390., 844.);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(
+            SafeArea {
+                top: 20.,
+                bottom: 0.,
+            },
+            window,
+            cx,
+        )
+    });
+    replay(0x50554c4c43414e43, 0, Surface::Chat, dimensions, || {
+        resize(&view, cx, dimensions);
+        install_surface(&view, cx, Surface::Chat);
+        draw(cx);
+        let at = view.read_with(cx, |app, _| {
+            app.feel
+                .g
+                .transcript
+                .expect("recorded transcript pull target")
+                .center()
+        });
+        let dispatch = |cx: &mut VisualTestContext, phase, dy| {
+            cx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position: at,
+                        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(dy))),
+                        modifiers: Default::default(),
+                        touch_phase: phase,
+                    }),
+                    cx,
+                );
+                window.draw(cx).clear(cx);
+            });
+        };
+        dispatch(cx, TouchPhase::Started, 0.);
+        dispatch(cx, TouchPhase::Moved, 400.);
+        view.read_with(cx, |app, _| {
+            assert!(
+                app.feel.g.pull >= crate::gestures::PULL_TRIGGER,
+                "pull fixture did not arm"
+            );
+            assert!(
+                app.feel.g.refreshing.is_none(),
+                "pull refreshed before release"
+            );
+        });
+        dispatch(cx, TouchPhase::Cancelled, 0.);
+        // A stray release after cancellation must not resurrect the armed pull.
+        // This catches latent release state without sleeping on wall-clock time.
+        dispatch(cx, TouchPhase::Ended, 0.);
+        cx.executor().advance_clock(Duration::from_millis(501));
+        cx.run_until_parked();
+        for _ in 0..4 {
+            draw(cx);
+        }
+        view.read_with(cx, |app, _| {
+            assert!(
+                app.feel.g.refreshing.is_none(),
+                "cancelled armed pull started refresh"
+            )
+        });
+        assert_invariants(&view, cx);
+    });
+    eprintln!("cancelled armed pull complete seed=0x50554c4c43414e43 cases=1 wheel_events=4");
+}
+
+#[gpui::test]
+fn raw_edge_capture_is_cancelled_when_screen_changes(cx: &mut TestAppContext) {
+    cx.update(init);
+    let dimensions = (390., 844.);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(
+            SafeArea {
+                top: 20.,
+                bottom: 0.,
+            },
+            window,
+            cx,
+        )
+    });
+    replay(0x454447455343454e, 0, Surface::Settings, dimensions, || {
+        resize(&view, cx, dimensions);
+        install_surface(&view, cx, Surface::Settings);
+        let start = point(px(2.), px(230.));
+        let end = point(px(140.), px(230.));
+        touch(cx, 200, TouchPhase::Started, start);
+        touch(cx, 200, TouchPhase::Moved, point(px(35.), px(230.)));
+        touch(cx, 200, TouchPhase::Moved, end);
+        let captured_offset = view.read_with(cx, |app, _| {
+            assert!(app.feel.g.dragging(), "raw edge fixture did not capture");
+            assert!(app.feel.g.edge_x > 0., "edge fixture has no visible travel");
+            app.feel.g.edge_x
+        });
+        // Deliberately do not call install_surface: resetting Feel would hide
+        // production scene-change cancellation bugs.
+        view.update(cx, |app, cx| {
+            app.screen = Screen::Chat;
+            cx.notify();
+        });
+        draw(cx);
+        view.read_with(cx, |app, _| {
+            assert!(
+                !app.feel.g.dragging(),
+                "screen change retained stale edge capture"
+            )
+        });
+        touch(cx, 200, TouchPhase::Ended, end);
+        cx.executor().advance_clock(Duration::from_millis(501));
+        cx.run_until_parked();
+        for _ in 0..8 {
+            draw(cx);
+        }
+        view.read_with(cx, |app, _| {
+            assert!(
+                app.screen == Screen::Chat,
+                "stale edge release navigated after scene change"
+            );
+            assert!(!app.feel.g.dragging());
+            assert!(
+                app.feel.g.edge_x >= 0. && app.feel.g.edge_x < captured_offset,
+                "cancelled edge offset did not settle toward zero"
+            );
+        });
+        reachable(cx, "menu", dimensions);
+        reachable(cx, "send", dimensions);
+        assert_invariants(&view, cx);
+    });
+    eprintln!(
+        "raw-edge scene replacement complete seed=0x454447455343454e cases=1 contacts=1 events=4"
+    );
+}
