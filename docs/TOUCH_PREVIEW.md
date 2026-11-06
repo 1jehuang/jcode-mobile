@@ -1,5 +1,24 @@
 # Touchscreen preview on Linux
 
+## Desktop launcher
+
+Install the app-menu entry, Desktop shortcut, and shell command:
+
+```bash
+scripts/mobile-simulator.sh --install
+```
+
+Open **Jcode Mobile Simulator** from your app launcher or Desktop, or run
+`jcode-mobile-simulator` in a terminal. It starts the same native phone preview
+as `touch-preview.sh`, rebuilding changed code with `justrust` when necessary.
+The first launch can take longer while dependencies build. Build and runtime
+output is saved to `${XDG_STATE_HOME:-$HOME/.local/state}/jcode-mobile/simulator.log`.
+Startup failures show a desktop notification when `notify-send` is available.
+Run `scripts/mobile-simulator.sh --dry-run` to inspect the launch command.
+This is a Linux preview, not Apple's iOS Simulator.
+
+## Terminal launch
+
 Run from a terminal inside an existing **Wayland** desktop session:
 
 ```bash
