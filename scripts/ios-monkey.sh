@@ -32,7 +32,8 @@ import json,sys; d=json.load(sys.stdin)["screen_dimensions"]
 print(int(d["width_points"]), int(d["height_points"]))')
 echo "screen ${W}x${H}"
 
-alive() { xcrun simctl spawn "$DEV" launchctl list 2>/dev/null | grep -q "UIKitApplication:$BUNDLE"; }
+# Simulator apps run as host processes; launchctl list inside the sim is flaky.
+alive() { pgrep -f "jcode-mobile.app/jcode-mobile" >/dev/null; }
 
 r() { echo $(( RANDOM % $1 )); }
 END=$(( SECONDS + DURATION )); n=0; fail=0
