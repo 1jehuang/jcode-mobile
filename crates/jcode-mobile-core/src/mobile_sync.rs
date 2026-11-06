@@ -2,6 +2,8 @@
 use crate::cloud::{Account, CLIENT_NAME};
 use serde::{Deserialize, Serialize};
 
+pub const SYNC_UNAVAILABLE: &str = "Synced sessions are not available on this server yet";
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct SyncedSession {
     pub session_id: String,
@@ -95,6 +97,14 @@ fn request(
     .map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
     let value: serde_json::Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    if status == 404
+        && value["error"]["code"] == "not_found"
+        && value["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("no route for "))
+    {
+        return Err(SYNC_UNAVAILABLE.into());
+    }
     if status >= 400 {
         return Err(value["error"]["message"]
             .as_str()
@@ -248,6 +258,26 @@ mod tests {
         assert_eq!(list(&account).unwrap_err(), "Subscription required");
         request.join().unwrap();
     }
+    #[test]
+    fn missing_sync_route_has_actionable_error() {
+        let (account, request) = mock_response(
+            404,
+            serde_json::json!({"error":{"code":"not_found","message":"no route for GET /v1/mobile/sessions"}}),
+        );
+        assert_eq!(
+            list(&account).unwrap_err(),
+            "Synced sessions are not available on this server yet"
+        );
+        request.join().unwrap();
+
+        let (account, request) = mock_response(
+            404,
+            serde_json::json!({"error":{"code":"not_found","message":"Command not found"}}),
+        );
+        assert_eq!(commands(&account).unwrap_err(), "Command not found");
+        request.join().unwrap();
+    }
+
     #[test]
     fn transfer_is_explicit_and_local_only() {
         let mut s: SyncedSession =

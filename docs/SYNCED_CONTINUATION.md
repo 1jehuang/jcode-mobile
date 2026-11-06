@@ -25,6 +25,15 @@ different account or API base are ignored. Network errors during polling retain
 the pending command. An uncertain enqueue response is reconciled with the command
 list before a retry is allowed.
 
+## Server compatibility
+
+The account API must deploy the mobile sync routes and their database migrations.
+A `404 not_found` response explicitly reporting `no route for ...` means the
+server does not support this feature yet. The drawer shows a muted availability
+notice instead of the raw routing error. Authentication, subscription, network,
+and missing-resource errors remain visible. Refresh retries the feature after
+the server is upgraded. Live SSH sessions remain independent and usable.
+
 ## Validation
 
 - `justrust check -p jcode-mobile -p jcode-mobile-core`

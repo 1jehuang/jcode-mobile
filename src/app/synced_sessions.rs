@@ -309,7 +309,11 @@ impl MobileApp {
             section = section.child(
                 div()
                     .text_size(crate::system::fs(12.))
-                    .text_color(t.error)
+                    .text_color(if error == mobile_sync::SYNC_UNAVAILABLE {
+                        t.text_muted
+                    } else {
+                        t.error
+                    })
                     .child(error.clone()),
             );
         }
