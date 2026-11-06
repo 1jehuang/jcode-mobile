@@ -1130,6 +1130,8 @@ mod ios_keyboard_tests {
         }
     }
 
+    // Reversed platform ranges are intentional malformed-input regression cases.
+    #[allow(clippy::reversed_empty_ranges)]
     #[gpui::test]
     fn marked_selection_uses_inserted_text_not_unicode_prefix(cx: &mut TestAppContext) {
         let (_input, cx) = setup(cx);
