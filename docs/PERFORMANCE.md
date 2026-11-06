@@ -1,5 +1,10 @@
 # Mobile performance pass, November 6, 2026
 
+This records the initial pass. See [remaining performance priorities](PERFORMANCE_PRIORITIES.md)
+for the subsequent measured scrolling, large-reply parsing, cache-admission and
+history-transfer improvements. Cache cutoffs and churn results below describe
+the initial implementation, not the later follow-up.
+
 ## Changes
 
 - **Transcript windowing:** measure exact row heights on the first layout, then
