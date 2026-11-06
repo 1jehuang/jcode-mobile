@@ -791,6 +791,89 @@
     },
     {
       "controls": {
+        "debug_selector:dynamic:id": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Commit and overview frame bounds are asserted at 320, 390 and 430 points with populated and empty injected snapshots. No pixel, clipping or real repository acceptance is implied.",
+          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
+        },
+        {
+          "kind": "gap",
+          "note": "Exact frame borders, colors, text clipping and device Dynamic Type combinations have no independent pixel assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/git_info.rs::git_frame",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Rows render in the populated Git card fixture, but individual row layout, truncation, status tint and per-row pixel output are not asserted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/git_info.rs::git_row",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:git-more-commits": 1,
+        "id:literal:git-more-commits": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "The rendered more-commits control is clicked after narrow-width frame checks; the expansion flag and unchanged composer draft are asserted with an injected snapshot.",
+          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
+        },
+        {
+          "kind": "gap",
+          "note": "Collapse-after-expand, individual commit pixels, large real histories and authenticated SSH results are not independently verified.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {"on_click": 1},
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_commits",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:git-more-files": 1,
+        "id:literal:git-more-files": 1
+      },
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "The rendered more-files control is clicked and expansion plus composer preservation asserted. A clean injected snapshot then verifies that the control disappears.",
+          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
+        },
+        {
+          "kind": "gap",
+          "note": "Collapse-after-expand, all status/diff-stat visual combinations, real repository completion and device presentation remain unverified.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {"on_click": 1},
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_overview",
+      "renderer": true
+    },
+    {
+      "controls": {
         "debug_selector:literal:git-pull-handle": 1,
         "id:literal:git-pull-handle": 1
       },
@@ -2033,8 +2116,8 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 175,
-    "event_site_count": 113,
-    "owner_count": 68
+    "control_site_count": 180,
+    "event_site_count": 115,
+    "owner_count": 72
   }
 }
