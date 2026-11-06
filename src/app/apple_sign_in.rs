@@ -15,6 +15,7 @@ use gpui::{AnyElement, Context, Entity, EventEmitter, Focusable as _, Window, di
 use jcode_mobile_core::{Account, apple};
 
 use super::{MobileApp, banner, label, outline_button};
+use crate::haptics::{self, Haptic};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
 
@@ -129,7 +130,10 @@ impl MobileApp {
                         this.connect(account, cx);
                     }
                     Err(e) if e.is_empty() => {} // user canceled the sheet
-                    Err(e) => this.sign_in_error = Some(e),
+                    Err(e) => {
+                        haptics::play(Haptic::Error);
+                        this.sign_in_error = Some(e);
+                    }
                 }
                 cx.notify();
             })
@@ -242,6 +246,7 @@ impl AppleLinkPanel {
             _ => return,
         };
         self.busy = true;
+        haptics::play(Haptic::Light);
         self.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -250,10 +255,12 @@ impl AppleLinkPanel {
                 this.busy = false;
                 match result {
                     Ok(Out::Sent(link_token)) => {
+                        haptics::play(Haptic::Success);
                         this.step = Step::Code { link_token };
                         this.focus_code = true;
                     }
                     Ok(Out::Linked(linked)) => {
+                        haptics::play(Haptic::Success);
                         let who = linked.email.clone().unwrap_or_else(|| "your Jcode account".into());
                         this.step = Step::Done {
                             message: if linked.merged {
@@ -265,7 +272,10 @@ impl AppleLinkPanel {
                         this.code.update(cx, |t, cx| t.set_text("", cx));
                         cx.emit(LinkedEvent { email: linked.email });
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(e) => {
+                        haptics::play(Haptic::Error);
+                        this.error = Some(e);
+                    }
                 }
                 cx.notify();
             })
@@ -287,6 +297,7 @@ impl Render for AppleLinkPanel {
                 outline_button("link-account", "Link existing Jcode account", true, &t).on_click(cx.listener(
                     |this, _, window, cx| {
                         this.step = Step::Email;
+                        haptics::play(Haptic::Light);
                         window.focus(&this.email.focus_handle(cx), cx);
                         cx.notify()
                     },
@@ -325,5 +336,32 @@ impl Render for AppleLinkPanel {
                     )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod haptic_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn invalid_or_busy_link_submissions_stay_silent(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| AppleLinkPanel::new(Account {
+            api_key: "fixture".into(),
+            api_base: "http://127.0.0.1:9".into(),
+            email: None,
+        }, cx));
+        panel.update(cx, |panel, cx| {
+            let (_, feedback) = haptics::capture(|| panel.submit(cx));
+            assert!(feedback.is_empty(), "closed panel is a no-op");
+            panel.step = Step::Email;
+            let (_, feedback) = haptics::capture(|| panel.submit(cx));
+            assert!(feedback.is_empty(), "invalid email is a no-op");
+            panel.step = Step::Code { link_token: "fixture".into() };
+            let (_, feedback) = haptics::capture(|| panel.submit(cx));
+            assert!(feedback.is_empty(), "incomplete code is a no-op");
+            panel.busy = true;
+            let (_, feedback) = haptics::capture(|| panel.submit(cx));
+            assert!(feedback.is_empty(), "busy submission is a no-op");
+        });
     }
 }

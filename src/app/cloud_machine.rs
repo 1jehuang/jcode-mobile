@@ -1,5 +1,6 @@
 //! Read-only cloud inventory. No credential contents enter the UI or transcript.
 use super::*;
+use crate::haptics::{self, Haptic};
 use jcode_mobile_core::cloud_machine::{self, MachineSnapshot};
 
 #[derive(Default)]
@@ -20,6 +21,7 @@ impl MobileApp {
         let Some(account) = self.account.clone() else {
             return;
         };
+        haptics::play(Haptic::Light);
         static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.cloud_machine.generation =
             NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -36,7 +38,10 @@ impl MobileApp {
                 this.cloud_machine.loading = false;
                 match result {
                     Ok(snapshot) => this.cloud_machine.snapshot = Some(snapshot),
-                    Err(_) => this.cloud_machine.error = Some("Could not inspect your cloud machine. Check your connection and try again.".into()),
+                    Err(_) => {
+                        haptics::play(Haptic::Error);
+                        this.cloud_machine.error = Some("Could not inspect your cloud machine. Check your connection and try again.".into());
+                    }
                 }
                 cx.notify();
             }).ok();
@@ -128,6 +133,7 @@ impl MobileApp {
                     let existing = this.composer.read(cx).text().to_string();
                     let draft = setup_draft(&existing);
                     this.composer.update(cx, |input, cx| input.set_text(&draft, cx));
+                    haptics::play(Haptic::Light);
                     this.screen = Screen::Chat;
                     cx.notify();
                 })))
@@ -201,7 +207,8 @@ mod tests {
                 git_credentials_present: false,
             });
             app.screen = Screen::Settings;
-            app.inspect_cloud_machine(cx);
+            let (_, feedback) = haptics::capture(|| app.inspect_cloud_machine(cx));
+            assert!(feedback.is_empty(), "offline inspection must stay silent");
             assert!(
                 !app.cloud_machine.loading,
                 "offline UI must not reach cloud"

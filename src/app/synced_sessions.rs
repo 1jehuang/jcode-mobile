@@ -1,6 +1,7 @@
 //! Local synced sessions stay read-only. Continuing creates a separate cloud tab.
 use super::a11y::A11yExt as _;
 use super::{MobileApp, Screen};
+use crate::haptics::{self, Haptic};
 use crate::theme::Theme;
 use gpui::{Context, SharedString, div, prelude::*, px};
 use jcode_mobile_core::{
@@ -48,6 +49,36 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn unavailable_continuation_and_refresh_stay_silent(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(super::super::SafeArea { top: 20., bottom: 0. }, window, cx)
+        });
+        view.update(cx, |app, cx| {
+            let (_, feedback) = haptics::capture(|| {
+                app.continue_synced_in_cloud(cx);
+                app.refresh_synced_sessions(cx);
+            });
+            assert!(feedback.is_empty(), "offline actions stay silent");
+            app.offline = false;
+            let (_, feedback) = haptics::capture(|| app.continue_synced_in_cloud(cx));
+            assert!(feedback.is_empty(), "missing account stays silent");
+            app.account = Some(Account {
+                api_key: "fixture".into(),
+                api_base: "http://127.0.0.1:9".into(),
+                email: None,
+            });
+            app.synced = State::fixture();
+            let (_, feedback) = haptics::capture(|| app.continue_synced_in_cloud(cx));
+            assert!(feedback.is_empty(), "empty continuation stays silent");
+            app.synced.submitting = true;
+            let (_, feedback) = haptics::capture(|| app.continue_synced_in_cloud(cx));
+            assert!(feedback.is_empty(), "busy continuation stays silent");
+        });
+    }
+
     #[test]
     fn stale_account_results_are_rejected() {
         let account = Account {
@@ -154,6 +185,7 @@ impl MobileApp {
             return;
         }
         self.synced.submitting = true;
+        haptics::play(Haptic::Light);
         self.synced.error = None;
         let request_account = account.clone();
         let task =
@@ -176,6 +208,7 @@ impl MobileApp {
                     }
                     Err(e) => {
                         // A lost response may have enqueued successfully. Reconcile before retrying.
+                        haptics::play(Haptic::Error);
                         this.synced.uncertain_submission = true;
                         this.synced.error = Some(format!("{e}. Refresh sessions before retrying."));
                         this.refresh_synced_sessions(cx);
@@ -253,12 +286,15 @@ impl MobileApp {
                                     this.synced.selected = None;
                                     this.screen = Screen::Chat;
                                     this.drawer_open_session(destination, cx);
+                                } else {
+                                    haptics::play(Haptic::Success);
                                 }
                                 cx.notify();
                                 true
                             }
                             Err(e) => {
                                 this.synced.polling = None;
+                                haptics::play(Haptic::Error);
                                 this.synced.error = Some(e);
                                 cx.notify();
                                 true
@@ -424,6 +460,7 @@ impl MobileApp {
                             this.continue_synced_in_cloud(cx);
                         } else {
                             this.synced.selected = Some(sid.clone());
+                            haptics::play(Haptic::Selection);
                             this.transfer_input
                                 .update(cx, |input, cx| input.set_text("", cx));
                         }
