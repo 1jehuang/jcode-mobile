@@ -76,7 +76,7 @@ fn directory_sheet_hit_test_invalid_same_valid_and_dismiss(cx: &mut TestAppConte
     let (view, cx) = mount(cx);
     tap(cx, "location");
     view.update(cx, |app, cx| {
-        assert!(app.dir_picker && !app.dir_picker_new_session);
+        assert!(app.dir_picker);
         app.dir_input
             .update(cx, |input, cx| input.set_text("   ", cx));
     });
@@ -108,7 +108,7 @@ fn directory_sheet_hit_test_invalid_same_valid_and_dismiss(cx: &mut TestAppConte
     tap(cx, "location");
     tap(cx, "dir-dismiss");
     view.read_with(cx, |app, _| {
-        assert!(!app.dir_picker && !app.dir_picker_new_session)
+        assert!(!app.dir_picker)
     });
 }
 
@@ -146,25 +146,23 @@ fn directory_recent_row_and_start_suggestions_hit_test(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn new_session_directory_offer_preserves_draft_until_create(cx: &mut TestAppContext) {
+fn right_edge_new_session_has_no_directory_sheet_and_preserves_draft(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     view.update(cx, |app, cx| {
         app.composer
             .update(cx, |input, cx| input.set_text("Original draft", cx))
     });
-    // The edge gesture opens this offer. Seed only its presentation here, then
-    // use its actual Create and dismissal targets.
-    view.update(cx, |app, cx| app.offer_new_session(cx));
-    tap(cx, "dir-dismiss");
-    view.read_with(cx, |app, cx| {
-        assert_eq!(app.tab_order, [0]);
-        assert_eq!(app.composer.read(cx).text(), "Original draft");
+    view.update(cx, |app, cx| {
+        app.swipe.feed(-crate::swipe::NEW_SESSION_COMMIT, 0., std::time::Instant::now());
+        app.end_swipe(cx);
     });
-    view.update(cx, |app, cx| app.offer_new_session(cx));
-    tap(cx, "dir-go");
+    draw(cx);
+    assert!(cx.debug_bounds("dir-go").is_none());
+    assert!(cx.debug_bounds("dir-input").is_none());
     view.read_with(cx, |app, _| {
+        assert!(!app.dir_picker);
         assert_eq!(app.tab_order.len(), 2);
-        assert_eq!(app.session.working_dir.as_deref(), Some("/repo"));
+        assert!(app.session.working_dir.is_none());
         assert!(app.connection.is_none());
     });
     tap(cx, "tab-0");

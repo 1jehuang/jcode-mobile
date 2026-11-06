@@ -159,8 +159,6 @@ pub struct MobileApp {
     recent_dirs_asked: Option<String>,
     /// Directory sheet opened from the composer's location label.
     dir_picker: bool,
-    /// The directory sheet offers a new session rather than moving this tab.
-    dir_picker_new_session: bool,
     dir_input: Entity<TextInput>,
     /// Horizontal swipe between tabs, like the desktop workspace pull.
     swipe: crate::swipe::Swipe,
@@ -356,7 +354,6 @@ impl MobileApp {
             feel: Default::default(),
             recent_dirs_asked: None,
             dir_picker: false,
-            dir_picker_new_session: false,
             dir_input,
             swipe: Default::default(),
             spinner_step: 0,
@@ -950,7 +947,6 @@ impl MobileApp {
         self.tab_menu = None;
         self.model_picker = false;
         self.dir_picker = false;
-        self.dir_picker_new_session = false;
         self.drawer_open = false;
         self.drawer_t = 0.;
         self.drawer_drag = 0.;
@@ -1440,7 +1436,7 @@ impl MobileApp {
             }
         }
         if offer_new {
-            self.offer_new_session(cx);
+            self.new_tab(cx);
         }
         cx.notify();
     }
@@ -1474,7 +1470,7 @@ impl MobileApp {
             .flex_col()
             .overflow_hidden()
             .when_some(new_session_progress, |d, progress| {
-                d.child(label(if progress >= 1. { "Release to choose a directory for a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
+                d.child(label(if progress >= 1. { "Release to create a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
                     .px(px(16.)).py(px(8.)))
             })
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {

@@ -1148,10 +1148,10 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered directory suggestions and new-session offer confirmation preserve drafts until creation in offline fixtures.",
+          "note": "Rendered directory suggestions navigate offline fixtures. Right-edge new-session creation skips the directory sheet and preserves the previous tab draft.",
           "tests": [
             "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test",
-            "src/app/navigation_coverage.rs::new_session_directory_offer_preserves_draft_until_create"
+            "src/app/navigation_coverage.rs::right_edge_new_session_has_no_directory_sheet_and_preserves_draft"
           ]
         },
         {
