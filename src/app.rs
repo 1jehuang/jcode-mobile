@@ -1126,7 +1126,12 @@ impl MobileApp {
         let destination = preview.map(|(direction, progress)| {
             ((selected as i32 + direction) as usize, progress)
         });
-        let targets = tabs::layout(track, count, selected);
+        let morph = destination.filter(|_| !crate::system::reduce_motion());
+        let targets = if let Some((target, progress)) = morph {
+            tabs::swipe_layout(track, count, selected, target, progress)
+        } else {
+            tabs::layout(track, count, selected)
+        };
         // Ease toward targets; snap on first sight or track change.
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
@@ -1140,7 +1145,7 @@ impl MobileApp {
             .zip(&targets)
             .map(|(id, target)| {
                 let g = self.tab_motion.entry(*id).or_insert(*target);
-                if snap {
+                if snap || morph.is_some() {
                     *g = *target;
                 } else {
                     moving |= tabs::step_toward(g, *target, dt);
@@ -1151,14 +1156,18 @@ impl MobileApp {
         if moving {
             cx.notify();
         }
-        let order = tabs::paint_order(count, selected);
+        let visual_selected = morph.filter(|(_, progress)| *progress >= 0.5)
+            .map(|(target, _)| target).unwrap_or(selected);
+        let order = tabs::paint_order(count, visual_selected);
         let mut strip = div().id("session-tabs").role(gpui::Role::TabList)
             .relative().flex_none().w(px(track)).h(px(44.));
         for &pos in &order {
             let id = self.tab_order[pos];
             let g = geometry[pos];
             let focused = pos == selected;
-            let swipe_progress = destination.filter(|(target, _)| *target == pos).map(|(_, p)| p);
+            // Derive the outline from animated geometry so cancellation and
+            // tap-driven switches fade with the size, rather than jumping.
+            let outline_weight = ((g.height - (tabs::TAB_HEIGHT - 2.0)) / 2.0).clamp(0.0, 1.0);
             let (exp_left, visible) = tabs::exposed(&geometry, pos, &order);
             let s = self.tab_session(id);
             let title: SharedString = s
@@ -1190,7 +1199,7 @@ impl MobileApp {
                 .when(visible > 14., |d| d.child(div().flex_none().size(px(7.)).rounded_full().bg(dot)))
                 .when(visible > 40., |d| {
                     d.child(
-                        label(title.clone(), if swipe_progress.is_some() { t.accent } else if focused { t.text_strong } else { t.text_secondary }, 12.)
+                        label(title.clone(), if focused { t.text_strong } else { t.text_secondary }, 12.)
                             .min_w_0()
                             .truncate(),
                     )
@@ -1213,25 +1222,9 @@ impl MobileApp {
                     .child(div().absolute().left_0().right_0()
                         .top(px((44. - g.height) / 2.)).h(px(g.height))
                         .rounded_full().border_1()
-                        .border_color(if focused { t.accent.opacity(0.5) } else { gpui::transparent_black() })
+                        .border_color(t.border.opacity(outline_weight))
                         .bg(bg))
                     .child(content)
-                    // Keep feedback inside the exposed portion of overlapping
-                    // tabs so even a narrow destination remains visible.
-                    .when(focused || swipe_progress.is_some(), |d| {
-                        let direction = preview.map(|(direction, _)| direction).unwrap_or(1);
-                        let progress = if focused { 1.0 } else { swipe_progress.unwrap_or(0.0) };
-                        let (fill_left, fill_width, track_width) = tabs::indicator(visible, direction, progress);
-                        d.child(div().absolute()
-                            .left(px(exp_left - g.left + pad))
-                            .bottom(px(7.))
-                            .w(px(track_width))
-                            .h(px(2.)).rounded_full()
-                            .bg(t.accent.opacity(0.2))
-                            .child(div().absolute().left(px(fill_left - pad))
-                                .h_full().rounded_full().w(px(fill_width))
-                                .bg(t.accent.opacity(if focused { 0.65 } else { 1.0 }))))
-                    })
                     .child(self.feel_tab_hit(id))
                     // Hold opens tab options, like iOS context menus; tap switches.
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, _, cx| {

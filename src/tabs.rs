@@ -7,18 +7,6 @@ pub const TAB_GAP: f32 = 6.0;
 pub const TAB_HEIGHT: f32 = 28.0;
 const ACTIVE_MAX: f32 = 208.0;
 
-/// Indicator coordinates within the exposed part of a tab. Previous-session
-/// progress fills from the right, next-session progress from the left.
-/// Keep even crowded tabs clipped to their own visible area.
-pub fn indicator(visible: f32, direction: i32, progress: f32) -> (f32, f32, f32) {
-    let visible = visible.max(0.0);
-    let inset = (visible / 12.0).min(6.0);
-    let track = (visible - 2.0 * inset - 2.0).max(0.0);
-    let fill = track * progress.clamp(0.0, 1.0);
-    let left = inset + if direction < 0 { track - fill } else { 0.0 };
-    (left, fill, track)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TabGeometry {
     pub left: f32,
@@ -74,6 +62,26 @@ pub fn layout(available: f32, count: usize, selected: usize) -> Vec<TabGeometry>
     (0..count).map(|i| l.geometry(i, selected)).collect()
 }
 
+/// Transfer the selected pill's size to its neighbor under the finger.
+/// Interpolating whole layouts also keeps neighboring outlines in bounds.
+pub fn swipe_layout(available: f32, count: usize, selected: usize, destination: usize, progress: f32) -> Vec<TabGeometry> {
+    let progress = progress.clamp(0.0, 1.0);
+    if progress == 0.0 {
+        return layout(available, count, selected);
+    }
+    if progress == 1.0 {
+        return layout(available, count, destination);
+    }
+    let target = layout(available, count, destination);
+    layout(available, count, selected).into_iter().zip(target).map(|(from, to)| {
+        TabGeometry {
+            left: from.left + (to.left - from.left) * progress,
+            width: from.width + (to.width - from.width) * progress,
+            height: from.height + (to.height - from.height) * progress,
+        }
+    }).collect()
+}
+
 /// Left tabs first, right tabs from the far end inward, focused tab on top.
 pub fn paint_order(count: usize, selected: usize) -> Vec<usize> {
     (0..selected).chain((selected + 1..count).rev()).chain(std::iter::once(selected)).collect()
@@ -125,16 +133,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn progress_is_directional_clamped_and_inside_exposed_tab() {
-        for visible in [0., 1., 6., 14., 40., 208.] {
-            for progress in [-1., 0., 0.5, 1., 2.] {
-                let (left, fill, track) = indicator(visible, 1, progress);
-                let (right, reverse_fill, reverse_track) = indicator(visible, -1, progress);
-                assert_eq!((fill, track), (reverse_fill, reverse_track));
-                assert!(fill >= 0. && fill <= track);
-                assert!(left >= 0. && left + fill <= visible);
-                assert!(right >= left && right + fill <= visible);
-                assert!((right - left - (track - fill)).abs() < 0.001);
+    fn swipe_morph_transfers_size_and_stays_bounded_in_both_directions() {
+        for width in [40., 240., 500.] {
+            for count in 2_usize..20 {
+                for selected in 0..count {
+                    for destination in [selected.saturating_sub(1), (selected + 1).min(count - 1)] {
+                        let from = layout(width, count, selected);
+                        let to = layout(width, count, destination);
+                        assert_eq!(swipe_layout(width, count, selected, destination, -1.), from);
+                        assert_eq!(swipe_layout(width, count, selected, destination, 2.), to);
+                        for progress in [0.25, 0.5, 0.75] {
+                            let geometry = swipe_layout(width, count, selected, destination, progress);
+                            for (i, g) in geometry.iter().enumerate() {
+                                assert!(g.left >= -0.01 && g.left + g.width <= width + 0.01);
+                                assert!((g.width - (from[i].width + (to[i].width - from[i].width) * progress)).abs() < 0.001);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
