@@ -262,20 +262,6 @@ fn run(
                 }));
                 emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
                 let stream = client.events(Some(&sid));
-                // Initial snapshot. Failures here surface as a lost connection.
-                for req in [
-                    jcode_sdk::ApiRequest::GetHistory { session_id: sid.clone() },
-                    jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid.clone() },
-                    jcode_sdk::ApiRequest::ListModels { session_id: sid.clone() },
-                    jcode_sdk::ApiRequest::ListSessions {
-                        include_archived: false,
-                        limit: Some(SESSION_LIST_LIMIT),
-                    },
-                ] {
-                    if let Ok(frame) = client.request(req) {
-                        emit(ConnectionOutput::Event(frame.event));
-                    }
-                }
                 if session_loop(&client, &sid, &stream, &inbox, &emit) {
                     break;
                 }
@@ -318,7 +304,34 @@ fn session_loop(
     emit: &dyn Fn(ConnectionOutput),
 ) -> bool {
     let (results, outcomes) = mpsc::channel::<ApiEvent>();
+    let (snapshots, initial) = mpsc::channel();
+    for req in [
+        jcode_sdk::ApiRequest::GetHistory { session_id: sid.into() },
+        jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid.into() },
+        jcode_sdk::ApiRequest::ListModels { session_id: sid.into() },
+        jcode_sdk::ApiRequest::ListSessions {
+            include_archived: false,
+            limit: Some(SESSION_LIST_LIMIT),
+        },
+    ] {
+        let (client, snapshots) = (client.clone(), snapshots.clone());
+        std::thread::spawn(move || {
+            if let Ok(frame) = client.request(req) {
+                let _ = snapshots.send(frame.event);
+            }
+        });
+    }
+    drop(snapshots);
+    // History replaces the reducer's transcript. Once commands or live events
+    // have advanced it, an initial snapshot may be stale and must not rewind
+    // that state. Explicit GetHistory replies still use the normal results path.
+    let mut history_superseded = false;
     loop {
+        while let Ok(event) = initial.try_recv() {
+            if !history_superseded || !matches!(event, ApiEvent::History { .. }) {
+                emit(ConnectionOutput::Event(event));
+            }
+        }
         let queued = {
             let mut i = inbox.lock().unwrap();
             i.drain();
@@ -328,6 +341,16 @@ fn session_loop(
             std::mem::take(&mut i.queued)
         };
         for request in queued {
+            if matches!(
+                request,
+                Request::Message { .. }
+                    | Request::SoftInterrupt { .. }
+                    | Request::Clear { .. }
+                    | Request::Compact { .. }
+                    | Request::GetHistory { .. }
+            ) {
+                history_superseded = true;
+            }
             let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
             std::thread::spawn(move || {
                 if let Some(event) = execute(&client, &sid, request) {
@@ -339,7 +362,10 @@ fn session_loop(
             emit(ConnectionOutput::Event(event));
         }
         match stream.next_timeout(Duration::from_millis(50)) {
-            Some(event) => emit(ConnectionOutput::Event(event)),
+            Some(event) => {
+                history_superseded = true;
+                emit(ConnectionOutput::Event(event));
+            }
             None if client.is_closed() => return false,
             None => {}
         }
@@ -429,7 +455,7 @@ mod tests {
                         assert_eq!(req["working_dir"], "/w");
                         reply(&mut w, id, json!({"ev":"attached","session":session}))
                     }
-                    "get_history" => reply(&mut w, id, json!({"ev":"history","session_id":"s1","messages":[]})),
+                    "get_history" => reply(&mut w, id, json!({"ev":"history","session_id":"s1","messages":[{"role":"assistant","content":"earlier"}]})),
                     "send_message" => {
                         assert_eq!(req["content"], "hi");
                         for e in [
@@ -452,13 +478,14 @@ mod tests {
         let mut state = crate::session::SessionState::default();
         let mut sent = false;
         while let Ok(o) = rx.recv_timeout(Duration::from_secs(5)) {
+            let history = matches!(&o, ConnectionOutput::Event(ApiEvent::History { .. }));
             state.apply(o);
-            if state.session_id.is_some() && !sent {
+            if history && !sent {
                 state.apply_intent(crate::session::LocalIntent::UserSentMessage("hi".into()));
                 conn.send(|id| Request::Message { id, content: "hi".into() });
                 sent = true;
             }
-            if sent && !state.is_processing && state.transcript.len() == 2 {
+            if sent && !state.is_processing && state.transcript.len() == 3 {
                 break;
             }
         }
@@ -466,7 +493,96 @@ mod tests {
         assert_eq!(state.session_id.as_deref(), Some("s1"));
         assert_eq!(state.session_title.as_deref(), Some("Demo"));
         assert_eq!(state.server_version.as_deref(), Some("fake"));
-        assert_eq!(state.transcript[1].text, "yo");
+        assert_eq!(state.transcript.len(), 3);
+        assert_eq!(state.transcript[0].text, "earlier");
+        assert_eq!(state.transcript[1].text, "hi");
+        assert_eq!(state.transcript[2].text, "yo");
+    }
+
+    #[test]
+    fn withheld_snapshots_do_not_block_commands_or_rewind_streamed_history() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release, released) = mpsc::channel();
+        let (finished, snapshots_replied) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut w = s.try_clone().unwrap();
+            let mut snapshots = Vec::new();
+            let mut sent = false;
+            for line in BufReader::new(s).lines() {
+                let req: Value = serde_json::from_str(&line.unwrap()).unwrap();
+                let id = req["id"].as_u64();
+                match req["req"].as_str().unwrap() {
+                    "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                    "create_session" => reply(&mut w, id, json!({"ev":"attached","session":{"session_id":"s1","status":"idle"}})),
+                    "get_history" | "get_runtime_info" | "list_models" | "list_sessions" => snapshots.push(req),
+                    "send_message" => {
+                        assert_eq!(req["content"], "hi");
+                        sent = true;
+                        reply(&mut w, id, json!({"ev":"message_accepted","session_id":"s1"}));
+                        reply(&mut w, None, json!({"ev":"text_delta","session_id":"s1","text":"live"}));
+                        reply(&mut w, None, json!({"ev":"turn_done","session_id":"s1"}));
+                    }
+                    other => panic!("unexpected request: {other}"),
+                }
+                if sent && snapshots.len() == 4 {
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    for req in snapshots {
+                        let event = if req["req"] == "get_history" {
+                            json!({"ev":"history","session_id":"s1","messages":[{"role":"assistant","content":"stale"}]})
+                        } else {
+                            json!({"ev":"error","code":"unknown_request","message":"snapshot completed"})
+                        };
+                        reply(&mut w, req["id"].as_u64(), event);
+                    }
+                    finished.send(()).unwrap();
+                    // Keep the connection open until the test explicitly stops it.
+                    released.recv_timeout(Duration::from_secs(5)).unwrap();
+                    break;
+                }
+            }
+        });
+        let factory: TransportFactory =
+            Arc::new(move || Ok(Box::new(Tcp(TcpStream::connect(addr).unwrap())) as Box<dyn Transport>));
+        let (conn, rx) = Connection::start_with_channel(Config::custom(factory), None);
+        conn.send(|id| Request::Message { id, content: "hi".into() });
+        let mut state = crate::session::SessionState::default();
+        state.apply_intent(crate::session::LocalIntent::UserSentMessage("hi".into()));
+        loop {
+            let output = rx.recv_timeout(Duration::from_secs(5)).expect("live turn blocked by snapshots");
+            let done = matches!(&output, ConnectionOutput::Event(ApiEvent::TurnDone { .. }));
+            state.apply(output);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(state.transcript.len(), 2);
+        assert_eq!(state.transcript[1].text, "live");
+        release.send(()).unwrap();
+        snapshots_replied.recv_timeout(Duration::from_secs(5)).unwrap();
+        // All three non-history replies must arrive independently. A late
+        // initial History must never replace the already-rendered live turn.
+        let mut completed = 0;
+        while completed < 3 {
+            let output = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!matches!(&output, ConnectionOutput::Event(ApiEvent::History { .. })));
+            if matches!(&output, ConnectionOutput::Event(ApiEvent::Error { .. })) {
+                completed += 1;
+            }
+            state.apply(output);
+        }
+        while let Ok(output) = rx.recv_timeout(Duration::from_millis(150)) {
+            assert!(!matches!(&output, ConnectionOutput::Event(ApiEvent::History { .. })));
+            state.apply(output);
+        }
+        assert_eq!(state.transcript.len(), 2);
+        assert_eq!(state.transcript[0].text, "hi");
+        assert_eq!(state.transcript[1].text, "live");
+        conn.stop();
+        release.send(()).unwrap();
+        server.join().unwrap();
     }
 
     #[test]
