@@ -363,7 +363,26 @@ fn session_loop(
         }
         match stream.next_timeout(Duration::from_millis(50)) {
             Some(event) => {
-                history_superseded = true;
+                // Attachment hydration also streams runtime identity, status,
+                // titles and other metadata. Those do not replace transcript
+                // content and must not cause the pending history to be lost.
+                history_superseded |= matches!(
+                    &event,
+                    ApiEvent::History { .. }
+                        | ApiEvent::TextDelta { .. }
+                        | ApiEvent::TextReplace { .. }
+                        | ApiEvent::TextDone { .. }
+                        | ApiEvent::ReasoningDelta { .. }
+                        | ApiEvent::ToolStart { .. }
+                        | ApiEvent::ToolInputDelta { .. }
+                        | ApiEvent::ToolCall { .. }
+                        | ApiEvent::ToolExec { .. }
+                        | ApiEvent::ToolDone { .. }
+                        | ApiEvent::SoftInterruptInjected { .. }
+                        | ApiEvent::SoftInterruptsCancelled { .. }
+                        | ApiEvent::TurnDone { .. }
+                        | ApiEvent::TurnStopped { .. }
+                );
                 emit(ConnectionOutput::Event(event));
             }
             None if client.is_closed() => return false,
@@ -439,9 +458,10 @@ mod tests {
 
     /// Fake harness: hello, create_session, snapshot, then one streamed turn.
     #[test]
-    fn creates_session_and_streams_turn() {
+    fn creates_session_keeps_history_after_metadata_and_streams_turn() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let (release_history, metadata_applied) = mpsc::channel();
         std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
             let mut w = s.try_clone().unwrap();
@@ -455,7 +475,14 @@ mod tests {
                         assert_eq!(req["working_dir"], "/w");
                         reply(&mut w, id, json!({"ev":"attached","session":session}))
                     }
-                    "get_history" => reply(&mut w, id, json!({"ev":"history","session_id":"s1","messages":[{"role":"assistant","content":"earlier"}]})),
+                    "get_history" => {
+                        reply(&mut w, None, json!({"ev":"runtime_info","session_id":"s1","model":"test-model","routes":[]}));
+                        reply(&mut w, None, json!({"ev":"session_status","session_id":"s1","status":"idle"}));
+                        // Wait until both events have actually traversed the
+                        // session loop, not merely been written to the socket.
+                        metadata_applied.recv_timeout(Duration::from_secs(5)).unwrap();
+                        reply(&mut w, id, json!({"ev":"history","session_id":"s1","messages":[{"role":"assistant","content":"earlier"}]}));
+                    }
                     "send_message" => {
                         assert_eq!(req["content"], "hi");
                         for e in [
@@ -477,10 +504,20 @@ mod tests {
         let (conn, rx) = Connection::start_with_channel(cfg, None);
         let mut state = crate::session::SessionState::default();
         let mut sent = false;
+        let mut runtime_seen = false;
+        let mut status_seen = false;
+        let mut history_released = false;
         while let Ok(o) = rx.recv_timeout(Duration::from_secs(5)) {
             let history = matches!(&o, ConnectionOutput::Event(ApiEvent::History { .. }));
+            runtime_seen |= matches!(&o, ConnectionOutput::Event(ApiEvent::RuntimeInfo { .. }));
+            status_seen |= matches!(&o, ConnectionOutput::Event(ApiEvent::SessionStatus { .. }));
             state.apply(o);
+            if runtime_seen && status_seen && !history_released {
+                release_history.send(()).unwrap();
+                history_released = true;
+            }
             if history && !sent {
+                assert!(history_released, "history must follow streamed metadata");
                 state.apply_intent(crate::session::LocalIntent::UserSentMessage("hi".into()));
                 conn.send(|id| Request::Message { id, content: "hi".into() });
                 sent = true;
@@ -493,6 +530,7 @@ mod tests {
         assert_eq!(state.session_id.as_deref(), Some("s1"));
         assert_eq!(state.session_title.as_deref(), Some("Demo"));
         assert_eq!(state.server_version.as_deref(), Some("fake"));
+        assert_eq!(state.model_name.as_deref(), Some("test-model"));
         assert_eq!(state.transcript.len(), 3);
         assert_eq!(state.transcript[0].text, "earlier");
         assert_eq!(state.transcript[1].text, "hi");
