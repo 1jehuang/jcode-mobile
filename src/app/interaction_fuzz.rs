@@ -657,11 +657,15 @@ fn raw_held_tab_scrubs_sessions_without_menu_or_release_click(cx: &mut TestAppCo
     view.read_with(cx, |app, _| {
         assert!(app.feel.g.tab_scrub().is_some());
         assert!(app.tab_menu.is_none());
+        assert!(app.feel.g.tab_options_ready());
     });
+    assert!(cx.debug_bounds("tab-hold-feedback").is_some(), "hold must visibly acknowledge activation");
     let end = at + point(px(90.), px(0.));
     touch(cx, 900, TouchPhase::Moved, end);
     view.read_with(cx, |app, _| assert_eq!(app.active_tab, 2));
     touch(cx, 900, TouchPhase::Ended, end);
+    draw(cx);
+    assert!(cx.debug_bounds("tab-hold-feedback").is_none(), "release must clear the hold hint");
     view.read_with(cx, |app, _| {
         assert_eq!(app.active_tab, 2);
         assert!(app.tab_menu.is_none());

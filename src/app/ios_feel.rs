@@ -506,7 +506,11 @@ impl MobileApp {
                                     this.feel_apply(a, window, cx);
                                     true
                                 }
-                                None => this.feel.g.tab_scrub().is_some(),
+                                None => {
+                                    let armed = this.feel.g.tab_scrub().is_some();
+                                    if armed { cx.notify(); }
+                                    armed
+                                }
                             }
                         })
                         .unwrap_or(false);
@@ -527,6 +531,19 @@ impl MobileApp {
             .flex_col()
             .child(body)
             .child(listen)
+            .when(self.feel.g.tab_scrub().is_some(), |d| d.child(
+                div().id("tab-hold-feedback")
+                    .debug_selector(|| "tab-hold-feedback".into())
+                    .absolute().left_0().right_0().top(px(self.safe.top + 52.))
+                    .flex().justify_center()
+                    .child(div().px(px(12.)).py(px(7.)).rounded_full()
+                        .bg(t.surface_elevated).border_1().border_color(t.accent)
+                        .child(label(if self.feel.g.tab_options_ready() {
+                            "Slide to browse · release for options"
+                        } else {
+                            "Slide to browse · release to select"
+                        }, t.text_strong, 12.)))
+            ))
             .when(self.feel.menu.is_some(), |d| d.child(self.render_msg_menu(t, cx)))
             .when(self.feel.selection.is_some(), |d| d.child(self.render_text_selection(t, cx)))
             .when(self.feel.rename.is_some(), |d| d.child(self.render_rename(t, cx)))
@@ -556,7 +573,7 @@ impl MobileApp {
         let id = self.tab_order[index];
         if id != self.active_tab {
             self.focus_tab(id, cx);
-            haptics::play(Haptic::Light);
+            haptics::play(Haptic::Selection);
         }
     }
 
@@ -570,7 +587,10 @@ impl MobileApp {
         match a {
             Some(Action::Refresh) => self.reconnect(cx),
             Some(Action::Dictate) => self.start_overscroll_voice(cx),
-            Some(a @ Action::Menu(..)) => self.feel_apply(a, window, cx),
+            Some(a @ Action::Menu(..)) => {
+                haptics::play(Haptic::Light);
+                self.feel_apply(a, window, cx);
+            }
             _ => {}
         }
         cx.notify();

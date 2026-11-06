@@ -1169,7 +1169,10 @@ impl MobileApp {
             };
             let pad = (visible / 12.).min(6.);
             // Focused tab lifts slightly off the bar; others sit flush with it.
-            let bg = if focused { t.raised } else { t.background };
+            let held = self.feel.g.tab_scrub().is_some_and(|(origin, dx)| {
+                if dx.abs() < crate::gestures::SLOP { origin == id } else { focused }
+            });
+            let bg = if held { t.accent.opacity(0.18) } else if focused { t.raised } else { t.background };
             // Label lives only in the exposed part, so overlaps never hide it.
             let content = div()
                 .absolute()
@@ -1208,7 +1211,7 @@ impl MobileApp {
                     .child(div().absolute().left_0().right_0()
                         .top(px((44. - g.height) / 2.)).h(px(g.height))
                         .rounded_full().border_1()
-                        .border_color(t.border.opacity(outline_weight))
+                        .border_color(if held { t.accent } else { t.border.opacity(outline_weight) })
                         .bg(bg))
                     .child(content)
                     .child(self.feel_tab_hit(id))

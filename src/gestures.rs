@@ -196,6 +196,10 @@ impl Gestures {
         }
     }
 
+    pub fn tab_options_ready(&self) -> bool {
+        matches!(self.drag, Drag::Tabs { moved: false, .. })
+    }
+
     fn arm_hold(&mut self, target: Target, p: Point<Pixels>) -> Option<Action> {
         haptics::play(Haptic::Medium);
         match target {
