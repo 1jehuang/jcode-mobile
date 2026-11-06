@@ -10,6 +10,160 @@ mod tests;
 
 const TRIGGER: f32 = 48.;
 
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::super::lifecycle_coverage::{fixture_account, fixture_app};
+    use super::*;
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, size};
+
+    fn snapshot(branch: &str) -> GitSnapshot {
+        GitSnapshot {
+            root: "/fixture".into(),
+            branch: branch.into(),
+            status: String::new(),
+            recent_commits: "fixture commit".into(),
+        }
+    }
+
+    #[gpui::test]
+    fn mocked_git_results_reject_stale_refresh_account_tab_session_and_directory(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(fixture_app);
+        view.update(cx, |app, cx| {
+            app.session.working_dir = Some("/fixture".into());
+            app.session.session_id = Some("fixture-session".into());
+            app.open_git(cx);
+            assert!(app.git_info.open && !app.git_info.loading);
+            assert!(
+                app.git_info.error.is_some(),
+                "offline refresh must short-circuit"
+            );
+            let old_generation = app.git_info.generation;
+            app.refresh_git(cx);
+            assert_ne!(app.git_info.generation, old_generation);
+            let generation = app.git_info.generation;
+            let context = app.git_context();
+            let account = fixture_account();
+            // Fake service completions exercise the actual completion seam.
+            app.git_info.error = None;
+            app.git_info.loading = true;
+            app.finish_git(&account, old_generation, &context, Ok(snapshot("old")), cx);
+            assert!(app.git_info.loading && app.git_info.snapshot.is_none());
+            let mut wrong_account = account.clone();
+            wrong_account.api_key = "different fixture".into();
+            app.finish_git(
+                &wrong_account,
+                generation,
+                &context,
+                Ok(snapshot("wrong-account")),
+                cx,
+            );
+            assert!(app.git_info.loading && app.git_info.snapshot.is_none());
+            for stale in [
+                (context.0 + 1, context.1.clone(), context.2.clone()),
+                (context.0, Some("other-session".into()), context.2.clone()),
+                (
+                    context.0,
+                    context.1.clone(),
+                    Some("/other-directory".into()),
+                ),
+            ] {
+                app.finish_git(
+                    &account,
+                    generation,
+                    &stale,
+                    Ok(snapshot("wrong-context")),
+                    cx,
+                );
+                assert!(app.git_info.loading && app.git_info.snapshot.is_none());
+            }
+            app.finish_git(&account, generation, &context, Ok(snapshot("main")), cx);
+            assert!(!app.git_info.loading);
+            assert_eq!(app.git_info.snapshot.as_ref().unwrap().branch, "main");
+            app.refresh_git(cx);
+            assert!(app.git_info.snapshot.is_none());
+            app.git_info.loading = true;
+            app.finish_git(
+                &account,
+                app.git_info.generation,
+                &context,
+                Err("secret transport detail".into()),
+                cx,
+            );
+            assert!(!app.git_info.loading);
+            assert!(!app.git_info.error.as_ref().unwrap().contains("secret"));
+            app.sign_out(cx);
+            app.finish_git(
+                &account,
+                generation,
+                &context,
+                Ok(snapshot("after-logout")),
+                cx,
+            );
+            assert!(!app.git_info.open && app.git_info.snapshot.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn git_overlay_wheel_at_boundaries_never_scrolls_or_releases_transcript(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut app = fixture_app(window, cx);
+            app.session.transcript.push(TranscriptEntry {
+                id: 1,
+                role: Role::Assistant,
+                text: "Long fixture transcript\n\n".repeat(100),
+                reasoning: String::new(),
+                tool_calls: Vec::new(),
+                is_streaming: false,
+                is_queued: false,
+            });
+            app.open_git(cx);
+            app
+        });
+        cx.simulate_resize(size(px(390.), px(844.)));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        view.update(cx, |app, cx| {
+            assert!(app.transcript_scroll.max_offset().y > px(100.));
+            app.transcript_scroll.scroll_to_bottom();
+            app.follow = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let before = view.read_with(cx, |app, _| app.transcript_scroll.offset());
+        let panel = cx.debug_bounds("git-info-panel").unwrap();
+        for position in [panel.center(), point(px(100.), px(30.))] {
+            for delta in [-80., 80.] {
+                for touch_phase in [TouchPhase::Moved, TouchPhase::Ended, TouchPhase::Cancelled] {
+                    cx.simulate_event(ScrollWheelEvent {
+                        position,
+                        delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+                        touch_phase,
+                        modifiers: Modifiers::default(),
+                    });
+                    cx.update(|window, cx| {
+                        window.draw(cx).clear(cx);
+                    });
+                    view.read_with(cx, |app, _| {
+                        assert!(app.follow && app.git_info.open);
+                        assert_eq!(app.transcript_scroll.offset(), before);
+                        assert!(!app.voice.busy && !app.voice.starting);
+                        assert!(app.feel.g.refreshing.is_none());
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct GitState {
     pub open: bool,
@@ -118,16 +272,34 @@ impl MobileApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                if this.account.as_ref() != Some(&expected) || this.git_info.generation != generation
-                    || this.git_context() != context { return; }
-                this.git_info.loading = false;
-                match result {
-                    Ok(snapshot) => this.git_info.snapshot = Some(snapshot),
-                    Err(_) => this.git_info.error = Some("Could not read Git information. Check the connection and that this directory is in a Git repository, then refresh.".into()),
-                }
-                cx.notify();
-            }).ok();
-        }).detach();
+                this.finish_git(&expected, generation, &context, result, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Shared by service completion and deterministic fake-result tests.
+    fn finish_git(
+        &mut self,
+        expected: &Account,
+        generation: u64,
+        context: &(u64, Option<String>, Option<String>),
+        result: Result<GitSnapshot, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account.as_ref() != Some(expected)
+            || self.git_info.generation != generation
+            || &self.git_context() != context
+        {
+            return;
+        }
+        self.git_info.loading = false;
+        match result {
+            Ok(snapshot) => self.git_info.snapshot = Some(snapshot),
+            Err(_) => self.git_info.error = Some("Could not read Git information. Check the connection and that this directory is in a Git repository, then refresh.".into()),
+        }
+        cx.notify();
     }
 
     pub(super) fn render_git_handle(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

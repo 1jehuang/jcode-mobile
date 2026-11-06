@@ -17,7 +17,14 @@ pub(super) struct VoiceState {
 impl VoiceState {
     pub fn status(&self) -> Option<String> {
         if self.starting {
-            Some(if self.stop_requested { "Finishing microphone startup…" } else { "Preparing microphone…" }.into())
+            Some(
+                if self.stop_requested {
+                    "Finishing microphone startup…"
+                } else {
+                    "Preparing microphone…"
+                }
+                .into(),
+            )
         } else if self.recording.is_some() && self.locked {
             Some("Mic locked on. Tap stop to transcribe and send, or cancel to discard.".into())
         } else if self.recording.is_some() && self.auto_send {
@@ -25,11 +32,22 @@ impl VoiceState {
         } else if self.recording.is_some() {
             Some("Recording. Tap stop to transcribe, or cancel to discard.".into())
         } else if self.busy {
-            Some(if self.auto_send { "Transcribing, then sending voice message…" } else { "Transcribing…" }.into())
-        } else { self.error.clone() }
+            Some(
+                if self.auto_send {
+                    "Transcribing, then sending voice message…"
+                } else {
+                    "Transcribing…"
+                }
+                .into(),
+            )
+        } else {
+            self.error.clone()
+        }
     }
 
-    pub fn has_error(&self) -> bool { self.error.is_some() }
+    pub fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
 }
 impl MobileApp {
     /// Start while the finger is still held, not after release.
@@ -40,13 +58,29 @@ impl MobileApp {
     }
 
     pub(super) fn scene_allows_voice(&self) -> bool {
-        self.screen == Screen::Chat && !self.offline && self.account.is_some()
-            && !self.voice.busy && self.voice.recording.is_none()
-            && !self.model_picker && !self.dir_picker && self.tab_menu.is_none()
+        self.screen == Screen::Chat
+            && !self.offline
+            && self.account.is_some()
+            && !self.voice.busy
+            && self.voice.recording.is_none()
+            && !self.voice.starting
+            && !self.drawer_open
+            && !self.git_info.open
+            && !self.model_picker
+            && !self.dir_picker
+            && self.tab_menu.is_none()
     }
 
-    fn finish_dictation(&mut self, generation: u64, tab: u64, result: Result<String, String>, cx: &mut Context<Self>) {
-        if self.voice.generation != generation || self.active_tab != tab { return; }
+    fn finish_dictation(
+        &mut self,
+        generation: u64,
+        tab: u64,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.voice.generation != generation || self.active_tab != tab {
+            return;
+        }
         self.voice.busy = false;
         self.voice.starting = false;
         self.voice.locked = false;
@@ -57,22 +91,35 @@ impl MobileApp {
             Ok(text) if !text.trim().is_empty() => {
                 // Voice sends only its own transcript. Never send or clear a draft
                 // that the user was typing while the service was working.
-                if auto_send && self.session.phase == ConnectionPhase::Connected && self.session.session_id.is_some() {
+                if auto_send
+                    && self.session.phase == ConnectionPhase::Connected
+                    && self.session.session_id.is_some()
+                {
                     let text = text.trim().to_string();
                     if self.session.is_processing {
-                        self.session.apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
-                        self.send(|id| Request::SoftInterrupt { id, content: text, urgent: false });
+                        self.session
+                            .apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
+                        self.send(|id| Request::SoftInterrupt {
+                            id,
+                            content: text,
+                            urgent: false,
+                        });
                     } else {
-                        self.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
+                        self.session
+                            .apply_intent(LocalIntent::UserSentMessage(text.clone()));
                         self.send(|id| Request::Message { id, content: text });
                     }
                     self.follow = true;
                     self.feel_sent();
                 } else {
-                    let draft = jcode_mobile_core::voice::append(self.composer.read(cx).text(), &text);
-                    self.composer.update(cx, |input, cx| input.set_text(draft, cx));
+                    let draft =
+                        jcode_mobile_core::voice::append(self.composer.read(cx).text(), &text);
+                    self.composer
+                        .update(cx, |input, cx| input.set_text(draft, cx));
                     if auto_send {
-                        self.voice.error = Some("Connection changed. Voice text saved to your draft, not sent.".into());
+                        self.voice.error = Some(
+                            "Connection changed. Voice text saved to your draft, not sent.".into(),
+                        );
                     }
                 }
             }
@@ -116,7 +163,9 @@ impl MobileApp {
     }
 
     pub(super) fn toggle_voice(&mut self, cx: &mut Context<Self>) {
-        if self.offline || self.voice.busy { return; }
+        if self.offline || self.voice.busy {
+            return;
+        }
         if self.voice.recording.is_some() {
             self.feel.voice_gesture.reset();
             self.feel.voice_wheel_at = None;
@@ -127,8 +176,14 @@ impl MobileApp {
     }
 
     fn transcribe_voice(&mut self, cx: &mut Context<Self>) {
-        let Some(account) = self.account.clone() else { self.cancel_voice(); cx.notify(); return };
-        let Some(recording) = self.voice.recording.take() else { return };
+        let Some(account) = self.account.clone() else {
+            self.cancel_voice();
+            cx.notify();
+            return;
+        };
+        let Some(recording) = self.voice.recording.take() else {
+            return;
+        };
         self.voice.busy = true;
         self.voice.starting = false;
         self.voice.locked = false;
@@ -136,23 +191,38 @@ impl MobileApp {
         let generation = self.voice.generation;
         let tab = self.active_tab;
         let task = cx.background_spawn(async move {
-            recording.stop().and_then(|wav| jcode_mobile_core::voice::transcribe(&account, wav))
+            recording
+                .stop()
+                .and_then(|wav| jcode_mobile_core::voice::transcribe(&account, wav))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |this, cx| this.finish_dictation(generation, tab, result, cx));
-        }).detach();
+            let _ = this.update(cx, |this, cx| {
+                this.finish_dictation(generation, tab, result, cx)
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    fn voice_started(&mut self, generation: u64, tab: u64, result: Result<Recording, String>, cx: &mut Context<Self>) {
-        if self.voice.generation != generation || self.active_tab != tab { return; }
+    fn voice_started(
+        &mut self,
+        generation: u64,
+        tab: u64,
+        result: Result<Recording, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.voice.generation != generation || self.active_tab != tab {
+            return;
+        }
         self.voice.busy = false;
         self.voice.starting = false;
         match result {
             Ok(recording) => {
                 self.voice.recording = Some(recording);
-                if self.voice.stop_requested { self.transcribe_voice(cx); }
+                if self.voice.stop_requested {
+                    self.transcribe_voice(cx);
+                }
             }
             Err(error) => {
                 self.voice.error = Some(error);
@@ -191,16 +261,24 @@ impl MobileApp {
         let task = cx.background_spawn(async move { Recording::start() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |this, cx| this.voice_started(generation, tab, result, cx));
-            // Bound capture even when the user never taps stop.
-            cx.background_executor().timer(Duration::from_secs(5 * 60)).await;
             let _ = this.update(cx, |this, cx| {
-                if this.voice.generation == generation && this.active_tab == tab && this.voice.recording.is_some() {
+                this.voice_started(generation, tab, result, cx)
+            });
+            // Bound capture even when the user never taps stop.
+            cx.background_executor()
+                .timer(Duration::from_secs(5 * 60))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.voice.generation == generation
+                    && this.active_tab == tab
+                    && this.voice.recording.is_some()
+                {
                     this.feel.voice_gesture.reset();
                     this.transcribe_voice(cx);
                 }
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 }
@@ -211,17 +289,106 @@ mod tests {
     use gpui::TestAppContext;
 
     #[gpui::test]
+    fn mocked_startup_failure_release_lock_and_retry_states(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+        view.update(cx, |app, cx| {
+            // Mock startup only. Recording::start/stop and transcription are never called.
+            app.voice.starting = true;
+            app.voice.busy = true;
+            app.voice.auto_send = true;
+            app.voice.began = Some(std::time::Instant::now());
+            assert_eq!(app.voice.status().as_deref(), Some("Preparing microphone…"));
+            app.finish_overscroll_voice(cx);
+            assert_eq!(
+                app.voice.status().as_deref(),
+                Some("Finishing microphone startup…")
+            );
+            app.lock_overscroll_voice(cx);
+            assert!(app.voice.locked);
+            app.voice_started(
+                app.voice.generation,
+                app.active_tab,
+                Err("permission denied fixture".into()),
+                cx,
+            );
+            assert!(app.voice.has_error());
+            assert!(!app.voice.starting && !app.voice.busy && !app.voice.locked);
+            assert!(!app.voice.auto_send && !app.voice.stop_requested);
+            assert!(app.voice.began.is_none() && app.voice.recording.is_none());
+            app.cancel_voice();
+            assert!(app.voice.status().is_none());
+            // Stop without a recording is a no-op, not a network transcription.
+            app.transcribe_voice(cx);
+            assert!(!app.voice.busy);
+            app.account = None;
+            app.voice.busy = true;
+            app.transcribe_voice(cx);
+            assert!(!app.voice.busy && !app.voice.has_error());
+        });
+    }
+
+    #[gpui::test]
+    fn mocked_callbacks_after_tab_roundtrip_and_signout_are_stale(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+        view.update(cx, |app, cx| {
+            let tab = app.active_tab;
+            let generation = app.voice.generation;
+            app.voice.starting = true;
+            app.voice.busy = true;
+            app.new_tab(cx);
+            app.focus_tab(tab, cx);
+            app.composer
+                .update(cx, |input, cx| input.set_text("retained draft", cx));
+            app.voice_started(generation, tab, Err("stale startup".into()), cx);
+            app.finish_dictation(generation, tab, Ok("stale transcript".into()), cx);
+            assert_eq!(app.composer.read(cx).text(), "retained draft");
+            assert!(!app.voice.has_error() && !app.voice.busy);
+            let generation = app.voice.generation;
+            app.voice.busy = true;
+            app.voice.auto_send = true;
+            app.sign_out(cx);
+            app.finish_dictation(generation, tab, Ok("after logout".into()), cx);
+            app.voice_started(generation, tab, Err("after logout".into()), cx);
+            assert!(app.composer.read(cx).text().is_empty());
+            assert!(app.session.transcript.is_empty());
+            assert!(!app.voice.has_error() && !app.voice.busy);
+        });
+    }
+
+    #[gpui::test]
     fn voice_results_preserve_typing_and_never_send(cx: &mut TestAppContext) {
         cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 47.,
+                    bottom: 34.,
+                },
+                window,
+                cx,
+            )
+        });
         view.update(cx, |app, cx| {
-            app.composer.update(cx, |input, cx| input.set_text("Typed meanwhile", cx));
+            app.composer
+                .update(cx, |input, cx| input.set_text("Typed meanwhile", cx));
             app.voice.busy = true;
-            app.finish_dictation(app.voice.generation, app.active_tab, Ok("spoken text".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab,
+                Ok("spoken text".into()),
+                cx,
+            );
             assert_eq!(app.composer.read(cx).text(), "Typed meanwhile spoken text");
             assert!(app.session.transcript.is_empty());
             assert!(!app.voice.busy);
-            app.finish_dictation(app.voice.generation, app.active_tab, Err("No speech".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab,
+                Err("No speech".into()),
+                cx,
+            );
             assert_eq!(app.composer.read(cx).text(), "Typed meanwhile spoken text");
             assert_eq!(app.voice.error.as_deref(), Some("No speech"));
         });
@@ -230,12 +397,26 @@ mod tests {
     #[gpui::test]
     fn canceled_and_wrong_tab_results_are_discarded(cx: &mut TestAppContext) {
         cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 47.,
+                    bottom: 34.,
+                },
+                window,
+                cx,
+            )
+        });
         view.update(cx, |app, cx| {
             let generation = app.voice.generation;
             app.cancel_voice();
             app.finish_dictation(generation, app.active_tab, Ok("stale".into()), cx);
-            app.finish_dictation(app.voice.generation, app.active_tab + 1, Ok("wrong tab".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab + 1,
+                Ok("wrong tab".into()),
+                cx,
+            );
             app.toggle_voice(cx);
             assert!(app.composer.read(cx).text().is_empty());
             assert!(!app.voice.busy);
@@ -244,19 +425,41 @@ mod tests {
     }
 
     #[gpui::test]
-    fn quick_voice_send_preserves_unrelated_draft_and_queues_while_processing(cx: &mut TestAppContext) {
+    fn quick_voice_send_preserves_unrelated_draft_and_queues_while_processing(
+        cx: &mut TestAppContext,
+    ) {
         cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 47.,
+                    bottom: 34.,
+                },
+                window,
+                cx,
+            )
+        });
         view.update(cx, |app, cx| {
             app.session.phase = ConnectionPhase::Connected;
             app.session.session_id = Some("voice-fixture".into());
-            app.composer.update(cx, |input, cx| input.set_text("Do not send this draft", cx));
+            app.composer
+                .update(cx, |input, cx| input.set_text("Do not send this draft", cx));
             app.voice.auto_send = true;
-            app.finish_dictation(app.voice.generation, app.active_tab, Ok("  quick voice  ".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab,
+                Ok("  quick voice  ".into()),
+                cx,
+            );
             assert_eq!(app.session.transcript.last().unwrap().text, "quick voice");
             assert_eq!(app.composer.read(cx).text(), "Do not send this draft");
             app.voice.auto_send = true;
-            app.finish_dictation(app.voice.generation, app.active_tab, Ok("follow up".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab,
+                Ok("follow up".into()),
+                cx,
+            );
             assert!(app.session.transcript.last().unwrap().is_queued);
             assert_eq!(app.composer.read(cx).text(), "Do not send this draft");
         });
@@ -265,7 +468,16 @@ mod tests {
     #[gpui::test]
     fn release_during_startup_and_cancellation_do_not_restart_or_send(cx: &mut TestAppContext) {
         cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 47.,
+                    bottom: 34.,
+                },
+                window,
+                cx,
+            )
+        });
         view.update(cx, |app, cx| {
             app.voice.starting = true;
             app.voice.busy = true;
@@ -275,7 +487,12 @@ mod tests {
             app.lock_overscroll_voice(cx);
             let generation = app.voice.generation;
             app.cancel_voice();
-            app.voice_started(generation, app.active_tab, Err("late permission failure".into()), cx);
+            app.voice_started(
+                generation,
+                app.active_tab,
+                Err("late permission failure".into()),
+                cx,
+            );
             assert!(!app.voice.busy && !app.voice.locked && !app.voice.auto_send);
             assert!(app.voice.error.is_none());
             assert!(app.session.transcript.is_empty());
@@ -285,10 +502,24 @@ mod tests {
     #[gpui::test]
     fn disconnected_or_empty_quick_result_never_sends(cx: &mut TestAppContext) {
         cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 47.,
+                    bottom: 34.,
+                },
+                window,
+                cx,
+            )
+        });
         view.update(cx, |app, cx| {
             app.voice.auto_send = true;
-            app.finish_dictation(app.voice.generation, app.active_tab, Ok("saved voice".into()), cx);
+            app.finish_dictation(
+                app.voice.generation,
+                app.active_tab,
+                Ok("saved voice".into()),
+                cx,
+            );
             assert_eq!(app.composer.read(cx).text(), "saved voice");
             assert!(app.session.transcript.is_empty());
             app.voice.auto_send = true;
