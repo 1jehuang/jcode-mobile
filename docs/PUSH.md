@@ -71,6 +71,25 @@ Kind mapping:
 | needs_input | "Needs your input"| JCODE_INPUT | time-sensitive | 1.0       |
 | wake        | "Update"          | JCODE_TURN  | active         | 0.5       |
 
+Each field has one job: title identifies the session, subtitle conveys the
+event, and body supplies the result, failure, or question. The Worker removes
+repeated leading session titles, app names, and status labels from the body
+before applying its length limit. It does not remove matching words inside
+substantive prose. Empty or status-only bodies receive a kind-specific prompt
+to review the result, inspect/retry the failure, respond, or see the update.
+Blank titles fall back to `jcode`, as do titles identical to the status subtitle.
+Text is whitespace-normalized and Unicode-safe, with truncation preserving
+complete emoji and combining-character sequences.
+
+For example, `session_title: "Fix login"` and
+`body: "Fix login: Finished: Fixed token refresh; 12 tests pass."` produce:
+
+```text
+Fix login
+Finished
+Fixed token refresh; 12 tests pass.
+```
+
 Headers: `apns-push-type: alert`, `apns-priority: 10`, `apns-topic: <bundle_id>`,
 `apns-expiration: now+86400`, `apns-collapse-id: <session_id>:<turn_id>` (only
 when turn_id present, max 64 bytes).
@@ -82,6 +101,19 @@ when turn_id present, max 64 bytes).
 
 Tapping opens the app on `session_id`. Reply sends the text to that session.
 The app suppresses banners in the foreground only for the session on screen.
+
+## Local fallback previews
+
+When APNs is not live, the app can post a local banner while its connection
+remains alive in the background. The preview uses the latest nonempty assistant
+response after the current user message, never a previous turn's result. Queued
+follow-ups do not hide the current result. A turn with no text response says
+"Finished without a text response" instead of recycling stale text.
+
+Local previews collapse whitespace, strip heading/list/code-emphasis layout,
+and include identical lines only once. They are capped at 180 Unicode characters
+and prefer whole-word truncation. Identical alerts already waiting to be posted
+are coalesced, but an identical result from a later turn remains deliverable.
 
 ## Worker secrets
 
