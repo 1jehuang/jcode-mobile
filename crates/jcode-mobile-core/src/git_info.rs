@@ -208,5 +208,43 @@ mod tests {
             .unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            &"x".repeat(50000),
+        ]);
+        let output = Command::new("sh")
+            .args(["-c", &inspection_command(root.to_str().unwrap()).unwrap()])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_script_kills_a_stalled_git_process() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("jcode-git-timeout-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let fake = root.join("git");
+        std::fs::write(&fake, "#!/usr/bin/python3\nimport time\ntime.sleep(60)\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let start = std::time::Instant::now();
+        let output = Command::new("/bin/sh")
+            .args(["-c", &inspection_command("/unused").unwrap()])
+            .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+            .output()
+            .unwrap();
+        let elapsed = start.elapsed();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        assert!(elapsed < std::time::Duration::from_secs(9));
     }
 }
