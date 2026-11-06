@@ -287,11 +287,11 @@ impl MobileApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let query = self.drawer_search.read(cx).text().trim().to_lowercase();
-        let mut section = div().flex().flex_col().px(px(12.)).gap(px(6.));
+        let mut section = div().flex().flex_col().px(px(10.)).gap(px(2.));
         section = section.child(
             div()
-                .pt(px(12.))
-                .text_size(crate::system::fs(12.))
+                .pt(px(5.))
+                .text_size(crate::system::fs(11.))
                 .text_color(t.text_muted)
                 .child("Synced from your computers"),
         );
@@ -333,13 +333,15 @@ impl MobileApp {
             let mut row = div()
                 .flex()
                 .flex_col()
-                .gap(px(5.))
-                .rounded(px(10.))
+                .gap(px(1.))
+                .rounded(px(8.))
                 .bg(t.surface)
-                .p(px(10.))
+                .px(px(8.))
+                .py(px(4.))
                 .child(
                     div()
-                        .text_size(crate::system::fs(14.))
+                        .truncate()
+                        .text_size(crate::system::fs(13.))
                         .text_color(t.text_strong)
                         .child(session.label().to_string()),
                 )
@@ -352,7 +354,8 @@ impl MobileApp {
                             session.host.as_deref().unwrap_or("computer")
                         )),
                 );
-            if let Some(preview) = &session.last_message_preview {
+            // Keep the list dense. Selecting a continuation reveals its preview.
+            if let Some(preview) = session.last_message_preview.as_ref().filter(|_| selected) {
                 row = row.child(
                     div()
                         .max_h(px(60.))
@@ -367,7 +370,8 @@ impl MobileApp {
                     div()
                         .id(SharedString::from(format!("open-transfer-{sid}")))
                         .a11y_text_button()
-                        .min_h(px(44.))
+                        .min_h(px(28.))
+                        .text_size(crate::system::fs(12.))
                         .cursor_pointer()
                         .text_color(t.accent)
                         .child("Open cloud continuation")
@@ -396,7 +400,8 @@ impl MobileApp {
                 div()
                     .id(SharedString::from(format!("transfer-{sid}")))
                     .a11y_text_button()
-                    .min_h(px(44.))
+                    .min_h(px(if selected { 44. } else { 26. }))
+                    .text_size(crate::system::fs(12.))
                     .cursor_pointer()
                     .text_color(if pending { t.text_muted } else { t.accent })
                     .child(if pending {

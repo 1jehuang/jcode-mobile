@@ -1,6 +1,6 @@
 //! Slide-in session drawer, modelled on jcode-desktop's workspace sidebar but
 //! laid out for one thumb: search at the top, then open tabs, pinned sessions,
-//! and recent sessions grouped by cloud directory (44pt rows with desktop's
+//! and recent sessions grouped by cloud directory (compact rows with desktop's
 //! age, size, edit, and agent metrics). Primary actions (new session, account)
 //! sit at the bottom in the thumb zone. Drag it left to close.
 
@@ -17,6 +17,10 @@ const WIDTH_SHARE: f32 = 0.84;
 const MAX_WIDTH: f32 = 340.;
 /// Apple HIG minimum touch target.
 const ROW_MIN: f32 = 44.;
+/// Dense list rows, independent of the primary action touch targets.
+const SESSION_ROW_MIN: f32 = 38.;
+const TAB_ROW_MIN: f32 = 32.;
+const GROUP_ROW_MIN: f32 = 28.;
 /// Drag-to-close travel (share of drawer width) that commits the close.
 const CLOSE_SHARE: f32 = 0.3;
 
@@ -165,9 +169,9 @@ impl MobileApp {
 
     /// Search field pinned at the top: filters by title, save label, and dir.
     fn render_drawer_search(&self, t: &Theme) -> impl IntoElement {
-        div().flex_none().px(px(10.)).pt(px(10.)).pb(px(6.)).child(
+        div().flex_none().px(px(10.)).pt(px(4.)).pb(px(4.)).child(
             div()
-                .h(px(36.))
+                .h(px(32.))
                 .px(px(10.))
                 .flex()
                 .items_center()
@@ -187,7 +191,7 @@ impl MobileApp {
             .flex()
             .gap(px(8.))
             .px(px(10.))
-            .pt(px(8.))
+            .pt(px(4.))
             .border_t_1()
             .border_color(t.border)
             .child(
@@ -269,7 +273,7 @@ impl MobileApp {
                 div()
                     .id(("drawer-tab", id))
                     .mx(px(8.))
-                    .min_h(px(ROW_MIN))
+                    .min_h(px(TAB_ROW_MIN))
                     .pl(px(12.))
                     .flex()
                     .items_center()
@@ -296,11 +300,12 @@ impl MobileApp {
                             .child(title),
                     )
                     .child(
-                        // Full 44pt hit box for the close glyph.
+                        // Match the compact tab row while keeping a wide target.
                         div()
                             .id(("drawer-tab-close", id)).a11y_button("Close tab")
                             .flex_none()
-                            .size(px(ROW_MIN))
+                            .w(px(ROW_MIN))
+                            .h(px(TAB_ROW_MIN))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -365,9 +370,9 @@ impl MobileApp {
             div()
                 .id(gpui::SharedString::from(format!("drawer-session-{}", s.session_id)))
                 .mx(px(8.))
-                .min_h(px(ROW_MIN + 8.))
-                .px(px(12.))
-                .py(px(6.))
+                .min_h(px(SESSION_ROW_MIN))
+                .px(px(10.))
+                .py(px(3.))
                 .flex()
                 .flex_col()
                 .justify_center()
@@ -401,8 +406,8 @@ impl MobileApp {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(crate::system::fs(14.5))
-                                .line_height(relative(1.35))
+                                .text_size(crate::system::fs(13.))
+                                .line_height(relative(1.2))
                                 .text_color(if live { t.text_strong } else { t.text })
                                 .child(session_title(s)),
                         ),
@@ -414,7 +419,8 @@ impl MobileApp {
                         .gap(px(6.))
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(crate::system::fs(11.5))
+                        .text_size(crate::system::fs(10.5))
+                        .line_height(relative(1.15))
                         .text_color(t.text_muted)
                         .when_some(meta, |d, m| d.child(m))
                         .when_some(edits, |d, e| {
@@ -453,7 +459,7 @@ impl MobileApp {
                     .items_center()
                     .gap(px(6.))
                     .pl(px(14.))
-                    .pt(px(10.))
+                    .pt(px(3.))
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .child(
@@ -470,11 +476,12 @@ impl MobileApp {
                     })
                     .child(div().flex_1())
                     .child(
-                        // New session in this directory; 44pt target.
+                        // Compact directory action, with a wide horizontal target.
                         div()
                             .id(gpui::SharedString::from(format!("drawer-new-in-{}", dir.as_deref().unwrap_or(""))))
                             .flex_none()
-                            .size(px(ROW_MIN))
+                            .w(px(ROW_MIN))
+                            .h(px(GROUP_ROW_MIN))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -501,10 +508,10 @@ impl MobileApp {
             .id("drawer-account").a11y_button("Account settings")
             .flex_none()
             .mx(px(8.))
-            .mb(px(6.))
-            .mt(px(6.))
+            .mb(px(2.))
+            .mt(px(2.))
             .px(px(8.))
-            .min_h(px(ROW_MIN + 8.))
+            .min_h(px(ROW_MIN))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -548,8 +555,8 @@ fn now_ms() -> u64 {
 fn section_label(text: &'static str, t: &Theme) -> impl IntoElement {
     div()
         .px(px(16.))
-        .pt(px(12.))
-        .pb(px(4.))
+        .pt(px(5.))
+        .pb(px(2.))
         .text_size(crate::system::fs(11.))
         .text_color(t.text_muted)
         .child(text)
