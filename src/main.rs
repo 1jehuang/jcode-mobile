@@ -20,6 +20,7 @@ mod ios_ext;
 mod haptics;
 mod gestures;
 mod share;
+mod voice_capture;
 
 use std::borrow::Cow;
 

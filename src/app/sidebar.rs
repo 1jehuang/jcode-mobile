@@ -128,6 +128,16 @@ impl MobileApp {
             .pb(px(self.drawer_insets.1))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(cx.listener(move |this, ev: &gpui::ScrollWheelEvent, _window, cx| {
+                if ev.touch_phase == gpui::TouchPhase::Cancelled {
+                    if this.drawer_drag_last.take().is_some() {
+                        this.drawer_t = (this.drawer_t + this.drawer_drag / width).clamp(0., 1.);
+                        this.drawer_drag = 0.;
+                        this.drawer_last = std::time::Instant::now();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                    return;
+                }
                 let d = ev.delta.pixel_delta(px(20.));
                 let (dx, dy) = (f32::from(d.x), f32::from(d.y));
                 // Only a mostly-horizontal leftward drag moves the drawer;
@@ -519,6 +529,7 @@ impl MobileApp {
             .cursor_pointer()
             .active(|el| el.bg(t.background))
             .on_click(cx.listener(|this, _, _, cx| {
+                this.cancel_voice();
                 this.screen = Screen::Settings;
                 this.close_drawer(cx);
             }))

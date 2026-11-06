@@ -11,6 +11,7 @@ pub mod crash;
 pub mod credentials;
 pub mod gateway;
 pub mod routes;
+pub mod voice;
 pub mod session;
 
 /// The harness API client this core is built on.
