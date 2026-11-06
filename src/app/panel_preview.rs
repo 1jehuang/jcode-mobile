@@ -201,6 +201,7 @@ Third output line".into(),
         prepare_destination(&view, cx);
         let destination_composer = cx.debug_bounds("chat-composer").unwrap();
         let destination_left = destination_composer.left();
+        let destination_tool = cx.debug_bounds("tool-preview-fixture").expect("expanded destination tool subtree");
         let destination_range = view.read_with(cx, |app, _| app.transcript_scroll.max_offset());
         let destination_offset = view.read_with(cx, |app, _| app.transcript_scroll.offset());
         let materialized: Vec<_> = ENTRY_SELECTORS.iter()
@@ -233,6 +234,11 @@ Third output line".into(),
         near(composer.origin.y, destination_composer.origin.y, "composer vertical position");
         near(composer.size.height, destination_composer.size.height, "multiline composer height");
         near(composer.size.width, destination_composer.size.width, "composer width");
+        let preview_tool = cx.debug_bounds("tool-preview-fixture").expect("expanded preview tool subtree");
+        near(preview_tool.origin.y, destination_tool.origin.y, "expanded tool vertical offset");
+        near(preview_tool.origin.x - panel.origin.x, destination_tool.origin.x - destination_left, "expanded tool horizontal inset");
+        near(preview_tool.size.width, destination_tool.size.width, "expanded tool width");
+        near(preview_tool.size.height, destination_tool.size.height, "expanded tool output height");
         for (selector, _) in &materialized {
             assert!(cx.debug_bounds(selector).is_some(), "destination row {selector} missing from preview");
         }
