@@ -201,7 +201,7 @@ raw touch events**. Receipt: `20261106-012249698-362106`, 108.62 seconds of test
 This corpus exercises the raw campaign's eight surfaces, not every newly inventoried
 service/overlay path. The focused regression suites cover those additional paths.
 
-### Expanded full-suite acceptance
+### Earlier expanded full-suite checkpoint
 
 After integrating the surface ledger and fixes, the complete binary suite passed
 all eight configurations on November 6, 2026 (Pacific time):
@@ -231,6 +231,29 @@ with the real touch/Chat/tab assertions retained. The corrected test passed
 `SEED=42 ITERATIONS=128`, seeds 42 through 169, receipt
 `20261106-013158332-426759`. This is fixture stabilization, not a production fix
 or evidence of native animation timing.
+
+### Follow-up local gap closure and current acceptance
+
+Continuing the explicit ledger gaps found and fixed sibling directory/Git/tab-menu
+click-through and stale TextInput drag selection after release outside the field.
+New focused tests cover those modal overlaps, actual field focus/typing/selection,
+connection-phase presentation, rendered dictation cancellation, offline submit
+boundaries and standalone software-keyboard pointer callbacks.
+
+The complete updated matrix passed **224 tests in each of eight configurations**,
+**1,792 passing executions**, zero failures and zero filtered tests. Only the
+opt-in read-only inventory dump is ignored. First/final receipts:
+`20261106-020356082-743189` and `20261106-020744417-771073` (263.4 seconds).
+The reviewed guard now inventories 65 owners, 112 static event sites and 163
+control/helper-family sites, with 59 partial-evidence owners and six gap-only.
+These are structural counts, not behavioral coverage percentages.
+
+Shared core tests passed 55 tests in `20261106-020432636-748202`; binary/test
+Clippy passed in `20261106-020404988-744276`, with warnings remaining. Normal
+justrust fallback was used after the documented hosted billing-route 404. See
+`MOBILE_INTERACTION_COVERAGE.md` for focused red/green receipts and exact limits.
+No native-service acceptance is implied, and standalone fixed-style keyboard
+fixtures do not establish visual Dynamic Type/theme/motion coverage.
 
 ## What a passing run means
 

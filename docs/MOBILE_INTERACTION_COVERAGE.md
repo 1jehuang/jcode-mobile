@@ -172,8 +172,32 @@ Additional focused coverage includes connection-phase status text and bounded
 phone/landscape presentation; rendered dictation cancellation across synthetic
 start/busy flags; offline email/code submit boundaries; actual pointer-focused
 composer/search/directory/onboarding editing; and standalone rendered software
-keyboard callbacks. The earlier 209-test checkpoint does not validate these
-newer source changes. A fresh full-suite receipt is required after integration.
+keyboard callbacks. A fresh complete matrix now validates these integrated
+changes: **224 tests passed in each of eight configurations, 1,792 passing
+executions**, with zero failures and zero filtered tests. Only the read-only
+inventory discovery dump is ignored. The first receipt is
+`20261106-020356082-743189` and the final receipt is
+`20261106-020744417-771073`. The campaign took 263.4 seconds end-to-end.
+All eight runs include the reviewed inventory guard. This is bounded headless
+GPUI acceptance, not a claim of every possible mobile interaction or native
+service behavior. Hosted builds remained unavailable through the documented
+billing-route 404, so these runs used justrust normal local fallback with local
+GPUI overrides.
+
+Focused acceptance receipts for this expansion:
+
+- Input field/pointer workflows: six tests in each of eight configurations
+  (48 executions), receipt `20261106-020254122-734308`. Outside-release selection
+  first failed in `20261106-015514233-671957` before the minimized fix.
+- Local dictation/submit controls: two tests per configuration (16 executions),
+  receipt `20261106-020008031-709373`. Submit assertions cover the offline
+  boundary, not actual email/code validation or provider readiness.
+- Software keyboard: five tests per configuration (40 executions), receipt
+  `20261106-020317134-738668`, including three rendered-pointer tests.
+- Expanded four-seed journey model, including ready/not-ready deferred sends:
+  receipt `20261106-015419890-659361` (1,024 generated model actions).
+- Shared core: 55 tests passed in `20261106-020432636-748202`.
+- Binary/test Clippy passed in `20261106-020404988-744276`; warnings remain.
 
 Standalone software-keyboard tests use fixed renderer styling. Repeating them
 under the eight environment configurations is not evidence that Dynamic Type,
