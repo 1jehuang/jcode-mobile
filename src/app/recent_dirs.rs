@@ -24,6 +24,7 @@ impl MobileApp {
 
     /// Fresh session in `dir`, replacing the current (still empty) one.
     fn start_in_dir(&mut self, dir: String, cx: &mut Context<Self>) {
+        crate::haptics::play(crate::haptics::Haptic::Selection);
         if let Some(c) = self.connection.take() {
             c.stop();
         }
@@ -37,6 +38,9 @@ impl MobileApp {
 
     /// Open the directory sheet from the composer's location label.
     pub(super) fn open_dir_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.dir_picker {
+            crate::haptics::play(crate::haptics::Haptic::Light);
+        }
         self.dir_picker_new_session = false;
         self.ensure_recent_dirs();
         let current = self.session.working_dir.clone().unwrap_or_default();
@@ -48,6 +52,9 @@ impl MobileApp {
 
     /// Offer a new tab without allocating a session or disturbing this one.
     pub(super) fn offer_new_session(&mut self, cx: &mut Context<Self>) {
+        if !self.dir_picker {
+            crate::haptics::play(crate::haptics::Haptic::Light);
+        }
         self.cancel_voice();
         self.feel.g.cancel();
         self.ensure_recent_dirs();
@@ -294,6 +301,37 @@ fn recent_dirs(sessions: &[SessionInfo]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn directory_haptics_confirm_changes_not_invalid_or_unchanged_paths(cx: &mut gpui::TestAppContext) {
+        use crate::haptics::{capture, Haptic};
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(super::super::SafeArea { top: 20., bottom: 0. }, window, cx)
+        });
+        view.update(cx, |app, cx| {
+            app.account = Some(jcode_mobile_core::Account {
+                api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
+            });
+            app.session.working_dir = Some("/repo".into());
+            let (_, events) = capture(|| {
+                app.change_dir("  ".into(), cx);
+                app.change_dir(" /repo/ ".into(), cx);
+            });
+            assert!(events.is_empty());
+            let (_, events) = capture(|| app.change_dir("/other".into(), cx));
+            assert_eq!(events, [Haptic::Selection]);
+            assert_eq!(app.session.working_dir.as_deref(), Some("/other"));
+            let (_, events) = capture(|| {
+                app.offer_new_session(cx);
+                app.offer_new_session(cx);
+            });
+            assert_eq!(events, [Haptic::Light], "an already open sheet stays quiet");
+            let (_, events) = capture(|| app.change_dir("/other".into(), cx));
+            assert_eq!(events, [Haptic::Light], "new tab plus drawer close confirms only once");
+            assert_eq!(app.tab_order.len(), 2);
+        });
+    }
 
     #[gpui::test]
     fn edge_offer_preserves_tab_until_directory_confirmed(cx: &mut gpui::TestAppContext) {

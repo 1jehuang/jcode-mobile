@@ -44,6 +44,9 @@ impl DirectorySelection {
 
 impl MobileApp {
     pub(super) fn open_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.drawer_open {
+            crate::haptics::play(crate::haptics::Haptic::Light);
+        }
         window.blur(cx);
         self.drawer_open = true;
         self.drawer_last = std::time::Instant::now();
@@ -53,6 +56,7 @@ impl MobileApp {
     }
 
     pub(super) fn close_drawer(&mut self, cx: &mut Context<Self>) {
+        // Silent: callers often already confirmed a tab or settings action.
         self.drawer_open = false;
         self.drawer_drag = 0.;
         self.drawer_drag_last = None;
@@ -69,6 +73,7 @@ impl MobileApp {
             match self.parked.iter().find(|p| p.session.session_id.as_deref() == Some(&session_id)).map(|p| p.id) {
                 Some(tab) => self.focus_tab(tab, cx),
                 None => {
+                    crate::haptics::play(crate::haptics::Haptic::Selection);
                     let id = self.next_tab;
                     self.next_tab += 1;
                     let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
@@ -129,6 +134,9 @@ impl MobileApp {
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
+                if this.drawer_open {
+                    crate::haptics::play(crate::haptics::Haptic::Light);
+                }
                 this.close_drawer(cx);
             }));
         let panel = div()
@@ -267,6 +275,7 @@ impl MobileApp {
                     .text_color(t.text_secondary)
                     .child("↻")
                     .on_click(cx.listener(|this, _, _, cx| {
+                        crate::haptics::play(crate::haptics::Haptic::Light);
                         this.send(|id| Request::ListSessions { id });
                         this.refresh_synced_sessions(cx);
                         cx.notify();
@@ -279,6 +288,8 @@ impl MobileApp {
         if self.account.is_none() {
             return;
         }
+        // This path allocates directly, rather than calling new_tab.
+        crate::haptics::play(crate::haptics::Haptic::Light);
         let id = self.next_tab;
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
@@ -511,6 +522,7 @@ impl MobileApp {
                     .overflow_hidden()
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        crate::haptics::play(crate::haptics::Haptic::Selection);
                         this.drawer_directory = if expanded {
                             DirectorySelection::Collapsed
                         } else {
@@ -589,6 +601,7 @@ impl MobileApp {
             .cursor_pointer()
             .active(|el| el.bg(t.background))
             .on_click(cx.listener(|this, _, _, cx| {
+                crate::haptics::play(crate::haptics::Haptic::Light);
                 this.cancel_voice();
                 this.screen = Screen::Settings;
                 this.close_drawer(cx);
@@ -737,6 +750,29 @@ fn estimated_tokens(tokens: u64) -> String {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn drawer_session_haptics_confirm_once_and_ignore_current_session(cx: &mut gpui::TestAppContext) {
+        use crate::haptics::{capture, Haptic};
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            MobileApp::new_offline(super::super::SafeArea { top: 20., bottom: 0. }, window, cx)
+        });
+        view.update(cx, |app, cx| {
+            let (_, events) = capture(|| app.drawer_open_session("unavailable".into(), cx));
+            assert!(events.is_empty(), "signed-out actions are silent");
+            app.account = Some(jcode_mobile_core::Account {
+                api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
+            });
+            app.session.session_id = Some("original".into());
+            let (_, events) = capture(|| app.drawer_open_session("resumed".into(), cx));
+            assert_eq!(events, [Haptic::Selection], "direct resume confirms once");
+            let (_, events) = capture(|| app.drawer_open_session("original".into(), cx));
+            assert_eq!(events, [Haptic::Selection], "focus_tab supplies its own confirmation");
+            let (_, events) = capture(|| app.drawer_open_session("original".into(), cx));
+            assert!(events.is_empty(), "current session and chained close are silent");
+        });
+    }
+
     #[test]
     fn directory_selection_keeps_only_one_group_expanded() {
         let a = Some("/a".into());
@@ -785,7 +821,8 @@ mod tests {
             assert!(cx.debug_bounds("drawer-directory-sessions-/b").is_none());
         }
         let b = cx.debug_bounds("drawer-directory-/b").unwrap();
-        cx.simulate_click(b.center(), gpui::Modifiers::default());
+        let (_, events) = crate::haptics::capture(|| cx.simulate_click(b.center(), gpui::Modifiers::default()));
+        assert_eq!(events, [crate::haptics::Haptic::Selection]);
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert!(cx.debug_bounds("drawer-directory-sessions-/a").is_none());
         assert!(cx.debug_bounds("drawer-directory-sessions-/b").is_some());
