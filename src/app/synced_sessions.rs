@@ -154,7 +154,28 @@ mod tests {
         });
         assert!(cx.debug_bounds("drawer-local-session-local-4").is_some());
         assert!(cx.debug_bounds("drawer-local-session-local-5").is_none());
+        // Debug bounds include clipped rows. Scroll the actual overview, not
+        // an offscreen debug target, before tapping its disclosure control.
+        let overview = cx.debug_bounds("drawer-overview").unwrap();
+        let scroll_at = overview.center();
+        for _ in 0..20 {
+            let more = cx.debug_bounds("drawer-local-see-more").unwrap();
+            if overview.contains(&more.center()) {
+                break;
+            }
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: scroll_at,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-60.))),
+                touch_phase: gpui::TouchPhase::Moved,
+                modifiers: gpui::Modifiers::default(),
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
         let more = cx.debug_bounds("drawer-local-see-more").unwrap();
+        assert!(
+            overview.contains(&more.center()),
+            "disclosure must be inside the actual overview viewport"
+        );
         cx.simulate_click(more.center(), gpui::Modifiers::default());
         view.update(cx, |app, _| assert_eq!(app.synced.visible_limit(), 10));
         cx.update(|window, cx| {
@@ -173,6 +194,11 @@ mod tests {
         assert!(cx.debug_bounds("drawer-local-session-local-11").is_some());
         assert!(cx.debug_bounds("drawer-local-see-more").is_none());
         let row = cx.debug_bounds("drawer-local-session-local-11").unwrap();
+        let overview = cx.debug_bounds("drawer-overview").unwrap();
+        assert!(
+            overview.contains(&row.center()),
+            "filtered session must be reachable in the overview viewport"
+        );
         cx.simulate_click(row.center(), gpui::Modifiers::default());
         view.update(cx, |app, _| {
             assert_eq!(app.synced.selected.as_deref(), Some("local-11"))

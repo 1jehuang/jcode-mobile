@@ -326,6 +326,21 @@ fn metadata_picker_actions_preserve_each_tabs_unsent_draft(cx: &mut TestAppConte
             app.feel.g.edge_x = 0.;
             cx.notify();
         });
+        draw(cx);
+        let row = cx.debug_bounds("model-row-bare-0").unwrap();
+        let clip = cx.debug_bounds("model-picker-list").unwrap();
+        assert!(
+            clip.contains(&row.center()),
+            "model row must be inside the real scroll viewport"
+        );
+        // At large text sizes this point also overlaps the underlying account
+        // pill. The sheet must occlude it, not close and immediately reopen.
+        if crate::system::fs(14.) >= px(22.) {
+            assert!(
+                cx.debug_bounds("pill-account").unwrap().contains(&row.center()),
+                "large-text fixture must exercise the underlying account overlap"
+            );
+        }
         tap(cx, "model-row-bare-0");
         view.read_with(cx, |app, cx| {
             assert!(!app.model_picker);
