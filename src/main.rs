@@ -3,6 +3,7 @@
 
 mod app;
 mod scroll_follow;
+mod perf;
 mod donut;
 mod donut_field;
 mod sim_keyboard;
@@ -59,6 +60,8 @@ impl gpui::AssetSource for Assets {
 }
 
 fn main() {
+    // Open the opt-in local sink before input arrives, not on the first scroll.
+    let _ = perf::start();
     if std::env::var_os("JCODE_VOICE_DEMO").is_some() {
         voice_demo::run();
         return;

@@ -48,12 +48,21 @@ fn windowed_transcript_preserves_geometry_scrolling_edits_and_resize(cx: &mut Te
             "only viewport and overscan should build content, got {rendered}"
         );
         let selectors = [
-            "entry-0", "entry-1", "entry-3", "entry-10", "entry-45", "entry-89",
+            "entry-0", "entry-1", "entry-2", "entry-3", "entry-4", "entry-5", "entry-6", "entry-7", "entry-8", "entry-9",
+            "entry-10", "entry-11", "entry-12", "entry-13", "entry-14", "entry-15", "entry-16", "entry-17", "entry-18", "entry-19",
+            "entry-20", "entry-21", "entry-22", "entry-23", "entry-24", "entry-25", "entry-26", "entry-27", "entry-28", "entry-29",
+            "entry-30", "entry-31", "entry-32", "entry-33", "entry-34", "entry-35", "entry-36", "entry-37", "entry-38", "entry-39",
+            "entry-40", "entry-41", "entry-42", "entry-43", "entry-44", "entry-45", "entry-46", "entry-47", "entry-48", "entry-49",
+            "entry-50", "entry-51", "entry-52", "entry-53", "entry-54", "entry-55", "entry-56", "entry-57", "entry-58", "entry-59",
+            "entry-60", "entry-61", "entry-62", "entry-63", "entry-64", "entry-65", "entry-66", "entry-67", "entry-68", "entry-69",
+            "entry-70", "entry-71", "entry-72", "entry-73", "entry-74", "entry-75", "entry-76", "entry-77", "entry-78", "entry-79",
+            "entry-80", "entry-81", "entry-82", "entry-83", "entry-84", "entry-85", "entry-86", "entry-87", "entry-88", "entry-89",
         ];
         let before: Vec<_> = selectors
             .iter()
-            .map(|selector| cx.debug_bounds(selector).unwrap())
+            .filter_map(|selector| cx.debug_bounds(selector).map(|bounds| (*selector, bounds)))
             .collect();
+        assert_eq!(before.len(), rendered, "all materialized rows must be checked");
         view.update(cx, |app, cx| {
             app.disable_transcript_windowing = true;
             cx.notify();
@@ -64,7 +73,7 @@ fn windowed_transcript_preserves_geometry_scrolling_edits_and_resize(cx: &mut Te
             assert_eq!(app.transcript_scroll.offset(), scroll);
             assert_eq!(app.rendered_transcript_rows, 90);
         });
-        for (selector, before) in selectors.into_iter().zip(before) {
+        for (selector, before) in before {
             assert_eq!(
                 cx.debug_bounds(selector).unwrap(),
                 before,
@@ -110,6 +119,38 @@ fn windowed_transcript_preserves_geometry_scrolling_edits_and_resize(cx: &mut Te
     });
     draw(cx);
     assert!(cx.debug_bounds("entry-0").unwrap().size.height > px(100.));
+}
+
+/// Alternate old/new spacer layout within one process, using moving offsets
+/// rather than idle redraws. Timings include GPUI layout and paint on a test
+/// renderer, not real-device presentation or GPU completion.
+#[gpui::test]
+#[ignore = "opt-in scrolling draw benchmark, no timing assertion"]
+fn benchmark_scrolling_spacer_coalescing(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    populate(&view, cx, 500);
+    for coalesced in [false, true, true, false] {
+        view.update(cx, |app, cx| {
+            app.disable_transcript_coalescing = !coalesced;
+            cx.notify();
+        });
+        draw(cx);
+        let mut samples = Vec::new();
+        for frame in 0..60 {
+            let start = std::time::Instant::now();
+            view.update(cx, |app, cx| {
+                app.transcript_scroll.set_offset(point(px(0.), px(-1000. - frame as f32 * 80.)));
+                cx.notify();
+            });
+            draw(cx);
+            let elapsed = start.elapsed();
+            crate::perf::record("benchmark.scroll_draw", elapsed);
+            samples.push(elapsed.as_secs_f64() * 1000.);
+        }
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        samples.sort_by(f64::total_cmp);
+        eprintln!("scroll coalesced={coalesced}, 500 messages, 60 frames: mean={mean:.3}ms p95={:.3}ms max={:.3}ms", samples[56], samples[59]);
+    }
 }
 
 #[gpui::test]

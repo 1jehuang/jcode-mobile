@@ -4,6 +4,7 @@ use super::*;
 
 impl MobileApp {
     pub(super) fn render_panel_preview(&self, id: u64, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let _perf = crate::perf::span("panel.preview_build");
         let parked = self.parked.iter().find(|p| p.id == id)?;
         let session = &parked.session;
         let status = || Self::connection_status_text_for(session)
@@ -19,7 +20,9 @@ impl MobileApp {
                 .into_any_element()
         } else {
             let mut prompt_n = 0;
-            let mut rows = Vec::with_capacity(session.transcript.len() + 2);
+            let mut rows = super::transcript_layout::Rows::default();
+            #[cfg(test)]
+            { rows.uncoalesced = self.disable_transcript_coalescing; }
             let mut top = Some(px(12.));
             // Preview layout may be taller than the saved tab (keyboard or
             // resize) and clamp its private offset. Cover that entire possible
@@ -33,11 +36,11 @@ impl MobileApp {
                 let skip = height.is_some_and(|height| super::transcript_layout::offscreen(top, height, off, viewport * 3.));
                 #[cfg(test)]
                 let skip = skip && !self.disable_transcript_windowing;
-                let row = div().id(("preview-entry", entry.id))
-                    .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") });
                 if skip {
-                    rows.push(row.h(height.unwrap()).flex_none().into_any_element());
+                    rows.hide(height.unwrap());
                 } else {
+                    let row = div().id(("preview-entry", entry.id))
+                        .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") });
                     let heights = self.transcript_heights.clone();
                     rows.push(row.relative()
                         .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, t, cx))
@@ -62,7 +65,7 @@ impl MobileApp {
                 .child(div().id("preview-transcript").debug_selector(|| "preview-transcript".into())
                     .size_full().overflow_y_scroll().track_scroll(&scroll)
                     .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.))
-                        .px(px(14.)).py(px(12.)).children(rows)))
+                        .px(px(14.)).py(px(12.)).children(rows.finish())))
                 .when(show_jump, |d| d.child(div().absolute().right(px(14.)).bottom(px(8.))
                     .size(px(44.)).rounded_full().flex().items_center().justify_center()
                     .bg(t.background).border_1().border_color(t.border_focus)

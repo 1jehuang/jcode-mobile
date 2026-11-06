@@ -1,6 +1,6 @@
 # Local performance instrumentation
 
-`src/perf.rs` is a standalone, standard-library-only module. It does not wire itself into the application. The application owner must declare `mod perf;` and add measurements at the desired call sites.
+`src/perf.rs` provides standard-library-only local instrumentation, wired into the application render and scrolling paths. Startup initializes the optional sink before input arrives. Add measurements for additional actions using:
 
 ```rust
 let _span = crate::perf::span("chat.render");
@@ -45,4 +45,34 @@ Enabled recording uses a nonblocking attempt to acquire a process-wide mutex and
 
 ## Tests
 
-Unit tests in `src/perf.rs` cover empty aggregation, count/mean/p95/max, strict budget boundaries, and bounded recent samples while retaining full-window statistics. They avoid mutating process environment, so tests can run concurrently. Once the application declares the module, run `justrust test perf::tests`. The standalone module can also be copied into a temporary dependency-free library harness and tested with `justrust test --manifest-path <harness>/Cargo.toml` without compiling the UI application.
+The moving-scroll benchmark alternates old per-message spacers and coalesced
+hidden-row runs in the same process, after warming a 500-message transcript:
+
+```sh
+justrust test benchmark_scrolling_spacer_coalescing -- --ignored --nocapture --test-threads=1
+```
+
+Measured November 6, 2026, run `20261106-031501346-1447924`, 60 frames per pass:
+
+| Pass | Mean draw (ms) | P95 (ms) | Max (ms) |
+| --- | ---: | ---: | ---: |
+| Per-row spacers | 62.312 | 102.447 | 119.845 |
+| Coalesced runs | 29.531 | 47.747 | 80.174 |
+| Coalesced runs | 41.185 | 66.087 | 79.519 |
+| Per-row spacers | 56.426 | 133.642 | 194.435 |
+
+The combined mean dropped from 59.369 ms to 35.358 ms, about 40% less
+draw-path elapsed time. These are debug/test-renderer measurements on a heavily
+contended Linux machine, not iPhone frame times or an FPS claim. Hosted builds
+were unavailable because the charge API returned HTTP 404, so justrust fell back
+locally. Re-run under comparable conditions before extrapolating to devices.
+Geometry regressions compare every materialized row and the full scroll range
+against unwindowed rendering, including edits, resize and large jumps.
+
+For subsequent optimization, reproduce the same action and transcript, inspect
+`transcript.scroll_to_paint` first, then compare `app.build`, `transcript.build`
+and `panel.preview_build` to locate expensive construction. A fast handler with
+slow input-to-paint is not a fast interaction. Rank by p95 and over-budget count,
+and confirm changes with the moving-scroll benchmark, not idle redraws alone.
+
+Unit tests in `src/perf.rs` cover empty aggregation, count/mean/p95/max, strict budget boundaries, and bounded recent samples while retaining full-window statistics. They avoid mutating process environment, so tests can run concurrently. Run `justrust test perf::tests`. The module can also be copied into a temporary dependency-free library harness and tested with `justrust test --manifest-path <harness>/Cargo.toml` without compiling the UI application.

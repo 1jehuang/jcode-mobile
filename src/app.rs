@@ -147,6 +147,7 @@ pub struct MobileApp {
     tab_track_width: f32,
     last_frame: std::time::Instant,
     transcript_scroll: ScrollHandle,
+    scroll_perf_started: Option<std::time::Instant>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
     follow_last: std::time::Instant,
@@ -171,6 +172,8 @@ pub struct MobileApp {
     transcript_heights: transcript_layout::Heights,
     #[cfg(test)]
     disable_transcript_windowing: bool,
+    #[cfg(test)]
+    disable_transcript_coalescing: bool,
     #[cfg(test)]
     rendered_transcript_rows: usize,
     /// Desktop's thinking orbs: transcript activity, and connection/sign-in status.
@@ -330,6 +333,7 @@ impl MobileApp {
             tab_track_width: 0.0,
             last_frame: std::time::Instant::now(),
             transcript_scroll: ScrollHandle::new(),
+            scroll_perf_started: None,
             expanded_tools: Default::default(),
             follow: true,
             follow_last: std::time::Instant::now(),
@@ -347,6 +351,8 @@ impl MobileApp {
             transcript_heights: Default::default(),
             #[cfg(test)]
             disable_transcript_windowing: false,
+            #[cfg(test)]
+            disable_transcript_coalescing: false,
             #[cfg(test)]
             rendered_transcript_rows: 0,
             activity_orb: cx.new(|_| inline_orb()),
@@ -621,6 +627,7 @@ impl MobileApp {
     }
 
     fn park_active(&mut self, cx: &mut Context<Self>) {
+        self.scroll_perf_started = None;
         self.cancel_voice();
         let draft = self.composer.read(cx).save_draft();
         let preview_composer = cx.new(|cx| {
@@ -1484,6 +1491,7 @@ impl MobileApp {
     /// Both the active viewport and the inert neighbor shield own the same
     /// drag. Crossing their boundary must not lose movement or cancellation.
     fn panel_wheel(&mut self, ev: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
+        let _perf = crate::perf::span("panel.scroll_input");
         if ev.touch_phase == gpui::TouchPhase::Cancelled {
             self.swipe.cancel(self.content_width(), std::time::Instant::now());
             cx.notify();
@@ -1557,6 +1565,7 @@ impl MobileApp {
     }
 
     fn render_chat_inner(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let _perf = crate::perf::span("transcript.build");
         // Follow is released by upward input, never by streamed layout growth.
         let max = self.transcript_scroll.max_offset().y;
         let mut off = -self.transcript_scroll.offset().y;
@@ -1586,7 +1595,9 @@ impl MobileApp {
         let at_bottom = max - off < px(56.);
         let entries = &self.session.transcript;
         let mut prompt_n = 0;
-        let mut rows: Vec<AnyElement> = Vec::with_capacity(entries.len() + 2);
+        let mut rows = transcript_layout::Rows::default();
+        #[cfg(test)]
+        { rows.uncoalesced = self.disable_transcript_coalescing; }
         let viewport = self.transcript_scroll.bounds().size.height;
         let mut top = Some(px(12.));
         #[cfg(test)]
@@ -1600,11 +1611,11 @@ impl MobileApp {
             let skip = height.is_some_and(|height| transcript_layout::offscreen(top, height, off, viewport));
             #[cfg(test)]
             let skip = skip && !self.disable_transcript_windowing;
-            let row = div().id(("entry", e.id))
-                .debug_selector({ let id = e.id; move || format!("entry-{id}") });
             if skip {
-                rows.push(row.h(height.unwrap()).flex_none().into_any_element());
+                rows.hide(height.unwrap());
             } else {
+                let row = div().id(("entry", e.id))
+                    .debug_selector({ let id = e.id; move || format!("entry-{id}") });
                 #[cfg(test)]
                 { self.rendered_transcript_rows += 1; }
                 let el = self.render_entry(e, prompt_n, &self.expanded_tools, t, cx);
@@ -1673,6 +1684,12 @@ impl MobileApp {
                         .overflow_y_scroll()
                         .track_scroll(&self.transcript_scroll)
                         .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
+                            let _perf = crate::perf::span("transcript.scroll_input");
+                            // Keep the oldest event if several inputs land before
+                            // the next draw, so queuing latency remains visible.
+                            if this.scroll_perf_started.is_none() {
+                                this.scroll_perf_started = crate::perf::start();
+                            }
                             let max = this.transcript_scroll.max_offset().y;
                             let off = -this.transcript_scroll.offset().y;
                             let delta = ev.delta.pixel_delta(window.line_height());
@@ -1686,14 +1703,18 @@ impl MobileApp {
                             }
                             cx.notify();
                         }))
-                        .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows))
+                        .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows.finish()))
                         .child({
                             let scroll = self.transcript_scroll.clone();
                             let follow = self.follow;
+                            let scroll_started = self.scroll_perf_started.take();
                             // Render sees the previous layout's maximum. Check
                             // again after layout so a lone tool update cannot
                             // leave the tail hidden until the next network event.
                             gpui::canvas(|_, _, _| (), move |_, _, window, _| {
+                                if let Some(started) = scroll_started {
+                                    crate::perf::record("transcript.scroll_to_paint", started.elapsed());
+                                }
                                 if follow && scroll.max_offset().y != max {
                                     window.request_animation_frame();
                                 }
@@ -1789,6 +1810,7 @@ impl MobileApp {
     }
 
     fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let _perf = crate::perf::span("transcript.entry_build");
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
             Role::User => {
@@ -2385,6 +2407,7 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
 
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _perf = crate::perf::span("app.build");
         if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }
         self.system_tick(window, cx);
         self.sync_spinner_tick(cx);

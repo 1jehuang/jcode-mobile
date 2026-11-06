@@ -15,6 +15,45 @@ use std::{
 const MAX_ROWS: usize = 4096;
 const OVERSCAN: f32 = 400.;
 
+/// Collapse contiguous hidden rows into one layout node. Preserve the internal
+/// row gaps here, while the parent flex gap supplies gaps between runs.
+#[derive(Default)]
+pub(super) struct Rows {
+    elements: Vec<gpui::AnyElement>,
+    hidden: Option<Pixels>,
+    #[cfg(test)]
+    pub uncoalesced: bool,
+}
+
+impl Rows {
+    pub fn hide(&mut self, height: Pixels) {
+        #[cfg(test)]
+        if self.uncoalesced {
+            self.hidden = Some(height);
+            self.flush();
+            return;
+        }
+        self.hidden = Some(self.hidden.map_or(height, |sum| sum + px(14.) + height));
+    }
+
+    fn flush(&mut self) {
+        use gpui::prelude::*;
+        if let Some(height) = self.hidden.take() {
+            self.elements.push(gpui::div().h(height).flex_none().into_any_element());
+        }
+    }
+
+    pub fn push(&mut self, element: gpui::AnyElement) {
+        self.flush();
+        self.elements.push(element);
+    }
+
+    pub fn finish(mut self) -> Vec<gpui::AnyElement> {
+        self.flush();
+        self.elements
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Key {
     tab: u64,
@@ -120,6 +159,21 @@ pub(super) fn offscreen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_runs_collapse_and_preserve_internal_gaps() {
+        use gpui::prelude::*;
+        let mut rows = Rows::default();
+        rows.hide(px(20.));
+        rows.hide(px(30.));
+        assert_eq!(rows.hidden, Some(px(64.)));
+        rows.push(gpui::div().into_any_element());
+        rows.hide(px(40.));
+        rows.hide(px(50.));
+        assert_eq!(rows.hidden, Some(px(104.)));
+        assert_eq!(rows.finish().len(), 3);
+        assert!(Rows::default().finish().is_empty());
+    }
 
     fn entry() -> TranscriptEntry {
         TranscriptEntry {
