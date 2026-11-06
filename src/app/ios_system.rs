@@ -17,7 +17,10 @@ impl MobileApp {
     /// Call at the top of `render`.
     pub(super) fn system_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let w = self.screen_width(window);
-        let content = if w >= WIDE_MIN && self.account.is_some() { w - SIDEBAR_WIDTH } else { w };
+        // The preview bezel is part of the fixed device size, not the chat.
+        // Using its outer width rewraps neighboring panels on tab activation.
+        let bezel = if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_none() { 2. } else { 0. };
+        let content = (if w >= WIDE_MIN && self.account.is_some() { w - SIDEBAR_WIDTH } else { w } - bezel).max(1.);
         CONTENT_WIDTH.store(content.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let changed = system::poll(cx);
         static SYNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -28,7 +31,8 @@ impl MobileApp {
             } else {
                 gpui_thinking_orbs::OrbTheme::Dark
             };
-            for orb in [self.activity_orb.clone(), self.status_orb.clone()] {
+            for orb in [self.activity_orb.clone(), self.status_orb.clone()].into_iter()
+                .chain(self.parked.iter().flat_map(|p| [p.preview_activity_orb.clone(), p.preview_status_orb.clone()])) {
                 orb.update(cx, |o, cx| {
                     o.set_reduced_motion(reduce, cx);
                     o.set_theme(theme, cx);

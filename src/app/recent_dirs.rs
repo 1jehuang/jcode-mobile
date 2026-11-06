@@ -159,12 +159,16 @@ impl MobileApp {
     }
 
     pub(super) fn render_recent_dirs(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.render_recent_dirs_for(&self.session, t, cx)
+    }
+
+    pub(super) fn render_recent_dirs_for(&self, session: &jcode_mobile_core::SessionState, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         // Any tab's list will do; the active one may not have fetched yet.
         let lists = std::iter::once(&self.session.session_list).chain(self.parked.iter().map(|p| &p.session.session_list));
         let list = lists.max_by_key(|l| l.len())?;
-        let current = self.session.working_dir.as_deref().map(|d| d.trim_end_matches('/'));
+        let current = session.working_dir.as_deref().map(|d| d.trim_end_matches('/'));
         let dirs: Vec<String> = recent_dirs(list).into_iter().filter(|d| Some(d.trim_end_matches('/')) != current).collect();
-        let sessions = suggested_sessions(list, self.session.session_id.as_deref());
+        let sessions = suggested_sessions(list, session.session_id.as_deref());
         if dirs.is_empty() && sessions.is_empty() {
             return None;
         }

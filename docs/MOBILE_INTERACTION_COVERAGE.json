@@ -76,13 +76,15 @@
     },
     {
       "controls": {
+        "debug_selector:dynamic:block": 1,
         "debug_selector:literal:err": 1,
         "debug_selector:literal:err-empty": 1,
         "debug_selector:literal:jump": 1,
         "id:literal:err": 1,
         "id:literal:err-empty": 1,
         "id:literal:jump": 1,
-        "id:literal:transcript": 1
+        "id:literal:transcript": 1,
+        "id:tuple:literal:entry": 1
       },
       "coverage": [
         {
@@ -111,11 +113,33 @@
       "renderer": true
     },
     {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "tests": [
+            "src/app/composer_coverage.rs::composer_send_disabled_for_disconnected_missing_session_and_blank_input",
+            "src/app/composer_coverage.rs::composer_send_records_local_message_then_queues_processing_followup",
+            "src/app/composer_coverage.rs::composer_stop_requires_ready_session_and_does_not_fake_cancel_ack",
+            "src/app/composer_coverage.rs::metadata_picker_actions_preserve_each_tabs_unsent_draft"
+          ],
+          "note": "Active-session wrapper delegates to render_composer_for; send/stop and metadata routing are exercised through this wrapper. Parked preview is separately tested and inertness is not inferred from active controls."
+        },
+        {
+          "kind": "gap",
+          "tests": [],
+          "note": "Native keyboard, socket acknowledgment and every simultaneous metadata/voice transition remain outside these offline fixtures."
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app.rs::impl:MobileApp::render_composer",
+      "renderer": true
+    },
+    {
       "controls": {
-        "debug_selector:literal:chat-composer": 1,
-        "debug_selector:literal:chat-metadata": 1,
-        "debug_selector:literal:composer-input": 1,
-        "debug_selector:literal:location": 1,
+        "debug_selector:dynamic:if": 4,
         "id:literal:chat-composer": 1,
         "id:literal:chat-metadata": 1,
         "id:literal:composer-input": 1,
@@ -164,7 +188,7 @@
         "on_click": 6
       },
       "handler": false,
-      "owner": "src/app.rs::impl:MobileApp::render_composer",
+      "owner": "src/app.rs::impl:MobileApp::render_composer_for",
       "renderer": true
     },
     {
@@ -1100,19 +1124,35 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {
+        "debug_selector:dynamic:block": 1,
+        "debug_selector:literal:preview-composer": 1,
+        "debug_selector:literal:preview-transcript": 1,
+        "debug_selector:macro:format:literal:panel-preview-{id}": 1,
+        "id:literal:preview-composer": 1,
+        "id:literal:preview-transcript": 1,
+        "id:tuple:literal:panel-preview": 1,
+        "id:tuple:literal:preview-entry": 1
+      },
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Repeated read-only neighboring previews preserve active/parked drafts and reject an unknown tab ID. This test directly renders the helper, not a native swipe animation.",
           "tests": [
-            "src/app/panel_preview.rs::tests::neighbor_preview_preserves_active_and_parked_drafts"
-          ]
+            "src/app/panel_preview.rs::tests::saved_scroll_and_multiline_draft_preview_match_destination_geometry"
+          ],
+          "note": "Rendered offline neighboring panel compares saved-scroll message and multiline composer bounds against the destination and preserves draft/tool/follow state. This is geometry/state evidence, not pixel equivalence."
+        },
+        {
+          "kind": "hit_tested",
+          "tests": [
+            "src/app/panel_preview.rs::tests::preview_taps_do_not_expand_send_or_focus_either_editor"
+          ],
+          "note": "Clicks inside the neighboring panel must not expand tools, send, focus either editor or change parked scroll/draft state."
         },
         {
           "kind": "gap",
-          "note": "Preview truncation across every role/tool/reasoning branch and transition-frame visual behavior are not exhaustively asserted.",
-          "tests": []
+          "tests": [],
+          "note": "Every transcript role/reasoning combination, native swipe delivery and transition-frame pixels remain unverified."
         }
       ],
       "coverage_scope": "partial",
@@ -1165,6 +1205,24 @@
       "renderer": true
     },
     {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "tests": [
+            "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test",
+            "src/app/navigation_coverage.rs::right_edge_new_session_has_no_directory_sheet_and_preserves_draft"
+          ],
+          "note": "Active-session wrapper delegates to render_recent_dirs_for. Directory/session suggestion routing is hit-tested offline, not a live service response."
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/recent_dirs.rs::impl:MobileApp::render_recent_dirs",
+      "renderer": true
+    },
+    {
       "controls": {
         "debug_selector:literal:start-suggestions": 1,
         "debug_selector:macro:format:literal:recent-dir-{i}": 1,
@@ -1196,7 +1254,7 @@
         "on_click": 2
       },
       "handler": false,
-      "owner": "src/app/recent_dirs.rs::impl:MobileApp::render_recent_dirs",
+      "owner": "src/app/recent_dirs.rs::impl:MobileApp::render_recent_dirs_for",
       "renderer": true
     },
     {
@@ -1406,7 +1464,9 @@
       "controls": {
         "debug_selector:dynamic:block": 3,
         "debug_selector:literal:drawer-local-see-more": 1,
+        "debug_selector:literal:drawer-local-status": 1,
         "id:literal:drawer-local-see-more": 1,
+        "id:literal:drawer-local-status": 1,
         "id:macro:format:literal:drawer-local-session-{sid}": 1,
         "id:macro:format:literal:open-transfer-{sid}": 1,
         "id:macro:format:literal:transfer-{sid}": 1
@@ -1431,6 +1491,14 @@
           "kind": "platform_device_required",
           "note": "Actual remote continuation/transfer, service authentication and network acknowledgment are not exercised.",
           "tests": []
+        },
+        {
+          "kind": "state_model_mocked",
+          "tests": [
+            "src/app/synced_sessions.rs::tests::refresh_preserves_existing_row_order_and_updates_content",
+            "src/app/synced_sessions.rs::tests::refresh_and_error_leave_synced_row_bounds_unchanged"
+          ],
+          "note": "Fake refresh ordering and rendered loading/error transitions retain row bounds and scroll placement without live service requests."
         }
       ],
       "coverage_scope": "partial",
@@ -1915,8 +1983,8 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 163,
+    "control_site_count": 175,
     "event_site_count": 112,
-    "owner_count": 65
+    "owner_count": 67
   }
 }

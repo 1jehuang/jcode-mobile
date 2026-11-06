@@ -1,34 +1,66 @@
-//! Read-only neighboring session peek. Never mounts an editor or mutates the
-//! parked session's scroll position, draft, focus, or tool expansion state.
+//! Faithful, inert neighboring session panels. Message and composer rendering
+//! is shared with the active panel, using the parked tab's own draft and tools.
 use super::*;
 
 impl MobileApp {
-    pub(super) fn render_panel_preview(&self, id: u64, t: &Theme) -> Option<AnyElement> {
-        let session = self.tab_session(id)?;
-        let title = session.session_title.clone().unwrap_or_else(|| "New session".into());
-        let mut rows = Vec::new();
-        // Bound work during gesture frames, retaining transcript order.
-        for entry in session.transcript.iter().rev().take(12).collect::<Vec<_>>().into_iter().rev() {
-            let user = entry.role == Role::User;
-            let text = if entry.text.is_empty() {
-                if !entry.tool_calls.is_empty() { "Using tools…".to_owned() }
-                else if !entry.reasoning.is_empty() { "Thinking…".to_owned() }
-                else { continue }
-            } else {
-                entry.text.chars().take(1600).collect()
-            };
-            rows.push(div().w_full().min_w_0().px(px(10.)).py(px(8.))
-                .rounded(px(8.))
-                .bg(if user { Theme::prompt_background(0) } else { t.background })
-                .child(label(if user { "You" } else { "Jcode" }, t.text_muted, 10.))
-                .child(label(text, t.text, 13.).line_height(crate::system::fs(20.))));
-        }
-        Some(div().size_full().flex().flex_col().px(px(14.)).py(px(12.)).gap(px(12.))
-            .child(label(title, t.text_strong, 15.).truncate().flex_none())
-            .child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().justify_end().gap(px(12.))
-                .when(rows.is_empty(), |d| d.child(label("What would you like to work on?", t.text, 22.)))
-                .children(rows))
-            .child(label("Session preview", t.text_muted, 11.).flex_none())
+    pub(super) fn render_panel_preview(&self, id: u64, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let parked = self.parked.iter().find(|p| p.id == id)?;
+        let session = &parked.session;
+        let status = || Self::connection_status_text_for(session)
+            .map(|text| orb_row(&parked.preview_status_orb, text, t.text_muted));
+        let empty = session.transcript.is_empty() && !session.is_reasoning;
+        let body = if empty {
+            div().flex_1().min_h_0().flex().flex_col().justify_end()
+                .px(px(16.)).pb(px(14.)).gap(px(12.))
+                .children(status())
+                .when_some(session.error_banner.clone(), |d, error| d.child(banner(&error, t.error, t)))
+                .child(label("What would you like to work on?", t.text, 20.).line_height(crate::system::fs(28.)))
+                .children(self.render_recent_dirs_for(session, t, cx))
+                .into_any_element()
+        } else {
+            let mut prompt_n = 0;
+            let mut rows = Vec::new();
+            for entry in &session.transcript {
+                if entry.role == Role::User { prompt_n += 1; }
+                rows.push(div().id(("preview-entry", entry.id))
+                    .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") })
+                    .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, t, cx))
+                    .into_any_element());
+            }
+            if let Some(activity) = Self::activity_for(session) {
+                parked.preview_activity_orb.update(cx, |orb, cx| orb.set_state(orb_state(activity), cx));
+                rows.push(orb_row(&parked.preview_activity_orb, activity, t.text_muted).into_any_element());
+            }
+            if let Some(error) = &session.error_banner {
+                rows.push(banner(error, t.error, t).into_any_element());
+            }
+            // Use a private scroll handle. Laying out a preview must not clamp or
+            // otherwise alter the real parked scroll when keyboard/size changes.
+            let scroll = ScrollHandle::new();
+            scroll.set_offset(parked.scroll.offset());
+            let show_jump = parked.scroll.max_offset().y + parked.scroll.offset().y >= px(56.);
+            div().relative().flex_1().min_h_0()
+                .child(div().id("preview-transcript").debug_selector(|| "preview-transcript".into())
+                    .size_full().overflow_y_scroll().track_scroll(&scroll)
+                    .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.))
+                        .px(px(14.)).py(px(12.)).children(rows)))
+                .when(show_jump, |d| d.child(div().absolute().right(px(14.)).bottom(px(8.))
+                    .size(px(44.)).rounded_full().flex().items_center().justify_center()
+                    .bg(t.background).border_1().border_color(t.border_focus)
+                    .text_color(t.text_strong).child("↓")))
+                .into_any_element()
+        };
+        Some(div().id(("panel-preview", id)).debug_selector(move || format!("panel-preview-{id}"))
+            .relative().size_full().flex().flex_col()
+            .when(!empty && !matches!(session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
+                d.child(div().px(px(14.)).py(px(6.)).border_b_1().border_color(t.border).children(status()))
+            })
+            .child(div().relative().flex_1().min_h_0().flex().flex_col().overflow_hidden().child(body))
+            .child(div().id("preview-composer").debug_selector(|| "preview-composer".into())
+                .flex_none().child(self.render_composer_for(session, &parked.preview_composer, true, t, window, cx)))
+            // Paint an opaque hit-test layer last. The matching visuals are not
+            // live controls until navigation commits, and never take IME focus.
+            .child(div().absolute().inset_0().occlude())
             .into_any_element())
     }
 }
@@ -36,34 +68,157 @@ impl MobileApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use super::super::navigation_coverage::{draw, mount};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, point};
+
+    const DRAFT: &str = "Neighbor draft
+Second line with emoji 👩🏽‍💻
+Third line
+Fourth line";
+
+    fn history(id: u64) -> TranscriptEntry {
+        TranscriptEntry {
+            id,
+            role: Role::Assistant,
+            text: format!("History item {id}
+A second line to preserve measured height."),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            is_streaming: false,
+            is_queued: false,
+        }
+    }
+
+    fn prepare_destination(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
+        view.update(cx, |app, cx| {
+            app.session.phase = ConnectionPhase::Connected;
+            app.session.session_id = Some("preview-fixture".into());
+            app.session.session_title = Some("Neighbor session".into());
+            app.session.transcript = (0..18).map(history).collect();
+            app.session.transcript[3].tool_calls.push(jcode_mobile_core::ToolCall {
+                id: "preview-fixture".into(),
+                name: "Read".into(),
+                input: "{\"path\":\"fixture.rs\"}".into(),
+                output: "First output line
+Second output line
+Third output line".into(),
+                status: ToolStatus::Succeeded,
+            });
+            app.expanded_tools.insert("preview-fixture".into());
+            app.follow = false;
+            app.composer.update(cx, |input, cx| input.set_text(DRAFT, cx));
+            cx.notify();
+        });
+        draw(cx);
+        view.update(cx, |app, cx| {
+            assert!(app.transcript_scroll.max_offset().y > px(180.));
+            app.transcript_scroll.set_offset(point(px(0.), px(-180.)));
+            cx.notify();
+        });
+        draw(cx);
+    }
+
+    fn park_and_preview(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.blur(cx);
+            view.update(cx, |app, cx| {
+                app.park_active(cx);
+                let second = app.next_tab;
+                app.next_tab += 1;
+                app.active_tab = second;
+                app.tab_order.push(second);
+                app.composer.update(cx, |input, cx| input.set_text("Current draft", cx));
+                assert!(app.swipe.feed(100., 0., std::time::Instant::now()));
+                cx.notify();
+            });
+        });
+        draw(cx);
+    }
+
+    fn near(actual: gpui::Pixels, expected: gpui::Pixels, what: &str) {
+        assert!((f32::from(actual - expected)).abs() < 1., "{what}: {actual:?} != {expected:?}");
+    }
 
     #[gpui::test]
-    fn neighbor_preview_preserves_active_and_parked_drafts(cx: &mut TestAppContext) {
-        cx.update(init);
-        let (view, cx) = cx.add_window_view(|window, cx| {
-            MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx)
-        });
-        view.update(cx, |app, cx| {
-            let first = app.active_tab;
-            app.session.session_title = Some("Neighbor session".into());
-            app.composer.update(cx, |input, cx| input.set_text("Neighbor draft", cx));
-            app.park_active(cx);
-            let second = app.next_tab;
-            app.next_tab += 1;
-            app.active_tab = second;
-            app.tab_order.push(second);
-            app.composer.update(cx, |input, cx| input.set_text("Current draft", cx));
+    fn saved_scroll_and_multiline_draft_preview_match_destination_geometry(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        let destination_composer = cx.debug_bounds("chat-composer").unwrap();
+        let destination_left = destination_composer.left();
+        let destination_entries: Vec<_> = ["entry-0", "entry-3", "entry-17"].into_iter()
+            .map(|selector| cx.debug_bounds(selector).expect("destination entry rendered"))
+            .collect();
+        let header = cx.debug_bounds("menu").unwrap();
+        let git = cx.debug_bounds("git-pull-handle").unwrap();
+        park_and_preview(&view, cx);
+        let panel = cx.debug_bounds("panel-preview-0").unwrap();
+        let composer = cx.debug_bounds("preview-composer").unwrap();
+        near(composer.origin.y, destination_composer.origin.y, "composer vertical position");
+        near(composer.size.height, destination_composer.size.height, "multiline composer height");
+        near(composer.size.width, destination_composer.size.width, "composer width");
+        for (selector, destination) in ["preview-entry-0", "preview-entry-3", "preview-entry-17"].into_iter().zip(destination_entries) {
+            let preview = cx.debug_bounds(selector).expect("all history remains in preview");
+            near(preview.origin.y, destination.origin.y, "saved scroll message offset");
+            near(preview.origin.x - panel.origin.x, destination.origin.x - destination_left, "message horizontal inset");
+            near(preview.size.width, destination.size.width, "message width");
+            near(preview.size.height, destination.size.height, "message height");
+        }
+        assert_eq!(cx.debug_bounds("menu").unwrap(), header);
+        assert_eq!(cx.debug_bounds("git-pull-handle").unwrap(), git);
+        cx.update(|window, cx| view.update(cx, |app, cx| {
             for _ in 0..20 {
-                assert!(app.render_panel_preview(first, &Theme::pure_black()).is_some());
-                assert!(app.render_panel_preview(u64::MAX, &Theme::pure_black()).is_none());
+                assert!(app.render_panel_preview(0, &Theme::pure_black(), window, cx).is_some());
+                assert!(app.render_panel_preview(u64::MAX, &Theme::pure_black(), window, cx).is_none());
             }
-            assert_eq!(app.active_tab, second);
+            assert_eq!(app.active_tab, 1);
             assert_eq!(app.composer.read(cx).text(), "Current draft");
             assert_eq!(app.parked.len(), 1);
-            app.focus_tab(first, cx);
-            assert_eq!(app.composer.read(cx).text(), "Neighbor draft");
+            let parked = &app.parked[0];
+            assert_eq!(parked.scroll.offset().y, px(-180.));
+            assert_eq!(parked.preview_composer.read(cx).text(), DRAFT);
+            assert!(parked.expanded_tools.contains("preview-fixture"));
+            assert!(!parked.follow);
+            app.swipe = Default::default();
+            app.focus_tab(0, cx);
+            assert_eq!(app.composer.read(cx).text(), DRAFT);
             assert_eq!(app.session.session_title.as_deref(), Some("Neighbor session"));
-        });
+            assert_eq!(app.transcript_scroll.offset().y, px(-180.));
+        }));
+        draw(cx);
+        near(cx.debug_bounds("chat-composer").unwrap().origin.y, composer.origin.y, "focused destination composer");
+    }
+
+    #[gpui::test]
+    fn preview_taps_do_not_expand_send_or_focus_either_editor(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        let panel = cx.debug_bounds("panel-preview-0").unwrap();
+        let composer = cx.debug_bounds("preview-composer").unwrap();
+        let tool = cx.debug_bounds("tool-preview-fixture").unwrap();
+        let visible_x = (panel.right() - px(30.)).min(px(100.));
+        assert!(visible_x > px(0.));
+        for position in [
+            point(visible_x, tool.origin.y + px(16.)),
+            point(visible_x, composer.origin.y + px(25.)),
+            point(panel.right() - px(32.), composer.origin.y + px(30.)),
+        ] {
+            assert!(panel.contains(&position), "tap must hit the visible preview");
+            cx.simulate_click(position, Modifiers::default());
+            draw(cx);
+        }
+        cx.update(|window, cx| view.read_with(cx, |app, cx| {
+            assert_eq!(app.active_tab, 1);
+            assert_eq!(app.composer.read(cx).text(), "Current draft");
+            assert!(app.session.transcript.is_empty());
+            assert!(app.expanded_tools.is_empty());
+            assert!(!app.composer.read(cx).is_focused(window));
+            let parked = &app.parked[0];
+            assert_eq!(parked.session.transcript.len(), 18);
+            assert_eq!(parked.preview_composer.read(cx).text(), DRAFT);
+            assert!(!parked.preview_composer.read(cx).is_focused(window));
+            assert!(parked.expanded_tools.contains("preview-fixture"));
+            assert_eq!(parked.scroll.offset().y, px(-180.));
+        }));
     }
 }

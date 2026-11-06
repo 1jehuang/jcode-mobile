@@ -630,6 +630,15 @@ impl MobileApp {
 
     fn park_active(&mut self, cx: &mut Context<Self>) {
         self.cancel_voice();
+        let draft = self.composer.read(cx).save_draft();
+        let preview_composer = cx.new(|cx| {
+            let mut input = TextInput::new("Message jcode…", cx);
+            input.bare = true;
+            input.max_lines = 6;
+            input.read_only = true;
+            input.restore_draft(draft.clone(), cx);
+            input
+        });
         self.parked.push(ParkedTab {
             id: self.active_tab,
             connection: self.connection.take(),
@@ -637,7 +646,10 @@ impl MobileApp {
             scroll: std::mem::replace(&mut self.transcript_scroll, ScrollHandle::new()),
             expanded_tools: std::mem::take(&mut self.expanded_tools),
             follow: self.follow,
-            draft: self.composer.read(cx).save_draft(),
+            draft,
+            preview_composer,
+            preview_activity_orb: cx.new(|_| inline_orb()),
+            preview_status_orb: cx.new(|_| inline_orb()),
             auto_send: self.auto_send.take(),
         });
         self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
@@ -1004,6 +1016,10 @@ struct ParkedTab {
     session: SessionState,
     scroll: ScrollHandle,
     draft: InputDraft,
+    /// Separate, unfocused viewer so a swipe never mounts the active editor twice.
+    preview_composer: Entity<TextInput>,
+    preview_activity_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
+    preview_status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     auto_send: Option<String>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
@@ -1072,7 +1088,9 @@ fn google_mark() -> std::sync::Arc<gpui::Image> {
 
 fn inline_orb() -> gpui_thinking_orbs::ThinkingOrb {
     use gpui_thinking_orbs::{OrbSize, OrbTheme, ThinkingOrb};
-    ThinkingOrb::new().size(OrbSize::Inline).theme(OrbTheme::Dark)
+    ThinkingOrb::new().size(OrbSize::Inline)
+        .theme(if crate::system::is_light() { OrbTheme::Light } else { OrbTheme::Dark })
+        .reduced_motion(crate::system::reduce_motion())
 }
 
 /// Desktop's mapping (panel_activity.rs) from activity to orb animation.
@@ -1436,6 +1454,7 @@ impl MobileApp {
             }
         }
         if offer_new {
+            self.swipe = Default::default();
             self.new_tab(cx);
         }
         cx.notify();
@@ -1450,18 +1469,15 @@ impl MobileApp {
             self.end_swipe(cx);
         }
         let (prev, next) = self.tab_neighbors();
-        let (offset, settling) = self.swipe.offset(width, prev.is_some(), next.is_some(), now);
+        let (offset, settling) = self.swipe.panel_offset(width, prev.is_some(), next.is_some(), now);
         let neighbor = if offset < 0. { next } else if offset > 0. { prev } else { None };
-        // Enlarge the restrained nudge into a useful peek, including the same
-        // geometry during cancellation so the two panels snap back together.
-        let offset = if neighbor.is_some() { (offset * 6.).clamp(-width * 0.8, width * 0.8) } else { offset };
-        let preview = neighbor.and_then(|id| self.render_panel_preview(id, t));
+        let preview = neighbor.and_then(|id| self.render_panel_preview(id, t, window, cx));
         if settling || self.swipe.active {
             window.request_animation_frame();
         }
         let inner = self.render_chat_inner(t, window, cx);
         let new_session_progress = self.account.as_ref().and_then(|_| self.swipe.new_session_preview(next.is_some()));
-        div()
+        let panels = div()
             .id("chat-swipe")
             .relative()
             .flex_1()
@@ -1469,10 +1485,6 @@ impl MobileApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .when_some(new_session_progress, |d, progress| {
-                d.child(label(if progress >= 1. { "Release to create a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
-                    .px(px(16.)).py(px(8.)))
-            })
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
                 if ev.touch_phase == gpui::TouchPhase::Cancelled {
                     this.swipe.cancel(this.content_width(), std::time::Instant::now());
@@ -1504,9 +1516,18 @@ impl MobileApp {
                 d.child(div().absolute().top_0().bottom_0()
                     .left(px(if offset < 0. { width + offset } else { -width + offset }))
                     .w(px(width)).overflow_hidden().bg(t.background)
-                    .border_l_1().border_color(t.border)
                     .child(preview))
             })
+            .when_some(new_session_progress, |d, progress| {
+                d.child(label(if progress >= 1. { "Release to create a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
+                    .absolute().top_0().left_0().right_0()
+                    .px(px(16.)).py(px(8.)).bg(t.background))
+            })
+            .into_any_element();
+        div().flex_1().min_h_0().flex().flex_col().relative()
+            .child(self.render_header(t, cx))
+            .child(self.render_git_handle(t, cx))
+            .child(panels)
             .when(self.git_info.open, |d| d.child(self.render_git_panel(t, cx)))
             .into_any_element()
     }
@@ -1546,8 +1567,11 @@ impl MobileApp {
             if e.role == Role::User {
                 prompt_n += 1;
             }
-            let el = self.render_entry(e, prompt_n, t, cx);
-            rows.push(self.feel_hit(crate::gestures::Target::Message(e.id), el));
+            let el = self.render_entry(e, prompt_n, &self.expanded_tools, t, cx);
+            rows.push(div().id(("entry", e.id))
+                .debug_selector({ let id = e.id; move || format!("entry-{id}") })
+                .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
+                .into_any_element());
         }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
@@ -1666,8 +1690,6 @@ impl MobileApp {
             .flex()
             .flex_col()
             .size_full()
-            .child(self.render_header(t, cx))
-            .child(self.render_git_handle(t, cx))
             .when(!empty && !self.feel_reconnect_visible() && !matches!(self.session.phase, ConnectionPhase::Connected | ConnectionPhase::Failed { .. }), |d| {
                 d.child(div().px(px(14.)).py(px(6.)).border_b_1().border_color(t.border)
                     .child(self.connection_status(t)))
@@ -1679,7 +1701,11 @@ impl MobileApp {
 
     /// Provisioning/connecting line shown on an empty session.
     fn connection_status_text(&self) -> Option<String> {
-        Some(match &self.session.phase {
+        Self::connection_status_text_for(&self.session)
+    }
+
+    fn connection_status_text_for(session: &SessionState) -> Option<String> {
+        Some(match &session.phase {
             ConnectionPhase::Connected | ConnectionPhase::Failed { .. } => return None,
             ConnectionPhase::Connecting => "Connecting to Jcode Cloud…".to_string(),
             ConnectionPhase::Provisioning { message } => message.clone(),
@@ -1696,13 +1722,17 @@ impl MobileApp {
     }
 
     fn activity(&self) -> Option<&'static str> {
-        if self.session.is_reasoning {
+        Self::activity_for(&self.session)
+    }
+
+    fn activity_for(session: &SessionState) -> Option<&'static str> {
+        if session.is_reasoning {
             return Some("thinking");
         }
-        if !self.session.is_processing {
+        if !session.is_processing {
             return None;
         }
-        let Some(last) = self.session.transcript.last().filter(|e| e.role == Role::Assistant) else {
+        let Some(last) = session.transcript.last().filter(|e| e.role == Role::Assistant) else {
             return Some("working");
         };
         if last
@@ -1715,7 +1745,7 @@ impl MobileApp {
         Some(if last.text.is_empty() { "working" } else { "responding" })
     }
 
-    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
             Role::User => {
@@ -1762,7 +1792,7 @@ impl MobileApp {
                     col = col.child(crate::markdown::render_reasoning(&e.reasoning, t));
                 }
                 for call in &e.tool_calls {
-                    col = col.child(self.tool_line(call, t, cx));
+                    col = col.child(self.tool_line(call, expanded_tools, t, cx));
                 }
                 if !e.text.is_empty() {
                     col = col.child(div().pt(px(4.)).child(crate::markdown::render(&e.text, t)));
@@ -1773,8 +1803,8 @@ impl MobileApp {
     }
 
     /// Desktop/TUI tool row: `✓ name · headline`, tap to expand output.
-    fn tool_line(&self, call: &jcode_mobile_core::ToolCall, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let expanded = self.expanded_tools.contains(&call.id);
+    fn tool_line(&self, call: &jcode_mobile_core::ToolCall, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let expanded = expanded_tools.contains(&call.id);
         let (glyph, color) = match &call.status {
             ToolStatus::StreamingInput | ToolStatus::Running => (spinner_glyph(self.spinner_step), t.warning),
             ToolStatus::Succeeded => ("✓", t.ok),
@@ -1843,33 +1873,44 @@ impl MobileApp {
     /// then desktop's pill row: model, effort, `Provider · Auth` on the left,
     /// the machine chip on the right.
     fn render_composer(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let processing = self.session.is_processing;
-        let ready = self.session.phase == ConnectionPhase::Connected && self.session.session_id.is_some();
-        let has_text = !self.composer.read(cx).text().trim().is_empty();
-        let focused = self.composer.read(cx).is_focused(window);
-        let model_raw = self.session.model_name.clone();
+        self.render_composer_for(&self.session, &self.composer, false, t, window, cx)
+    }
+
+    fn render_composer_for(
+        &self,
+        session: &SessionState,
+        composer: &Entity<TextInput>,
+        preview: bool,
+        t: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let processing = session.is_processing;
+        let ready = session.phase == ConnectionPhase::Connected && session.session_id.is_some();
+        let has_text = !composer.read(cx).text().trim().is_empty();
+        let focused = !preview && composer.read(cx).is_focused(window);
+        let model_raw = session.model_name.clone();
         let model = crate::labels::pretty_model(model_raw.as_deref());
-        let effort = self
-            .session
+        let effort = session
             .reasoning_effort
             .clone()
             .filter(|e| !e.trim().is_empty() && model_raw.is_some());
         // The daemon's resolved credential wins; guessing from routes is
         // ambiguous when one model has both an OAuth and an API-key route.
-        let api_method = self.session.auth_method.clone().or_else(|| {
-            self.session
+        let api_method = session.auth_method.clone().or_else(|| {
+            session
                 .routes
                 .iter()
                 .find(|r| {
                     Some(&r.model) == model_raw.as_ref()
-                        && self.session.provider_name.as_deref().is_some_and(|p| r.provider.eq_ignore_ascii_case(p))
+                        && session.provider_name.as_deref().is_some_and(|p| r.provider.eq_ignore_ascii_case(p))
                 })
                 .map(|r| r.api_method.clone())
         });
         let account = crate::labels::routed_account_label(
-            self.session.provider_name.as_deref(),
+            session.provider_name.as_deref(),
             api_method.as_deref(),
-            self.session.account_label.as_deref(),
+            session.account_label.as_deref(),
         );
         let open_picker = cx.listener(|this, _, window, cx| {
             window.blur(cx);
@@ -1879,7 +1920,7 @@ impl MobileApp {
         });
         div()
             .id("chat-composer")
-            .debug_selector(|| "chat-composer".into())
+            .debug_selector(move || if preview { "preview-chat-composer" } else { "chat-composer" }.into())
             .flex()
             .flex_col()
             .flex_none()
@@ -1901,7 +1942,7 @@ impl MobileApp {
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
-                    .child(div().id("composer-input").debug_selector(|| "composer-input".into()).flex_1().min_w_0().child(self.composer.clone()))
+                    .child(div().id("composer-input").debug_selector(move || if preview { "preview-composer-input" } else { "composer-input" }.into()).flex_1().min_w_0().child(composer.clone()))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")
@@ -1912,8 +1953,8 @@ impl MobileApp {
                             .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
-            .when_some(self.voice.status(), |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
-            .when(self.voice.busy || self.voice.recording.is_some(), |d| d.child(
+            .when_some(if preview { None } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
+            .when(!preview && (self.voice.busy || self.voice.recording.is_some()), |d| d.child(
                 pill("cancel-dictation", "Cancel dictation", t)
                     .a11y_button("Discard voice recording")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1925,7 +1966,7 @@ impl MobileApp {
                     }))
             ))
             .when(!ready, |d| d.child(label(
-                if matches!(self.session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
+                if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
                     "Not connected. Your draft stays here."
                 } else {
                     "Connecting… You can keep typing."
@@ -1934,7 +1975,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("chat-metadata")
-                    .debug_selector(|| "chat-metadata".into())
+                    .debug_selector(move || if preview { "preview-chat-metadata" } else { "chat-metadata" }.into())
                     .flex()
                     .flex_wrap()
                     .items_center()
@@ -1968,10 +2009,10 @@ impl MobileApp {
                     .child({
                         // Desktop's location label: cloud icon, repo name,
                         // then its dim parent path on the cloud VM.
-                        let (name, parent) = crate::labels::cloud_location(self.session.working_dir.as_deref());
+                        let (name, parent) = crate::labels::cloud_location(session.working_dir.as_deref());
                         div()
                             .id("location")
-                            .debug_selector(|| "location".into())
+                            .debug_selector(move || if preview { "preview-location" } else { "location" }.into())
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, window, cx| this.open_dir_picker(window, cx)))
                             .flex_shrink(8.)
