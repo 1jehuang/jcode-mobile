@@ -15,6 +15,7 @@ use jcode_mobile_core::{
 };
 
 use crate::text_input::{InputDraft, TextInput, TextInputEvent};
+use crate::haptics::{self, Haptic};
 
 #[path = "push_glue.rs"]
 mod push_glue;
@@ -36,6 +37,8 @@ mod interaction_fuzz;
 mod offline_tests;
 #[cfg(test)]
 mod scroll_tests;
+#[cfg(test)]
+mod haptic_tests;
 use gpui::Focusable as _;
 use crate::theme::{FONT, Theme, with_alpha};
 
@@ -380,6 +383,7 @@ impl MobileApp {
         if token.is_some() && code.len() < 6 {
             return;
         }
+        haptics::play(Haptic::Light);
         self.signing_in = true;
         self.sign_in_error = None;
         cx.notify();
@@ -399,6 +403,7 @@ impl MobileApp {
                 this.signing_in = false;
                 match result {
                     Ok(Step::Sent(t)) => {
+                        haptics::play(Haptic::Success);
                         this.login_token = Some(t);
                         this.focus_code = true;
                     }
@@ -410,7 +415,10 @@ impl MobileApp {
                         this.code.update(cx, |t, cx| t.set_text("", cx));
                         this.connect(account, cx);
                     }
-                    Err(e) => this.sign_in_error = Some(e),
+                    Err(e) => {
+                        haptics::play(Haptic::Error);
+                        this.sign_in_error = Some(e);
+                    }
                 }
                 cx.notify();
             })
@@ -425,11 +433,13 @@ impl MobileApp {
         if self.offline { return; }
         if let Some(c) = self.browser_login.take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
+            haptics::play(Haptic::Light);
             cx.notify();
             return;
         }
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.browser_login = Some(cancel.clone());
+        haptics::play(Haptic::Light);
         self.sign_in_error = None;
         cx.notify();
         let start = cx.background_spawn(async move { cloud::start_browser_login() });
@@ -439,6 +449,7 @@ impl MobileApp {
                 Err(e) => {
                     this.update(cx, |this, cx| {
                         this.browser_login = None;
+                        haptics::play(Haptic::Error);
                         this.sign_in_error = Some(e);
                         cx.notify()
                     })
@@ -466,7 +477,10 @@ impl MobileApp {
                         }
                         this.connect(account, cx);
                     }
-                    Err(e) => this.sign_in_error = Some(e),
+                    Err(e) => {
+                        haptics::play(Haptic::Error);
+                        this.sign_in_error = Some(e);
+                    }
                 }
                 cx.notify();
             })
@@ -477,6 +491,7 @@ impl MobileApp {
 
     fn connect(&mut self, account: Account, cx: &mut Context<Self>) {
         if self.offline { return; }
+        haptics::play(Haptic::Success);
         self.cloud_machine = cloud_machine::MachineState::default();
         if let Some(c) = self.connection.take() {
             c.stop();
@@ -533,6 +548,7 @@ impl MobileApp {
         if self.account.is_none() {
             return;
         }
+        haptics::play(Haptic::Light);
         let id = self.next_tab;
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
@@ -579,8 +595,8 @@ impl MobileApp {
         if self.tab_order.len() <= 1 {
             return;
         }
-        crate::haptics::play(crate::haptics::Haptic::Rigid);
-        let pos = self.tab_order.iter().position(|t| *t == id).unwrap_or(0);
+        let Some(pos) = self.tab_order.iter().position(|t| *t == id) else { return };
+        haptics::play(Haptic::Rigid);
         self.tab_order.remove(pos);
         self.tab_motion.remove(&id);
         if id == self.active_tab {
@@ -641,6 +657,7 @@ impl MobileApp {
             list = list.child(row("tm-copy", "Copy session ID", t.text, true).on_click(cx.listener(
                 move |this, _, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(sid.clone()));
+                    haptics::play(Haptic::Success);
                     close(this, cx)
                 },
             )));
@@ -794,6 +811,8 @@ impl MobileApp {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if !self.session.is_processing { return; }
+        haptics::play(Haptic::Medium);
         self.send(|id| Request::Cancel { id });
         cx.notify();
     }
@@ -803,8 +822,12 @@ impl MobileApp {
         if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         match self.delete_step {
-            0 => self.delete_step = 1,
+            0 => {
+                haptics::play(Haptic::Warning);
+                self.delete_step = 1;
+            }
             1 => {
+                haptics::play(Haptic::Rigid);
                 self.delete_step = 2;
                 self.delete_error = None;
                 let task = cx.background_spawn(async move { cloud::delete_account(&account) });
@@ -814,7 +837,10 @@ impl MobileApp {
                         this.delete_step = 0;
                         match result {
                             Ok(()) => this.sign_out(cx),
-                            Err(e) => this.delete_error = Some(e),
+                            Err(e) => {
+                                haptics::play(Haptic::Error);
+                                this.delete_error = Some(e);
+                            }
                         }
                         cx.notify();
                     })
@@ -828,6 +854,7 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        if self.account.is_some() { haptics::play(Haptic::Rigid); }
         self.cloud_machine = cloud_machine::MachineState::default();
         self.cancel_voice();
         if !self.offline {
@@ -1642,6 +1669,7 @@ impl MobileApp {
                 if !this.expanded_tools.remove(&id) {
                     this.expanded_tools.insert(id.clone());
                 }
+                haptics::play(Haptic::Selection);
                 cx.notify()
             }))
             .child(
@@ -1722,6 +1750,7 @@ impl MobileApp {
         );
         let open_picker = cx.listener(|this, _, window, cx| {
             window.blur(cx);
+            if !this.model_picker { haptics::play(Haptic::Light); }
             this.model_picker = true;
             cx.notify();
         });
@@ -1754,7 +1783,12 @@ impl MobileApp {
                         round_button("microphone", if self.voice.recording.is_some() { "■" } else if self.voice.busy { "…" } else { "🎙" },
                             if self.voice.recording.is_some() { t.error } else { t.text_strong }, !self.voice.busy, t)
                             .a11y_button(if self.voice.recording.is_some() { "Stop recording and transcribe" } else { "Dictate message" })
-                            .when(!self.voice.busy, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_voice(cx))))
+                            .when(!self.voice.busy, |d| d.on_click(cx.listener(|this, _, _, cx| {
+                                if !this.offline && !this.voice.busy && this.account.is_some() {
+                                    haptics::play(Haptic::Light);
+                                }
+                                this.toggle_voice(cx);
+                            })))
                     ))
                     .child(if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
@@ -1770,7 +1804,13 @@ impl MobileApp {
             .when(self.voice.busy || self.voice.recording.is_some(), |d| d.child(
                 pill("cancel-dictation", "Cancel dictation", t)
                     .a11y_button("Discard voice recording")
-                    .on_click(cx.listener(|this, _, _, cx| { this.cancel_voice(); cx.notify(); }))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.voice.busy || this.voice.recording.is_some() {
+                            haptics::play(Haptic::Light);
+                        }
+                        this.cancel_voice();
+                        cx.notify();
+                    }))
             ))
             .when(!ready, |d| d.child(label(
                 if matches!(self.session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
@@ -1807,6 +1847,7 @@ impl MobileApp {
                                     .min_w(px(40.))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         window.blur(cx);
+                                        if !this.model_picker { haptics::play(Haptic::Light); }
                                         this.model_picker = true;
                                         cx.notify();
                                     })),
@@ -1959,7 +2000,17 @@ impl MobileApp {
 
     fn pick_model(&mut self, spec: String, cx: &mut Context<Self>) {
         self.model_picker = false;
-        crate::haptics::play(crate::haptics::Haptic::Selection);
+        let current = self.session.model_name.as_deref();
+        let unchanged = if self.session.routes.is_empty() {
+            current == Some(spec.as_str())
+        } else {
+            self.session.routes.iter().any(|route| {
+                Some(route.model.as_str()) == current
+                    && self.session.provider_name.as_deref().is_some_and(|provider| route.provider.eq_ignore_ascii_case(provider))
+                    && jcode_mobile_core::routes::route_spec(route) == spec
+            })
+        };
+        if !unchanged { haptics::play(Haptic::Selection); }
         self.send(|id| Request::SetModel { id, model: spec });
         cx.notify();
     }
@@ -2034,6 +2085,7 @@ impl MobileApp {
                         )))
                         .child(outline_button("clear", "Clear conversation", true, t).on_click(cx.listener(
                             |this, _, _, cx| {
+                                haptics::play(Haptic::Rigid);
                                 this.session.apply_intent(LocalIntent::ClearedConversation);
                                 this.send(|id| Request::Clear { id });
                                 this.screen = Screen::Chat;

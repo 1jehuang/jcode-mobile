@@ -1,6 +1,11 @@
 //! Taptic feedback. On iOS this drives UIKit's feedback generators through
 //! the Objective-C runtime (no extra framework bindings needed). Elsewhere it
 //! is a no-op, logged at debug level (JCODE_MOBILE_HAPTICS_LOG=1 prints it).
+//!
+//! Emit at action boundaries, after eligibility checks: Selection for a changed
+//! choice, Light for navigation/send, Medium for a committed gesture, Rigid for
+//! destructive actions, and notifications for meaningful outcomes. Ordinary
+//! scrolling, typing, disabled controls and background polling stay silent.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Haptic {
@@ -18,11 +23,39 @@ pub enum Haptic {
 }
 
 pub fn play(h: Haptic) {
+    #[cfg(test)]
+    CAPTURE.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push(h);
+        }
+    });
     if std::env::var_os("JCODE_MOBILE_HAPTICS_LOG").is_some() {
         eprintln!("haptic: {h:?}");
     }
     log::debug!("haptic {h:?}");
     imp::play(h);
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURE: std::cell::RefCell<Option<Vec<Haptic>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record feedback on the calling UI thread without touching process-wide env.
+#[cfg(test)]
+pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Haptic>) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { CAPTURE.with(|events| *events.borrow_mut() = None); }
+    }
+    CAPTURE.with(|events| {
+        assert!(events.borrow().is_none(), "nested haptic capture");
+        *events.borrow_mut() = Some(Vec::new());
+    });
+    let _reset = Reset;
+    let result = f();
+    let events = CAPTURE.with(|events| events.borrow_mut().take().unwrap());
+    (result, events)
 }
 
 /// Success/error buzz when a turn finishes, given whether it was running.
