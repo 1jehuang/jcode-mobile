@@ -49,6 +49,10 @@ mod journey_fuzz;
 #[cfg(test)]
 mod local_control_coverage;
 #[cfg(test)]
+mod keyboard_bridge_coverage;
+#[cfg(test)]
+mod preview_geometry_coverage;
+#[cfg(test)]
 mod status_coverage;
 #[cfg(test)]
 mod modal_ownership_coverage;
@@ -2508,23 +2512,44 @@ impl Render for MobileApp {
     }
 }
 
+/// The same polygon is used for painting and geometry regressions. No GPU or
+/// screenshot acceptance is implied by inspecting these vertices.
+fn preview_corner_polygon(
+    bounds: gpui::Bounds<gpui::Pixels>, right: bool, bottom: bool,
+) -> Option<[gpui::Point<gpui::Pixels>; 50]> {
+    let width = f32::from(bounds.size.width);
+    let height = f32::from(bounds.size.height);
+    if !width.is_finite() || !height.is_finite() || width <= 0. || height <= 0.
+        || !f32::from(bounds.origin.x).is_finite() || !f32::from(bounds.origin.y).is_finite() {
+        return None;
+    }
+    let radius = 48_f32.min(width / 2.).min(height / 2.);
+    Some(std::array::from_fn(|index| {
+        let (x, y) = match index {
+            0 => (0., 0.),
+            1 => (radius, 0.),
+            _ => {
+                let angle = std::f32::consts::FRAC_PI_2 * (index - 1) as f32 / 48.;
+                (radius * (1. - angle.sin()), radius * (1. - angle.cos()))
+            }
+        };
+        bounds.origin + gpui::point(
+            px(if right { width - x } else { x }),
+            px(if bottom { height - y } else { y }),
+        )
+    }))
+}
+
 fn preview_corner_mask() -> impl IntoElement {
     gpui::canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            let width = f32::from(bounds.size.width);
-            let height = f32::from(bounds.size.height);
-            let radius = 48_f32.min(width / 2.).min(height / 2.);
             for (right, bottom) in [(false, false), (true, false), (false, true), (true, true)] {
-                let point = |x: f32, y: f32| {
-                    bounds.origin + gpui::point(px(if right { width - x } else { x }), px(if bottom { height - y } else { y }))
-                };
+                let Some(vertices) = preview_corner_polygon(bounds, right, bottom) else { continue; };
                 let mut path = gpui::PathBuilder::fill();
-                path.move_to(point(0., 0.));
-                path.line_to(point(radius, 0.));
-                for step in 1..=48 {
-                    let angle = std::f32::consts::FRAC_PI_2 * step as f32 / 48.;
-                    path.line_to(point(radius * (1. - angle.sin()), radius * (1. - angle.cos())));
+                path.move_to(vertices[0]);
+                for vertex in &vertices[1..] {
+                    path.line_to(*vertex);
                 }
                 path.close();
                 if let Ok(path) = path.build() {
