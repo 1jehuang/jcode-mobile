@@ -168,7 +168,12 @@ impl MobileApp {
         let list = lists.max_by_key(|l| l.len())?;
         let current = session.working_dir.as_deref().map(|d| d.trim_end_matches('/'));
         let dirs: Vec<String> = recent_dirs(list).into_iter().filter(|d| Some(d.trim_end_matches('/')) != current).collect();
-        let sessions = suggested_sessions(list, session.session_id.as_deref());
+        let open_sessions: Vec<_> = std::iter::once(self.session.session_id.as_deref())
+            .chain(self.parked.iter().map(|p| p.session.session_id.as_deref()))
+            .chain(std::iter::once(session.session_id.as_deref()))
+            .flatten()
+            .collect();
+        let sessions = suggested_sessions(list, &open_sessions);
         if dirs.is_empty() && sessions.is_empty() {
             return None;
         }
@@ -254,13 +259,15 @@ impl MobileApp {
     }
 }
 
-/// Keep live sessions first, then the most recently active conversations.
-fn suggested_sessions<'a>(sessions: &'a [SessionInfo], current: Option<&str>) -> Vec<&'a SessionInfo> {
+/// Keep running agents ahead of ready/connected sessions, then sort by activity.
+/// Sessions already represented by any open tab are never suggestions.
+fn suggested_sessions<'a>(sessions: &'a [SessionInfo], open_sessions: &[&str]) -> Vec<&'a SessionInfo> {
     let mut rows: Vec<_> = sessions.iter()
-        .filter(|s| !s.archived && s.parent_session_id.is_none() && Some(s.session_id.as_str()) != current)
+        .filter(|s| !s.archived && s.parent_session_id.is_none() && !open_sessions.contains(&s.session_id.as_str()))
         .collect();
     rows.sort_by_key(|s| std::cmp::Reverse((
-        s.status == "running" || s.user_connected,
+        s.status == "running",
+        s.user_connected,
         s.updated_at_ms.or(s.last_active_at_ms).map(|v| v.max(0) as u64)
             .or_else(|| super::sidebar::created_ms(&s.session_id)).unwrap_or(0),
     )));
@@ -355,18 +362,36 @@ mod tests {
             {"session_id":"running", "status":"running", "last_active_at_ms":2},
             {"session_id":"connected", "status":"idle", "user_connected":true, "updated_at_ms":3}
         ])).unwrap();
-        let ids: Vec<_> = suggested_sessions(&sessions, Some("current"))
+        let ids: Vec<_> = suggested_sessions(&sessions, &["current"])
             .iter().map(|s| s.session_id.as_str()).collect();
-        assert_eq!(ids, ["connected", "running", "recent"]);
+        assert_eq!(ids, ["running", "connected", "recent"]);
+    }
+
+    #[test]
+    fn suggestions_exclude_all_open_tabs_before_limiting_results() {
+        let sessions: Vec<SessionInfo> = serde_json::from_value(serde_json::json!([
+            {"session_id":"active", "status":"running", "updated_at_ms":1000},
+            {"session_id":"parked-running", "status":"running", "updated_at_ms":900},
+            {"session_id":"parked-ready", "status":"idle", "user_connected":true, "updated_at_ms":800},
+            {"session_id":"ready", "status":"idle", "user_connected":true, "updated_at_ms":700},
+            {"session_id":"justrust-agent", "status":"running", "updated_at_ms":1},
+            {"session_id":"recent", "status":"idle", "updated_at_ms":600},
+            {"session_id":"older", "status":"idle", "updated_at_ms":500}
+        ])).unwrap();
+        let ids: Vec<_> = suggested_sessions(&sessions, &["active", "parked-running", "parked-ready"])
+            .iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["justrust-agent", "ready", "recent"]);
+        let all_open: Vec<_> = sessions.iter().map(|s| s.session_id.as_str()).collect();
+        assert!(suggested_sessions(&sessions, &all_open).is_empty());
     }
 
     #[test]
     fn suggestions_allow_missing_metadata_and_empty_lists() {
-        assert!(suggested_sessions(&[], None).is_empty());
+        assert!(suggested_sessions(&[], &[]).is_empty());
         let sessions = serde_json::from_value::<Vec<SessionInfo>>(serde_json::json!([
             {"session_id":"session_older_1700000000000", "status":"idle"},
             {"session_id":"session_newer_1700000001000", "status":"idle"}
         ])).unwrap();
-        assert_eq!(suggested_sessions(&sessions, None)[0].session_id, "session_newer_1700000001000");
+        assert_eq!(suggested_sessions(&sessions, &[])[0].session_id, "session_newer_1700000001000");
     }
 }
