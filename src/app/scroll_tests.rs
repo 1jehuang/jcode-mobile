@@ -3,6 +3,30 @@ use super::*;
 use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, size};
 
 #[gpui::test]
+fn phone_sign_in_offers_apple_and_google_before_email_code(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+        app.screen = Screen::SignIn;
+        app.device = Some((390., 844.));
+        app
+    });
+    cx.simulate_resize(size(px(390.), px(844.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    let apple = cx.debug_bounds("sign-in-with-apple").expect("Apple sign-in must be offered");
+    let google = cx.debug_bounds("google").expect("Google must accompany Apple on phones");
+    assert!(apple.bottom() <= google.top(), "provider buttons must not overlap");
+    assert!(google.left() >= px(0.) && google.right() <= px(390.));
+    view.update(cx, |app, cx| {
+        app.login_token = Some("fixture".into());
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    assert!(cx.debug_bounds("sign-in-with-apple").is_none());
+    assert!(cx.debug_bounds("google").is_none());
+}
+
+#[gpui::test]
 fn attached_cloud_history_and_footer_stay_inside_phone(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {

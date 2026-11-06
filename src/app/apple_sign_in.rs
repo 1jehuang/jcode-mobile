@@ -64,8 +64,7 @@ async fn apple_credential() -> Result<(String, String), String> {
 }
 
 impl MobileApp {
-    /// White Apple button (HIG: white style on dark backgrounds) and an "or"
-    /// divider above the email form.
+    /// White Apple button (HIG: white style on dark backgrounds).
     pub(super) fn render_apple_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.signing_in;
         div()
@@ -76,6 +75,7 @@ impl MobileApp {
             .child(
                 div()
                     .id("sign-in-with-apple")
+                    .debug_selector(|| "sign-in-with-apple".into())
                     .w_full()
                     .h(px(44.))
                     .flex()
@@ -93,16 +93,6 @@ impl MobileApp {
                     .child(gpui::img(apple_logo()).size(px(17.)).mb(px(2.)).flex_none())
                     .child("Sign in with Apple")
                     .on_click(cx.listener(|this, _, _, cx| this.apple_sign_in(cx))),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(div().flex_1().h(px(1.)).bg(gpui::white().opacity(0.15)))
-                    .child(label("or use email", gpui::white().opacity(0.5), 12.))
-                    .child(div().flex_1().h(px(1.)).bg(gpui::white().opacity(0.15))),
             )
             .into_any_element()
     }

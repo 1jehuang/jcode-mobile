@@ -1047,14 +1047,14 @@ impl MobileApp {
                     .pb(px(16. + (220. - self.kb_lift).max(0.)))
                     .when_some(self.sign_in_error.clone(), |d, e| d.child(banner(&e, t.error, t)))
                     .children(apple)
-                    // No third-party login on iOS: offering Google would oblige
-                    // Sign in with Apple (App Review 4.8). Email codes only there.
-                    // The desktop preview mirrors iOS, so it hides Google too.
-                    .when(!code_step && !cfg!(target_os = "ios") && self.device.is_none(), |d| {
+                    // Apple is offered alongside Google on iOS and in the
+                    // phone preview. Both use the same Jcode account backend.
+                    .when(!code_step, |d| {
                         let waiting = self.browser_login.is_some();
                         d.child(
                             div()
                                 .id("google")
+                                .debug_selector(|| "google".into())
                                 .w_full()
                                 .h(px(44.))
                                 .flex()
@@ -1082,7 +1082,7 @@ impl MobileApp {
                                 .items_center()
                                 .gap(px(10.))
                                 .child(div().flex_1().h(px(1.)).bg(t.border))
-                                .child(label("or", t.text_muted, 12.))
+                                .child(label("or use email", t.text_muted, 12.))
                                 .child(div().flex_1().h(px(1.)).bg(t.border)),
                         )
                     })
