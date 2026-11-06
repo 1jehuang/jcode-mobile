@@ -259,14 +259,20 @@ pub fn connect(
         cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
     };
     if let Some(ssh) = cached {
-        progress("Connecting to your Jcode Cloud machine…");
+        progress("Opening your Jcode session…");
         match ssh.open_client() {
             Ok(client) => {
                 check_cancelled()?;
                 return Ok(client);
             }
-            // A stale target goes back through the authenticated control plane.
-            // Its validated pins, never TOFU, authorize the next connection.
+            // An API startup timeout does not mean SSH authentication is stale.
+            // Keep the master so a retry does not register another key and
+            // repeat cloud provisioning on an otherwise healthy connection.
+            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected => {
+                return Err(error);
+            }
+            // A dead master must go back through the authenticated control
+            // plane. Its validated pins, never TOFU, authorize the next host.
             Err(_) => clear_warm_target(),
         }
     }
@@ -279,25 +285,36 @@ pub fn connect(
         cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
     };
     if let Some(ssh) = cached {
-        if let Ok(client) = ssh.open_client() {
-            check_cancelled()?;
-            return Ok(client);
+        progress("Opening your Jcode session…");
+        match ssh.open_client() {
+            Ok(client) => {
+                check_cancelled()?;
+                return Ok(client);
+            }
+            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected => {
+                return Err(error);
+            }
+            Err(_) => clear_warm_target(),
         }
-        clear_warm_target();
     }
     check_cancelled()?;
     let mut cloud = client_for(account);
     cloud.poll_interval = Duration::from_millis(250);
     let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)?;
+    progress("Checking your Jcode Cloud machine…");
     let target = cloud.wait_for_host(account, key.public_openssh(), progress, cancelled)?;
     check_cancelled()?;
     progress("Connecting to your Jcode Cloud machine…");
     let ssh = crate::cloud_ssh::PreparedSsh::new(crate::cloud_ssh::CloudSsh::connect(target, key)?);
     check_cancelled()?;
-    let client = ssh.open_client()?;
-    check_cancelled()?;
     let expires = Instant::now() + TARGET_TTL;
-    *warm_target().lock().unwrap() = Some(WarmTarget { account: account.clone(), ssh, expires });
+    // Cache authentication before API startup, which may need longer on a
+    // waking host. A failed API hello must not throw away successful SSH.
+    *warm_target().lock().unwrap() = Some(WarmTarget {
+        account: account.clone(),
+        ssh: ssh.clone(),
+        expires,
+    });
     // Expire idle masters even when the user never opens another tab. Live
     // channels retain their own master handles and are not interrupted.
     std::thread::spawn(move || {
@@ -307,6 +324,9 @@ pub fn connect(
             *cache = None;
         }
     });
+    progress("Opening your Jcode session…");
+    let client = ssh.open_client()?;
+    check_cancelled()?;
     Ok(client)
 }
 
@@ -328,6 +348,46 @@ pub fn reset_badge(account: &Account) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uses real account credentials without printing them. Unlike SSH fixture
+    /// tests, this includes the control plane and the installed cloud binary.
+    /// Does not create a conversation or submit a model request.
+    #[test]
+    #[ignore = "contacts the real cloud using the locally saved account"]
+    fn benchmark_real_cloud_startup() {
+        let account = AccountStore::default_location().load()
+            .or_else(account_from_jcode_config)
+            .expect("a saved Jcode account is required");
+        clear_warm_target();
+        for pass in ["cold", "warm"] {
+            let started = Instant::now();
+            let client = connect(
+                &account,
+                &|stage| eprintln!(
+                    "cloud_startup {pass} elapsed_ms={} stage={stage}",
+                    started.elapsed().as_millis(),
+                ),
+                &|| false,
+            ).unwrap_or_else(|error| {
+                // Error messages can include server details. Keep the receipt
+                // limited to a fixed error kind and timing.
+                panic!(
+                    "cloud_startup {pass} failed after {}ms: {:?}",
+                    started.elapsed().as_millis(), error.kind,
+                )
+            });
+            eprintln!("cloud_startup {pass} hello_ms={}", started.elapsed().as_millis());
+            client.ping().expect("cloud API ping");
+            eprintln!("cloud_startup {pass} ping_ms={}", started.elapsed().as_millis());
+            let sessions = client.list_sessions_limited(1).expect("cloud session list");
+            eprintln!("cloud_startup {pass} list_ms={}", started.elapsed().as_millis());
+            if let Some(session) = sessions.first() {
+                client.attach_session(&session.session_id).expect("attach existing cloud session");
+                eprintln!("cloud_startup {pass} attached_ms={}", started.elapsed().as_millis());
+            }
+        }
+        clear_warm_target();
+    }
 
     #[test]
     fn account_store_roundtrip() {
