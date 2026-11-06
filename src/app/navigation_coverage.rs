@@ -211,19 +211,23 @@ fn directory_change_with_history_opens_tab_and_preserves_conversation(cx: &mut T
 #[gpui::test]
 fn drawer_new_switch_close_refresh_and_account_hit_test(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
-    drawer(&view, cx);
-    tap(cx, "drawer-refresh");
-    view.read_with(cx, |app, _| {
-        assert!(app.drawer_open);
-        assert!(app.connection.is_none());
+    view.update(cx, |app, cx| {
+        app.device = Some((1024., 844.));
+        cx.notify();
     });
+    cx.simulate_resize(gpui::size(px(1024.), px(844.)));
+    // These quick actions belong to the docked wide sidebar, not the phone drawer.
+    tap(cx, "drawer-refresh");
+    view.read_with(cx, |app, _| assert!(app.connection.is_none()));
     tap(cx, "drawer-new-thread");
     view.update(cx, |app, cx| {
         assert_eq!(app.tab_order.len(), 2);
         assert!(!app.drawer_open);
         app.drawer_t = 0.;
+        app.device = Some((390., 844.));
         cx.notify();
     });
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
     drawer(&view, cx);
     tap(cx, "drawer-tab-0");
     view.update(cx, |app, cx| {
@@ -251,8 +255,8 @@ fn drawer_directory_groups_and_search_hit_test(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     view.update(cx, |app, cx| {
         app.session.session_list = serde_json::from_value(serde_json::json!([
-            {"session_id":"alpha", "title":"Alpha needle", "working_dir":"/alpha"},
-            {"session_id":"beta", "title":"Beta work", "working_dir":"/beta"}
+            {"session_id":"alpha", "status":"idle", "title":"Alpha needle", "working_dir":"/alpha"},
+            {"session_id":"beta", "status":"idle", "title":"Beta work", "working_dir":"/beta"}
         ]))
         .unwrap();
         cx.notify();
@@ -287,7 +291,7 @@ fn drawer_directory_new_button_does_not_toggle_group(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     view.update(cx, |app, cx| {
         app.session.session_list = serde_json::from_value(serde_json::json!([
-            {"session_id":"alpha", "title":"Alpha", "working_dir":"/alpha"}
+            {"session_id":"alpha", "status":"idle", "title":"Alpha", "working_dir":"/alpha"}
         ]))
         .unwrap();
         cx.notify();
