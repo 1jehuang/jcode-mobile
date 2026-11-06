@@ -37,12 +37,17 @@ Never print `gh auth token` or credential file contents.
 
 ## Toolchain
 
-The prepared machine has Rust `1.98.1` with `aarch64-apple-ios`, Swift `6.4.1`,
-and the existing Darwin SDK artifact bundle copied from the working release
-machine. Preserve symlinks and hardlinks and use compression (`rsync -aHz`) for
-these large, nonsecret directories:
+The prepared machine has Rust `1.98.1` with `aarch64-apple-ios`, installed
+from the public Rust distribution on the VM:
 
-- `~/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu`
+```sh
+~/.cargo/bin/rustup toolchain install 1.98.1 --profile minimal --target aarch64-apple-ios
+```
+
+Swift `6.4.1` and the existing Darwin SDK artifact bundle were copied from the
+working release machine. Preserve symlinks and hardlinks and use compression
+(`rsync -aHz`) for these large, nonsecret directories:
+
 - `~/.local/share/swiftly/toolchains/6.4.1`
 - `~/.swiftpm/swift-sdks/darwin.artifactbundle`
 
@@ -57,9 +62,9 @@ The isolated `~/.local/share/jcode-mobile-build/bin` contains `justrust`,
 symlinks to `rustup`. On the managed host, use the real
 `~/.local/libexec/justrust-cloud-hosted.bin` as the isolated `bin/justrust`, not
 its hosted-policy wrapper in `~/.local/bin/justrust`. The host wrapper stays
-unchanged. This separate invocation is for the unsupported Apple cross-target,
-not a bypass of hosted billing or tenant isolation. These are tools, not
-credentials. Cargo cache and build
+unchanged. This separate invocation is for the Apple cross-target, which needs
+its SDK and linker on the build machine. These are tools, not credentials.
+Cargo cache and build
 state are separate from the account's existing configuration. The runner mounts
 only the repository, these tools, the SDK/toolchains, and signing profiles.
 
@@ -104,3 +109,25 @@ separately authorized release, the existing `scripts/asc_upload.py` implements
 the App Store Connect upload path and can run on the host with Python
 `cryptography` and the specifically provisioned API key. Confirm the exact
 candidate and build number before invoking it.
+
+## Observed proof, 2026-11-06
+
+At 14:46 UTC the managed VM produced a fresh signed candidate from commit
+`7ef00da42d02bbeef9da50e59cb54239ee85154e` (application source matches
+`f9388ec`). No local `target/` artifacts were copied. The initial cold Rust
+release compilation ran on the VM, followed by Swift extension packaging and
+Apple Distribution signing of the main app and all three nested bundles.
+
+- Artifact: `/home/jeremy/jcode-mobile/target/ios/JcodeMobile.ipa`
+- Bundle: `sh.jcode.mobile.rust`, version `1.0`, build `1793976371`
+- Size: `9,729,171` bytes
+- SHA-256: `be0256ed295308fad8dedbabdabbb4f90a327cfc3a7f8d532162e29fa8ed7023`
+- ZIP CRC check passed, with three embedded profiles and four CodeResources files.
+- `rcodesign verify` reported no problems for the main executable, bridge,
+  Live Activity and share extension. Its own warning says verification is
+  incomplete and is not proof of compliance with all Apple signature standards.
+- GitHub account `1jehuang`: authenticated read, dry-run push and API push
+  permission passed. Existing cloud credentials were preserved.
+- Read-only App Store Connect app query returned HTTP 200 for app `6830033634`.
+- The proof build was **not uploaded**. App Store processing/acceptance of this
+  exact cloud artifact was deliberately not exercised to avoid a duplicate release.
