@@ -8,6 +8,21 @@
 4. **Over-capacity tool working sets.** The old bounded LRU could become slower than uncached parsing above 256 distinct inputs. Address admission churn without increasing memory indefinitely or returning stale partial JSON summaries. This is smaller than the measured whole-frame scrolling cost and should not distract from it.
 5. **History transfer allocations.** Incoming text is now moved into transcript entries instead of copied, including an extra discarded assistant copy. Reasoning prefixes are decoded in place, with oversized mostly-consumed buffers shrunk. This reduces one-time attach work, not per-frame cost.
 
+**Separate end-to-end priority: startup and reconnect latency.** This CPU-rendering
+ranking does not measure cloud provisioning, SSH establishment, API hello or
+network waits. A multi-second connection delay can matter more to perceived
+startup than any millisecond parser improvement. Measure cold versus warm
+attach timelines and avoid treating a slow but valid first hello as a stale
+cached transport. Connection work is coordinated separately and is not claimed
+as a rendering-cache gain here.
+
+The separately coordinated startup fix is now recorded in
+[cloud startup measurements](CLOUD_STARTUP.md), commits `a275f68`, `fc11bbe`
+and `e9360d3`. It preserves successful SSH authentication across a slow API
+hello while independently checking stale peers. A live existing-session Linux
+check measured 3.253 s cold and 0.486 s warm, not an old/new comparison or an
+iPhone SLA. That path remains a distinct device-validation priority.
+
 ## New measurements and reproducibility
 
 These are Linux headless draw measurements and separately identified optimized standalone parser/cache measurements on a shared, heavily contended machine. They are elapsed CPU-side draw or parser times, not release iPhone presentation time, GPU completion, FPS, or energy measurements. No timing assertions are used.
@@ -112,3 +127,22 @@ not machine-dependent performance thresholds.
 The first layout still measures all rows. Very large individual messages still build their visible subtree. Streaming prefixes are not assumed immutable, and caches retain exact-source identity with explicit memory bounds. No event ordering, gesture ownership, scroll anchoring, or rendered content quality is relaxed for speed.
 
 Before a larger rendering redesign, capture release-device CPU/GPU and presentation traces while scrolling, attaching a large history, streaming a long response, resizing/Dynamic Type changes, and swiping between conversations. The opt-in local spans help locate CPU work but cannot establish display smoothness or battery savings.
+
+## Integration checks
+
+The initial matrix caught two 1.6-scale fixture assumptions, rather than being
+declared successful after default-scale tests. Commits `ec01179` and `b37fba8`
+compare every materialized preview row against a complete 18-row oracle with
+windowing restored before preview, including actual expanded-tool geometry,
+the private preview scroll range/offset, parked/focused range, drafts, inertness
+and exact-once event forwarding. They do not require far-offscreen coalesced
+rows to retain unnecessary wrappers. All three preview regressions passed at
+both text scales after the repair.
+
+The concurrent Git card fixture was corrected in `1e420e5` to scroll each
+expansion control into the actual viewport before clicking; both expansion
+flags and composer preservation remain strict assertions. Both text scales
+passed. Its four new renderer owners are explicitly reviewed in the interaction
+ledger (`878c825`), including untested row pixels, collapse paths, authenticated
+repository and device gaps. The current snapshot is 72 owners, 115 static event
+sites and 180 static control sites, not a claim of complete behavioral coverage.
