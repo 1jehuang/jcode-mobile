@@ -77,6 +77,8 @@ CARGO=justrust ./scripts/ios-bundle.sh
 
 For simulator packaging, the script supports `SIM=1`. The device development helper, `scripts/ios-dev.sh`, additionally expects a local `~/gpui` checkout, `xtool`, and `pymobiledevice3`.
 
+For the managed Linux VM, see [Cloud iOS builds](docs/CLOUD_IOS_BUILD.md). The isolated cloud runner builds and signs an IPA without uploading another TestFlight release.
+
 ## Repository layout
 
 | Path | Purpose |
