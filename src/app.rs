@@ -23,6 +23,7 @@ mod a11y;
 use a11y::A11yExt as _;
 mod recent_dirs;
 mod sidebar;
+mod synced_sessions;
 mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
@@ -132,6 +133,8 @@ pub struct MobileApp {
     drawer_drag_last: Option<std::time::Instant>,
     /// Drawer session search field.
     drawer_search: Entity<TextInput>,
+    synced: synced_sessions::State,
+    transfer_input: Entity<TextInput>,
     /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
     apple_link: Option<Entity<apple_sign_in::AppleLinkPanel>>,
 }
@@ -197,6 +200,11 @@ impl MobileApp {
             t
         });
         cx.subscribe(&drawer_search, |_, _, _, cx| cx.notify()).detach();
+        let transfer_input = cx.new(|cx| TextInput::new("What should Jcode do next?", cx));
+        cx.subscribe(&transfer_input, |this, _, event, cx| match event {
+            TextInputEvent::Submit => this.continue_synced_in_cloud(cx),
+            TextInputEvent::Changed => cx.notify(),
+        }).detach();
         let dir_input = cx.new(|cx| {
             let mut t = TextInput::new("/home/ec2-user/src/app", cx);
             t.bare = true;
@@ -306,6 +314,8 @@ impl MobileApp {
             drawer_drag: 0.,
             drawer_drag_last: None,
             drawer_search,
+            synced: Default::default(),
+            transfer_input,
             apple_link: None,
         };
         app.install_push(cx);
@@ -442,6 +452,8 @@ impl MobileApp {
         }
         self.session = SessionState::default();
         self.account = Some(account);
+        self.synced = Default::default();
+        self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
         self.register_push(cx);
         self.start_connection(None, cx);
         self.screen = Screen::Chat;
@@ -792,6 +804,8 @@ impl MobileApp {
         self.tab_motion.clear();
         self.store.clear();
         self.account = None;
+        self.synced = Default::default();
+        self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
         self.apple_link = None;
         self.session = SessionState::default();
         self.login_token = None;
@@ -2245,6 +2259,7 @@ mod monkey_tests {
         let (view, cx) = cx.add_window_view(|window, cx| {
             let mut app = MobileApp::new(SafeArea { top: 47., bottom: 34. }, window, cx);
             app.device = Some((390., 844.));
+            app.synced = synced_sessions::State::fixture();
             app
         });
         cx.simulate_resize(gpui::size(px(390.), px(844.)));
@@ -2267,6 +2282,8 @@ mod monkey_tests {
         ] {
             view.update(cx, |app, cx| {
                 app.screen = screen;
+                app.drawer_open = matches!(app.screen, Screen::Chat);
+                app.drawer_t = if app.drawer_open { 1. } else { 0. };
                 app.login_token = code_step.then(|| "offline-test-token".to_string());
                 if code_step {
                     app.email.update(cx, |input, cx| {

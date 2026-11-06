@@ -4,6 +4,7 @@
 
 pub mod apple;
 pub mod cloud;
+pub mod mobile_sync;
 pub mod connection;
 pub mod crash;
 pub mod credentials;

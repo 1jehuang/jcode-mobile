@@ -26,6 +26,7 @@ impl MobileApp {
         self.drawer_open = true;
         self.drawer_last = std::time::Instant::now();
         self.send(|id| Request::ListSessions { id });
+        self.refresh_synced_sessions(cx);
         cx.notify();
     }
 
@@ -38,7 +39,7 @@ impl MobileApp {
     }
 
     /// Focus the tab already showing `session_id`, or resume it in a new tab.
-    fn drawer_open_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+    pub(super) fn drawer_open_session(&mut self, session_id: String, cx: &mut Context<Self>) {
         if self.account.is_none() {
             return;
         }
@@ -229,6 +230,7 @@ impl MobileApp {
                     .child("↻")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.send(|id| Request::ListSessions { id });
+                        this.refresh_synced_sessions(cx);
                         cx.notify();
                     })),
             )
@@ -319,6 +321,7 @@ impl MobileApp {
         let current = self.session.session_id.clone();
         let open: Vec<String> = self.parked.iter().filter_map(|p| p.session.session_id.clone()).collect();
         let mut list = div().flex().flex_col().pb(px(8.));
+        list = list.child(self.render_synced_sessions(t, cx));
         // Any tab's list will do; the active one may not have fetched yet.
         let sessions = std::iter::once(&self.session.session_list)
             .chain(self.parked.iter().map(|p| &p.session.session_list))
