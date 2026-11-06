@@ -45,6 +45,19 @@ pub enum Release {
 }
 
 impl Swipe {
+    /// Cancel recognition without ever committing navigation. Keep a bounded
+    /// snap-back animation, but discard travel and direction lock so a late
+    /// release (or the idle-end handler) cannot switch tabs.
+    pub fn cancel(&mut self, width: f32, now: Instant) {
+        let from = self.offset(width, true, true, now).0;
+        self.dx = 0.0;
+        self.dy = 0.0;
+        self.vertical = false;
+        self.active = false;
+        self.last_event = None;
+        self.settle = (from != 0.0).then_some((from, now));
+    }
+
     /// Feeds a scroll delta. Returns true when the gesture is horizontal and was consumed.
     pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> bool {
         if self.last_event.is_some_and(|last| now.duration_since(last) > IDLE_END) {
@@ -124,6 +137,131 @@ impl Swipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Fixed PRNG, intentionally dependency-free and reproducible across platforms.
+    fn next(seed: &mut u64) -> u32 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (*seed >> 32) as u32
+    }
+
+    #[test]
+    fn seeded_swipe_feed_release_offset_state_machine() {
+        for initial_seed in [1, 7, 42, 0xdead_beef, u64::MAX] {
+            let mut seed = initial_seed;
+            let mut s = Swipe::default();
+            let mut now = Instant::now();
+            let mut locked = false;
+            for step in 0..4000 {
+                let elapsed = next(&mut seed) % 220;
+                now += Duration::from_millis(elapsed as u64);
+                let width = [1., 240., 390., 768., 1440.][next(&mut seed) as usize % 5];
+                let prev = next(&mut seed) & 1 != 0;
+                let next_tab = next(&mut seed) & 1 != 0;
+                match next(&mut seed) % 6 {
+                    0..=2 => {
+                        if s.last_event.is_some_and(|last| now.duration_since(last) > IDLE_END) {
+                            locked = false;
+                        }
+                        let dx = (next(&mut seed) % 801) as f32 - 400.;
+                        let dy = (next(&mut seed) % 501) as f32 - 250.;
+                        let consumed = s.feed(dx, dy, now);
+                        if locked {
+                            assert!(!consumed && !s.active, "seed={initial_seed} step={step}");
+                        }
+                        locked |= s.vertical;
+                    }
+                    3 => {
+                        let dx = s.dx;
+                        let active = s.active;
+                        match s.release(width, prev, next_tab, now) {
+                            Release::Switch(-1) => assert!(active && !locked && prev && dx >= COMMIT),
+                            Release::Switch(1) => assert!(active && !locked && next_tab && dx <= -COMMIT),
+                            Release::Switch(other) => panic!("invalid direction {other}"),
+                            Release::Cancel => assert!(!active || locked || dx.abs() < COMMIT
+                                || (dx > 0. && !prev) || (dx < 0. && !next_tab)),
+                        }
+                        assert!(matches!(s.release(width, prev, next_tab, now), Release::Cancel));
+                        locked = false;
+                    }
+                    4 => {
+                        s.cancel(width, now);
+                        assert!(!s.active && s.last_event.is_none());
+                        assert_eq!((s.dx, s.dy), (0., 0.));
+                        assert!(matches!(s.release(width, true, true, now), Release::Cancel));
+                        locked = false;
+                    }
+                    _ => {}
+                }
+                let (offset, _) = s.offset(width, prev, next_tab, now);
+                assert!(offset.is_finite() && offset.abs() <= 48., "seed={initial_seed} step={step}");
+                assert!(s.dx.is_finite() && s.dy.is_finite());
+                if !s.active && s.settle.is_none() {
+                    assert_eq!(offset, 0.);
+                }
+            }
+            s.release(390., false, false, now);
+            assert_eq!(s.offset(390., false, false, now + SETTLE), (0., false));
+        }
+    }
+
+    #[test]
+    fn seeded_vertical_lock_never_drifts_into_navigation() {
+        let mut seed = 12345;
+        let mut now = Instant::now();
+        for _ in 0..128 {
+            let mut s = Swipe::default();
+            assert!(!s.feed(0., 13., now));
+            for _ in 0..64 {
+                now += Duration::from_millis((next(&mut seed) % 150) as u64);
+                assert!(!s.feed((next(&mut seed) % 4001) as f32 - 2000., 0., now));
+                assert_eq!(s.offset(390., true, true, now), (0., false));
+            }
+            assert!(matches!(s.release(390., true, true, now), Release::Cancel));
+        }
+    }
+
+    #[test]
+    fn cancelled_committable_swipe_never_switches_on_late_release() {
+        let mut seed = 57489;
+        let mut now = Instant::now();
+        for _ in 0..256 {
+            let mut s = Swipe::default();
+            let dx = COMMIT + (next(&mut seed) % 3000) as f32;
+            s.feed(if next(&mut seed) & 1 == 0 { dx } else { -dx }, 0., now);
+            assert!(s.active);
+            s.cancel(390., now);
+            assert!(!s.active && !s.vertical && s.last_event.is_none());
+            assert_eq!((s.dx, s.dy), (0., 0.));
+            assert!(matches!(s.release(390., true, true, now + IDLE_END), Release::Cancel));
+            assert_eq!(s.offset(390., true, true, now + SETTLE), (0., false));
+            now += Duration::from_secs(1);
+            assert!(s.feed(-COMMIT, 0., now), "cancellation must allow a fresh gesture");
+            assert!(matches!(s.release(390., true, true, now), Release::Switch(1)));
+        }
+    }
+
+    #[test]
+    fn seeded_absent_neighbors_never_switch_and_settle_is_monotonic() {
+        let mut seed = 9876;
+        let mut now = Instant::now();
+        for _ in 0..256 {
+            let mut s = Swipe::default();
+            let dx = (next(&mut seed) % 8001) as f32 - 4000.;
+            s.feed(dx, 0., now);
+            assert!(matches!(s.release(390., false, false, now), Release::Cancel));
+            let mut previous = f32::INFINITY;
+            for ms in [0, 1, 16, 40, 80, 159, 160, 200] {
+                let (offset, moving) = s.offset(390., false, false, now + Duration::from_millis(ms));
+                assert!(offset.is_finite() && offset.abs() <= 12.);
+                assert!(offset.abs() <= previous);
+                previous = offset.abs();
+                if ms >= 160 {
+                    assert_eq!((offset, moving), (0., false));
+                }
+            }
+            now += Duration::from_secs(1);
+        }
+    }
 
     #[test]
     fn vertical_scroll_is_not_a_swipe() {

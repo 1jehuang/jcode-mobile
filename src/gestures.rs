@@ -43,7 +43,7 @@ pub enum Action {
 }
 
 /// What the view looks like this frame, as far as gestures care.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Scene {
     /// A pushed screen (settings) is showing: edge swipe pops it.
     pub pushed: bool,
@@ -196,6 +196,9 @@ impl Gestures {
 
     fn candidate(&self, p: Point<Pixels>) -> Option<Kind> {
         let s = self.scene;
+        if !self.screen.contains(&p) {
+            return None;
+        }
         let near_edge = f(p.x - self.screen.origin.x) < EDGE;
         if (s.pushed || s.sheet_open) && near_edge {
             return Some(Kind::Edge);
@@ -212,8 +215,7 @@ impl Gestures {
         None
     }
 
-    fn track(&mut self, p: Point<Pixels>) {
-        let now = Instant::now();
+    fn track(&mut self, p: Point<Pixels>, now: Instant) {
         let dt = now.duration_since(self.last_t).as_secs_f32().max(1e-3);
         // Time-weighted: a pause before release forgets the earlier fling.
         let k = 1. - (-dt / 0.04).exp();
@@ -226,13 +228,17 @@ impl Gestures {
     /// Mouse button / touch down. Returns true if a menu was requested
     /// immediately (right click).
     pub fn down(&mut self, p: Point<Pixels>, touch: bool) {
+        self.down_at(p, touch, Instant::now());
+    }
+
+    fn down_at(&mut self, p: Point<Pixels>, touch: bool, now: Instant) {
         self.last_pos = p;
-        self.last_t = Instant::now();
+        self.last_t = now;
         self.vx = 0.;
         self.vy = 0.;
         let target = if self.scene.menus { self.hit(p) } else { None };
         let kind = self.candidate(p);
-        self.drag = Drag::Pending { start: p, t0: Instant::now(), kind, target, touch };
+        self.drag = Drag::Pending { start: p, t0: now, kind, target, touch };
     }
 
     /// Whether a touch drag starting here should be claimed (stealing it
@@ -263,7 +269,11 @@ impl Gestures {
     }
 
     pub fn moved(&mut self, p: Point<Pixels>) {
-        self.track(p);
+        self.moved_at(p, Instant::now());
+    }
+
+    fn moved_at(&mut self, p: Point<Pixels>, now: Instant) {
+        self.track(p, now);
         match self.drag {
             Drag::Pending { start, kind, .. } => {
                 let d = p - start;
@@ -281,7 +291,7 @@ impl Gestures {
                     Some(k) if go => Drag::Active { kind: k, start },
                     _ => Drag::Ignored,
                 };
-                self.moved(p);
+                self.moved_at(p, now);
             }
             Drag::Active { kind, start } => {
                 let d = p - start;
@@ -333,15 +343,19 @@ impl Gestures {
 
     /// Pointer released. Returns (action, swallow the click).
     pub fn up(&mut self) -> (Option<Action>, bool) {
+        self.up_at(Instant::now())
+    }
+
+    fn up_at(&mut self, now: Instant) -> (Option<Action>, bool) {
         let drag = std::mem::replace(&mut self.drag, Drag::Idle);
         match drag {
-            Drag::Active { kind, .. } => (self.release(kind), true),
+            Drag::Active { kind, .. } => (self.release(kind, now), true),
             Drag::Swallow => (None, true),
             _ => (None, false),
         }
     }
 
-    fn release(&mut self, kind: Kind) -> Option<Action> {
+    fn release(&mut self, kind: Kind, now: Instant) -> Option<Action> {
         match kind {
             Kind::Edge => {
                 let w = self.width();
@@ -362,17 +376,17 @@ impl Gestures {
                 }
                 None
             }
-            Kind::Pull => self.release_pull(),
+            Kind::Pull => self.release_pull(now),
         }
     }
 
-    fn release_pull(&mut self) -> Option<Action> {
+    fn release_pull(&mut self, now: Instant) -> Option<Action> {
         self.wheel_pull_at = None;
         self.pull_raw = 0.;
         let fire = self.pull_armed;
         self.pull_armed = false;
         if fire {
-            self.refreshing = Some(Instant::now());
+            self.refreshing = Some(now);
             haptics::play(Haptic::Medium);
             Some(Action::Refresh)
         } else {
@@ -383,6 +397,10 @@ impl Gestures {
     /// Scroll wheel / touch pan. `dy > 0` pulls content down. Returns
     /// (action, consumed).
     pub fn wheel(&mut self, p: Point<Pixels>, dy: f32, ended: bool) -> (Option<Action>, bool) {
+        self.wheel_at(p, dy, ended, Instant::now())
+    }
+
+    fn wheel_at(&mut self, p: Point<Pixels>, dy: f32, ended: bool, now: Instant) -> (Option<Action>, bool) {
         let pulling = self.wheel_pull_at.is_some();
         if !pulling {
             let ok = dy > 0. && matches!(self.candidate(p), Some(Kind::Pull)) && !self.dragging();
@@ -390,10 +408,10 @@ impl Gestures {
                 return (None, false);
             }
         }
-        self.wheel_pull_at = Some(Instant::now());
+        self.wheel_pull_at = Some(now);
         self.set_pull((self.pull_raw + dy).max(0.));
         if ended || self.pull_raw <= 0. {
-            return (self.release_pull(), true);
+            return (self.release_pull(now), true);
         }
         (None, true)
     }
@@ -407,10 +425,17 @@ impl Gestures {
 
     /// Advance animations. Returns actions and whether to keep animating.
     pub fn tick(&mut self, scene: Scene) -> (Vec<Action>, bool) {
-        let now = Instant::now();
+        self.tick_at(scene, Instant::now())
+    }
+
+    fn tick_at(&mut self, scene: Scene, now: Instant) -> (Vec<Action>, bool) {
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
         let mut out = Vec::new();
+        // Recognition belongs to the scene where it began, not a new overlay.
+        if scene != self.scene {
+            self.cancel();
+        }
         // Appear transitions: slide new screens/sheets in.
         if scene.pushed && !self.was_pushed {
             self.edge_x = self.width();
@@ -437,7 +462,7 @@ impl Gestures {
         self.scene = scene;
 
         if let Drag::Pending { start, t0, target: Some(t), touch: false, .. } = self.drag
-            && t0.elapsed().as_secs_f32() >= LONG_PRESS_SECS
+            && now.duration_since(t0).as_secs_f32() >= LONG_PRESS_SECS
             && scene.menus
         {
             self.drag = Drag::Swallow;
@@ -478,8 +503,8 @@ impl Gestures {
             }
             // Wheel pulls have no release on most desktops: idle releases.
             if let Some(at) = self.wheel_pull_at {
-                if at.elapsed().as_secs_f32() > 0.18 {
-                    out.extend(self.release_pull());
+                if now.duration_since(at).as_secs_f32() > 0.18 {
+                    out.extend(self.release_pull(now));
                 } else {
                     anim = true;
                 }
@@ -507,6 +532,190 @@ mod tests {
         g
     }
 
+    fn next(seed: &mut u64) -> u32 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (*seed >> 32) as u32
+    }
+
+    fn configured(scene: Scene, now: Instant) -> Gestures {
+        let mut g = g();
+        g.last_frame = now;
+        g.last_t = now;
+        g.sheet = Some(Bounds::new(point(px(0.), px(300.)), size(px(390.), px(500.))));
+        g.transcript = Some(Bounds::new(point(px(0.), px(100.)), size(px(390.), px(600.))));
+        g.hits.push((Target::Message(7), Bounds::new(point(px(80.), px(100.)), size(px(200.), px(200.)))));
+        g.tick_at(scene, now);
+        g
+    }
+
+    fn physics_is_bounded(g: &Gestures, seed: u64, step: usize) {
+        for value in [g.edge_x, g.edge_target, g.sheet_y, g.sheet_target, g.pull,
+            g.pull_raw, g.vx, g.vy, g.sheet_presence()] {
+            assert!(value.is_finite(), "seed={seed} step={step} value={value}");
+        }
+        assert!((0. ..=1.).contains(&g.sheet_presence()));
+        assert!((0. ..=130.).contains(&g.pull));
+        assert!((0. ..=4000.).contains(&g.edge_x));
+        assert!((-40. ..=4000.).contains(&g.sheet_y));
+    }
+
+    fn settle_cancelled(g: &mut Gestures, now: &mut Instant) {
+        g.cancel();
+        assert_eq!(g.up_at(*now), (None, false));
+        for _ in 0..100 {
+            *now += std::time::Duration::from_millis(50);
+            assert!(g.tick_at(g.scene, *now).0.is_empty());
+        }
+        assert_eq!((g.edge_x, g.sheet_y), (0., 0.));
+        assert_eq!(g.pull, if g.refreshing.is_some() { PULL_REST } else { 0. });
+    }
+
+    #[test]
+    fn seeded_gesture_pointer_wheel_scene_state_machine() {
+        for initial_seed in [1, 17, 42, 0xdecafbad, u64::MAX] {
+            let mut seed = initial_seed;
+            let mut now = Instant::now();
+            let mut g = configured(Scene::default(), now);
+            let mut cancelled = false;
+            for step in 0..4000 {
+                now += std::time::Duration::from_millis((next(&mut seed) % 301) as u64);
+                // Include coordinates outside every edge, but never non-finite input.
+                let p = point(px((next(&mut seed) % 991) as f32 - 300.),
+                    px((next(&mut seed) % 1445) as f32 - 300.));
+                match next(&mut seed) % 9 {
+                    0 => {
+                        g.down_at(p, next(&mut seed) & 1 != 0, now);
+                        cancelled = false;
+                    }
+                    1 | 2 => g.moved_at(p, now),
+                    3 => {
+                        let (action, _) = g.up_at(now);
+                        if cancelled { assert_eq!(action, None); }
+                    }
+                    4 => { g.cancel(); cancelled = true; }
+                    5 => {
+                        let scene = match next(&mut seed) % 4 {
+                            0 => Scene { pushed: true, ..Default::default() },
+                            1 => Scene { sheet_open: true, ..Default::default() },
+                            2 => Scene { at_top: true, menus: true, ..Default::default() },
+                            _ => Scene::default(),
+                        };
+                        let changed = scene != g.scene;
+                        let (actions, _) = g.tick_at(scene, now);
+                        if changed { assert!(actions.is_empty()); cancelled = true; }
+                        else if cancelled { assert!(actions.is_empty()); }
+                    }
+                    6 => {
+                        let dy = (next(&mut seed) % 481) as f32 - 120.;
+                        g.wheel_at(p, dy, next(&mut seed) & 1 != 0, now);
+                        cancelled = false;
+                    }
+                    7 => {
+                        g.long_press(p);
+                        cancelled = false;
+                    }
+                    _ => {
+                        let (actions, _) = g.tick_at(g.scene, now);
+                        if cancelled { assert!(actions.is_empty()); }
+                    }
+                }
+                physics_is_bounded(&g, initial_seed, step);
+                if step % 97 == 0 {
+                    settle_cancelled(&mut g, &mut now);
+                    cancelled = true;
+                }
+            }
+            settle_cancelled(&mut g, &mut now);
+        }
+    }
+
+    #[test]
+    fn scene_change_cancels_active_edge_sheet_and_armed_wheel() {
+        let mut now = Instant::now();
+        for (scene, start, end) in [
+            (Scene { pushed: true, ..Default::default() }, point(px(5.), px(400.)), point(px(300.), px(400.))),
+            (Scene { sheet_open: true, ..Default::default() }, point(px(200.), px(310.)), point(px(200.), px(700.))),
+            (Scene { at_top: true, ..Default::default() }, point(px(100.), px(200.)), point(px(100.), px(500.))),
+        ] {
+            let mut g = configured(scene, now);
+            g.down_at(start, true, now);
+            now += std::time::Duration::from_millis(16);
+            g.moved_at(end, now);
+            assert!(g.dragging());
+            let replacement = Scene { menus: true, ..Default::default() };
+            assert!(g.tick_at(replacement, now).0.is_empty());
+            assert!(!g.dragging());
+            assert_eq!(g.up_at(now).0, None);
+            settle_cancelled(&mut g, &mut now);
+        }
+        let mut g = configured(Scene { at_top: true, ..Default::default() }, now);
+        g.wheel_at(point(px(100.), px(200.)), 300., false, now);
+        assert!(g.pull_armed);
+        now += std::time::Duration::from_secs(1);
+        assert!(g.tick_at(Scene { sheet_open: true, ..Default::default() }, now).0.is_empty());
+        assert!(g.refreshing.is_none());
+        settle_cancelled(&mut g, &mut now);
+    }
+
+    #[test]
+    fn offscreen_down_cannot_claim_edge_navigation() {
+        let now = Instant::now();
+        let mut g = configured(Scene { pushed: true, ..Default::default() }, now);
+        for p in [point(px(-10.), px(200.)), point(px(5.), px(-1.)), point(px(5.), px(900.))] {
+            assert!(!g.wants_touch_drag(p));
+            g.down_at(p, true, now);
+            g.moved_at(point(px(350.), px(200.)), now);
+            assert!(!g.dragging());
+            assert_eq!(g.up_at(now), (None, false));
+        }
+    }
+
+    #[test]
+    fn fake_clock_long_press_threshold_cancel_and_scene_change() {
+        let start = Instant::now();
+        let scene = Scene { menus: true, ..Default::default() };
+        let p = point(px(100.), px(200.));
+        for mode in 0..4 {
+            let mut g = configured(scene, start);
+            g.down_at(p, false, start);
+            assert!(g.tick_at(scene, start + std::time::Duration::from_millis(449)).0.is_empty());
+            match mode {
+                1 => g.cancel(),
+                2 => g.moved_at(point(px(120.), px(200.)), start + std::time::Duration::from_millis(449)),
+                3 => { g.tick_at(Scene::default(), start + std::time::Duration::from_millis(449)); }
+                _ => {}
+            }
+            let current = g.scene;
+            let actions = g.tick_at(current, start + std::time::Duration::from_millis(450)).0;
+            if mode == 0 {
+                assert_eq!(actions, vec![Action::Menu(Target::Message(7), p)]);
+                assert_eq!(g.up_at(start), (None, true));
+            } else { assert!(actions.is_empty()); }
+            assert!(g.tick_at(current, start + std::time::Duration::from_secs(2)).0.is_empty());
+        }
+    }
+
+    #[test]
+    fn fake_clock_wheel_end_idle_and_cancel_are_single_shot() {
+        for ended in [false, true] {
+            for cancel in [false, true] {
+                let start = Instant::now();
+                let mut g = configured(Scene { at_top: true, ..Default::default() }, start);
+                let p = point(px(100.), px(200.));
+                assert_eq!(g.wheel_at(p, 300., false, start), (None, true));
+                if cancel { g.cancel(); }
+                let mut actions = Vec::new();
+                if ended && !cancel {
+                    actions.extend(g.wheel_at(p, 0., true, start).0);
+                }
+                assert!(g.tick_at(g.scene, start + std::time::Duration::from_millis(180)).0.is_empty());
+                actions.extend(g.tick_at(g.scene, start + std::time::Duration::from_millis(181)).0);
+                assert_eq!(actions, if cancel { vec![] } else { vec![Action::Refresh] });
+                assert!(g.tick_at(g.scene, start + std::time::Duration::from_secs(1)).0.is_empty());
+            }
+        }
+    }
+
     /// Advance real animation logic deterministically, without sleeping.
     fn assert_cancel_unwinds(g: &mut Gestures, scene: Scene) {
         assert!(!g.dragging());
@@ -515,9 +724,10 @@ mod tests {
         assert!(!g.pending_back && !g.pending_dismiss && !g.pull_armed);
         assert_eq!(g.pull_raw, 0.);
         assert!(g.wheel_pull_at.is_none());
+        let mut now = g.last_frame;
         for _ in 0..200 {
-            g.last_frame = Instant::now() - std::time::Duration::from_millis(50);
-            assert!(g.tick(scene).0.is_empty(), "cancel must not emit an action");
+            now += std::time::Duration::from_millis(50);
+            assert!(g.tick_at(scene, now).0.is_empty(), "cancel must not emit an action");
         }
         assert_eq!(g.edge_x, 0.);
         assert_eq!(g.sheet_y, 0.);
@@ -615,41 +825,43 @@ mod tests {
 
     #[test]
     fn edge_swipe_commits_past_a_third() {
-        let mut g = g();
+        let mut now = Instant::now();
         let scene = Scene { pushed: true, ..Default::default() };
-        g.tick(scene);
+        let mut g = configured(scene, now);
         g.edge_x = 0.;
         g.edge_target = 0.;
-        g.down(point(px(5.), px(400.)), false);
-        g.moved(point(px(20.), px(402.)));
-        g.moved(point(px(200.), px(405.)));
+        g.down_at(point(px(5.), px(400.)), false, now);
+        now += std::time::Duration::from_millis(16);
+        g.moved_at(point(px(20.), px(402.)), now);
+        now += std::time::Duration::from_millis(16);
+        g.moved_at(point(px(200.), px(405.)), now);
         assert!(g.dragging());
         assert_eq!(g.edge_x, 195.);
-        let (_, swallow) = g.up();
-        assert!(swallow);
-        let mut back = false;
+        assert!(g.up_at(now).1);
+        let mut backs = 0;
         for _ in 0..200 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            back |= g.tick(scene).0.contains(&Action::Back);
+            now += std::time::Duration::from_millis(50);
+            backs += g.tick_at(scene, now).0.iter().filter(|a| **a == Action::Back).count();
         }
-        assert!(back);
+        assert_eq!(backs, 1);
     }
 
     #[test]
     fn short_edge_swipe_springs_back() {
-        let mut g = g();
+        let mut now = Instant::now();
         let scene = Scene { pushed: true, ..Default::default() };
-        g.tick(scene);
+        let mut g = configured(scene, now);
         g.edge_x = 0.;
         g.edge_target = 0.;
-        g.down(point(px(5.), px(400.)), false);
-        g.moved(point(px(60.), px(400.)));
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        g.moved(point(px(61.), px(400.)));
-        g.up();
+        g.down_at(point(px(5.), px(400.)), false, now);
+        now += std::time::Duration::from_millis(16);
+        g.moved_at(point(px(60.), px(400.)), now);
+        now += std::time::Duration::from_millis(200);
+        g.moved_at(point(px(61.), px(400.)), now);
+        g.up_at(now);
         for _ in 0..200 {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            assert!(!g.tick(scene).0.contains(&Action::Back));
+            now += std::time::Duration::from_millis(50);
+            assert!(!g.tick_at(scene, now).0.contains(&Action::Back));
         }
         assert_eq!(g.edge_x, 0.);
     }
