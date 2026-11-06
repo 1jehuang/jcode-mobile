@@ -208,6 +208,12 @@ Third output line".into(),
                 touch_phase: phase,
             });
             draw(cx);
+            if phase == gpui::TouchPhase::Moved {
+                view.read_with(cx, |app, _| {
+                    assert_eq!(app.active_tab, 1);
+                    assert_eq!(app.swipe.dx, 140., "preview wheel must not bubble into a second dispatch");
+                });
+            }
         }
         view.read_with(cx, |app, cx| {
             assert_eq!(app.active_tab, 0, "release over the preview must commit immediately");
