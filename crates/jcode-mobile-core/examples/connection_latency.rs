@@ -1,7 +1,10 @@
 //! Live latency probe. Uses the saved account and creates one session, then
 //! reattaches it through cold, immediate warm, and spaced warm mobile connections.
 //! Prints no credentials. Intentional idle time is reported outside request timing.
-use jcode_mobile_core::{AccountStore, cloud};
+use jcode_mobile_core::{
+    AccountStore, cloud,
+    cloud_ssh::{CloudSsh, CloudSshKey},
+};
 use std::time::{Duration, Instant};
 
 const WARM_SAMPLES: usize = 10;
@@ -76,6 +79,44 @@ fn summary(label: &str, samples: &[Sample]) {
     distribution(label, "ready", samples.iter().map(|sample| sample.ready));
 }
 
+fn raw_master_samples(account: &cloud::Account, session_id: &str) -> Vec<Sample> {
+    let setup_start = Instant::now();
+    let progress =
+        |message: &str| println!("raw master setup +{:?}: {message}", setup_start.elapsed());
+    let key = CloudSshKey::generate(cloud::CLIENT_NAME).expect("raw master key");
+    let target = cloud::client()
+        .with_api_base(account.api_base.clone())
+        .wait_for_host(account, key.public_openssh(), &progress, &|| false)
+        .expect("raw master host");
+    let master = CloudSsh::connect(target, key).expect("raw master connect");
+    println!(
+        "Raw master setup: {:?} (excluded from warm samples)",
+        setup_start.elapsed()
+    );
+    println!(
+        "Raw master: {WARM_SAMPLES} immediate open_client + attach samples, no preopened spare or discarded samples"
+    );
+    let mut samples = Vec::with_capacity(WARM_SAMPLES);
+    for i in 1..=WARM_SAMPLES {
+        let start = Instant::now();
+        let client = master.open_client().expect("raw master open client");
+        let hello = start.elapsed();
+        let attach_start = Instant::now();
+        client
+            .attach_session(session_id)
+            .expect("raw master attach");
+        let attach = attach_start.elapsed();
+        let ready = start.elapsed();
+        println!("raw master warm {i}: hello={hello:?}, attach={attach:?}, ready={ready:?}");
+        samples.push(Sample {
+            hello,
+            attach,
+            ready,
+        });
+    }
+    samples
+}
+
 fn main() {
     let account = AccountStore::default_location()
         .load()
@@ -119,9 +160,11 @@ fn main() {
         "Spaced warm batch wall time (including idle): {:?}",
         batch_start.elapsed()
     );
+    let raw = raw_master_samples(&account, session_id.as_deref().expect("created session"));
     println!(
         "Summary: ready is total connect + attach; percentiles use nearest rank, no samples discarded"
     );
     summary("warm immediate", &immediate);
     summary("warm spaced", &spaced);
+    summary("raw master warm (no spare)", &raw);
 }
