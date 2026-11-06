@@ -40,6 +40,15 @@ pub enum TextInputEvent {
     Changed,
 }
 
+/// Persistent composer state, independent of focus, layout and IME composition.
+/// A default draft represents an empty composer with its caret and scroll reset.
+#[derive(Clone, Default)]
+pub struct InputDraft {
+    content: SharedString,
+    selected_range: Range<usize>,
+    scroll_y: Pixels,
+}
+
 pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
@@ -91,9 +100,40 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = text.into();
-        self.selected_range = self.content.len()..self.content.len();
+        let content = text.into();
+        let end = content.len();
+        self.restore_draft(InputDraft { content, selected_range: end..end, scroll_y: px(0.) }, cx);
+    }
+
+    /// Save text, selection/caret and vertical scroll without transient IME state.
+    pub fn save_draft(&self) -> InputDraft {
+        InputDraft {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            scroll_y: self.scroll_y,
+        }
+    }
+
+    /// Restore a saved draft into this editor, retaining its focus and configuration.
+    pub fn restore_draft(&mut self, draft: InputDraft, cx: &mut Context<Self>) {
+        self.content = draft.content;
+        // Clamp defensively to UTF-8 boundaries before any layout or slicing.
+        let boundary = |offset: usize| {
+            let mut offset = offset.min(self.content.len());
+            while !self.content.is_char_boundary(offset) {
+                offset -= 1;
+            }
+            offset
+        };
+        let start = boundary(draft.selected_range.start);
+        let end = boundary(draft.selected_range.end);
+        self.selected_range = start.min(end)..start.max(end);
+        self.scroll_y = if self.content.is_empty() { px(0.) } else { draft.scroll_y.max(px(0.)) };
         self.marked_range = None;
+        self.selection_anchor = None;
+        self.last_layout = None;
+        self.last_bounds = None;
+        self.last_origin = Point::default();
         cx.emit(TextInputEvent::Changed);
         cx.notify();
     }
@@ -770,6 +810,88 @@ mod ios_keyboard_tests {
 
     fn text(input: &Entity<TextInput>, cx: &mut VisualTestContext) -> String {
         input.read_with(cx, |t, _| t.content.to_string())
+    }
+
+    #[gpui::test]
+    fn draft_roundtrip_preserves_unicode_selection_and_scroll(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        insert_text(cx, "a😀é終");
+        with_handler(cx, |t, w, cx| t.set_selected_text_range(1..4, w, cx));
+        input.update(cx, |t, cx| {
+            assert_eq!(t.selected_text(), "😀é");
+            t.scroll_y = px(60.);
+            let draft = t.save_draft();
+            t.set_text("other tab", cx);
+            t.marked_range = Some(0..1);
+            t.selection_anchor = Some(1);
+            t.last_bounds = Some(Bounds::default());
+            t.last_origin = point(px(10.), px(-40.));
+            t.restore_draft(draft.clone(), cx);
+            assert_eq!(t.text(), "a😀é終");
+            assert_eq!(t.selected_text(), "😀é");
+            assert_eq!(t.selected_range, 1..7);
+            assert_eq!(t.scroll_y, px(60.));
+            assert!(t.marked_range.is_none());
+            assert!(t.selection_anchor.is_none());
+            assert!(t.last_layout.is_none());
+            assert!(t.last_bounds.is_none());
+            assert_eq!(t.last_origin, Point::default());
+            t.set_text("", cx);
+            t.restore_draft(draft, cx);
+            assert_eq!(t.selected_text(), "😀é");
+        });
+        // Platform UTF-16 selection and replacement remain valid after restoring.
+        with_handler(cx, |t, w, cx| {
+            assert_eq!(t.selected_text_range(false, w, cx).unwrap().range, 1..4);
+            t.replace_text_in_range(None, "界", w, cx);
+        });
+        assert_eq!(text(&input, cx), "a界終");
+    }
+
+    #[gpui::test]
+    fn draft_restore_clamps_unicode_offsets_and_preserves_caret(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        input.update(cx, |t, cx| {
+            t.restore_draft(InputDraft {
+                content: "a😀é".into(), selected_range: 3..usize::MAX, scroll_y: px(0.),
+            }, cx);
+            assert_eq!(t.selected_range, 1..7);
+            assert_eq!(t.selected_text(), "😀é");
+            t.move_to(5, cx);
+            let draft = t.save_draft();
+            t.set_text("replacement", cx);
+            t.restore_draft(draft, cx);
+            assert_eq!(t.selected_range, 5..5);
+        });
+        insert_text(cx, "!");
+        assert_eq!(text(&input, cx), "a😀!é");
+    }
+
+    #[gpui::test]
+    fn empty_draft_and_set_text_reset_scroll_and_transients(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        input.update(cx, |t, cx| {
+            for replacement in ["new text", ""] {
+                t.scroll_y = px(200.);
+                t.marked_range = Some(0..0);
+                t.selection_anchor = Some(0);
+                t.last_bounds = Some(Bounds::default());
+                t.set_text(replacement, cx);
+                assert_eq!(t.scroll_y, px(0.));
+                assert_eq!(t.selected_range, replacement.len()..replacement.len());
+                assert!(t.marked_range.is_none());
+                assert!(t.selection_anchor.is_none());
+                assert!(t.last_bounds.is_none());
+            }
+            t.set_text("old draft", cx);
+            t.scroll_y = px(200.);
+            t.restore_draft(InputDraft::default(), cx);
+            assert_eq!(t.text(), "");
+            assert_eq!(t.selected_range, 0..0);
+            assert_eq!(t.scroll_y, px(0.));
+        });
+        insert_text(cx, "😀");
+        assert_eq!(text(&input, cx), "😀");
     }
 
     #[gpui::test]
