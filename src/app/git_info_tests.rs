@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Modifiers, TestAppContext, point, size};
+use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, point, size};
 
 #[test]
 fn git_rows_preserve_status_and_support_old_and_new_commit_formats() {
@@ -64,7 +64,40 @@ fn git_cards_fit_phone_widths_and_expand_without_touching_the_composer(cx: &mut 
         }
     }
     for selector in ["git-more-commits", "git-more-files"] {
+        // Debug bounds include offscreen children. At accessibility text sizes,
+        // expanding commits pushes the file control below the scroll clip.
+        // Exercise real scrolling instead of clicking an invisible coordinate.
+        for _ in 0..30 {
+            let viewport = cx.debug_bounds("git-info-panel").unwrap();
+            let target = cx.debug_bounds(selector).unwrap();
+            if target.top() >= viewport.top() + px(8.)
+                && target.bottom() <= viewport.bottom() - px(8.)
+            {
+                break;
+            }
+            cx.simulate_event(ScrollWheelEvent {
+                position: viewport.center(),
+                delta: ScrollDelta::Pixels(point(
+                    px(0.),
+                    px(if target.top() < viewport.top() + px(8.) {
+                        60.
+                    } else {
+                        -60.
+                    }),
+                )),
+                touch_phase: TouchPhase::Moved,
+                modifiers: Modifiers::default(),
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+        }
         let bounds = cx.debug_bounds(selector).unwrap();
+        let viewport = cx.debug_bounds("git-info-panel").unwrap();
+        assert!(
+            bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom(),
+            "{selector} must be visible before tapping"
+        );
         cx.simulate_click(bounds.center(), Modifiers::default());
         cx.update(|window, cx| {
             window.draw(cx).clear(cx);
