@@ -152,6 +152,7 @@ pub struct MobileApp {
     tab_track_width: f32,
     last_frame: std::time::Instant,
     transcript_scroll: ScrollHandle,
+    todos_expanded: bool,
     scroll_perf_started: Option<std::time::Instant>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
@@ -347,6 +348,7 @@ impl MobileApp {
             tab_track_width: 0.0,
             last_frame: std::time::Instant::now(),
             transcript_scroll: ScrollHandle::new(),
+            todos_expanded: false,
             scroll_perf_started: None,
             expanded_tools: Default::default(),
             follow: true,
@@ -1775,6 +1777,7 @@ impl MobileApp {
                             }).absolute().inset_0()
                         }),
                 )
+                .when_some(transcript_scrollbar(viewport, max, off, t), |d, bar| d.child(bar))
                 .when(!at_bottom && max > px(0.), |d| {
                     d.child(
                         div()
@@ -1814,9 +1817,41 @@ impl MobileApp {
                     .child(self.connection_status(t)))
             })
             .child(body)
+            .when(!empty, |d| d.children(self.pinned_todos(t, cx)))
             .child(self.render_composer(t, window, cx))
             .into_any_element();
         self.feel_voice_surface(content, t, cx)
+    }
+
+    /// Pinned todo list derived from the session's todo tool calls. Collapsed
+    /// it shows progress and the active item. Tap to expand the full list.
+    fn pinned_todos(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let todos = jcode_mobile_core::todos::current(&self.session.transcript);
+        if todos.is_empty() { return None; }
+        let done = todos.iter().filter(|x| x.is_done()).count();
+        let focus = todos.iter().find(|x| x.is_active()).or_else(|| todos.iter().find(|x| !x.is_done()));
+        let expanded = self.todos_expanded;
+        let header = div().flex().items_center().gap(px(8.))
+            .child(label(format!("{done}/{}", todos.len()), t.text_muted, 13.))
+            .child(label(focus.map_or("All done".to_string(), |x| x.name.clone()), t.text, 13.).flex_1().min_w_0().truncate())
+            .child(label(if expanded { "▾" } else { "▸" }, t.text_muted, 13.));
+        let rows = expanded.then(|| {
+            div().id("todo-list").max_h(px(220.)).overflow_y_scroll().flex().flex_col().gap(px(4.)).pt(px(6.))
+                .children(todos.iter().map(|x| {
+                    let (mark, color) = if x.is_done() { ("✓", t.ok) } else if x.is_active() { ("●", t.accent) } else { ("○", t.text_muted) };
+                    let text_color = if x.is_done() { t.text_muted } else { t.text };
+                    div().flex().gap(px(8.))
+                        .child(label(mark, color, 13.))
+                        .child(label(x.name.clone(), text_color, 13.).flex_1().min_w_0())
+                }))
+        });
+        Some(div().id("pinned-todos").debug_selector(|| "pinned-todos".into()).a11y_button("Todo list")
+            .mx(px(14.)).mb(px(6.)).px(px(12.)).py(px(8.)).rounded(px(12.))
+            .bg(t.surface).border_1().border_color(t.border).cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| { this.todos_expanded = !this.todos_expanded; cx.notify(); }))
+            .child(header)
+            .children(rows)
+            .into_any_element())
     }
 
     /// Provisioning/connecting line shown on an empty session.
@@ -2450,6 +2485,18 @@ fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, enabled: bool, 
         .when(enabled, |d| d.cursor_pointer().active(|s| s.bg(t.surface)))
         .when(!enabled, |d| d.opacity(0.4))
         .child(glyph)
+}
+
+/// Thin overlay thumb showing transcript position. Hidden when nothing scrolls.
+fn transcript_scrollbar(viewport: gpui::Pixels, max: gpui::Pixels, off: gpui::Pixels, t: &Theme) -> Option<gpui::Div> {
+    let (vp, max, off) = (f32::from(viewport), f32::from(max), f32::from(off));
+    if vp <= 0. || max <= 1. { return None; }
+    let track = vp - 8.;
+    let thumb = (track * vp / (vp + max)).clamp(28_f32.min(track), track);
+    let top = 4. + (track - thumb) * (off / max).clamp(0., 1.);
+    Some(div().debug_selector(|| "transcript-scrollbar".into())
+        .absolute().right(px(2.)).top(px(top)).w(px(3.)).h(px(thumb))
+        .rounded_full().bg(t.text_muted.opacity(0.45)))
 }
 
 fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
