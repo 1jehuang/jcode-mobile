@@ -164,6 +164,7 @@ impl MobileApp {
                     return;
                 }
                 notify::clear_badge();
+                jcode_mobile_core::timing::event("app foreground", &format!("tabs={}", 1 + self.parked.len()));
                 // Sockets often die silently while suspended. Probe every
                 // live tab now and cut any pending reconnect backoff short.
                 for c in self.connection.iter().chain(self.parked.iter().filter_map(|p| p.connection.as_ref())) {
@@ -194,7 +195,9 @@ impl MobileApp {
             return;
         }
         let Some(account) = self.account.clone() else { return };
-        let task = cx.background_spawn(async move { agents::fetch_status(&account) });
+        let task = cx.background_spawn(async move {
+            jcode_mobile_core::timing::timed("agents status", || agents::fetch_status(&account))
+        });
         cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(state) => {

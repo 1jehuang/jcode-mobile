@@ -273,7 +273,7 @@ fn run(
                 // Attach exactly the requested source. Never fall back to a new
                 // empty session when the source no longer exists.
                 client.attach_session(source).map_err(classify)?;
-                let fork = client.fork_session(source).map_err(|e| {
+                let fork = crate::timing::timed("session fork", || client.fork_session(source)).map_err(|e| {
                     // A lost response may still have created a fork. Do not
                     // replay a non-idempotent request and create duplicates.
                     Failure::Fatal(format!("Could not fork session: {}", e.message))
@@ -287,7 +287,10 @@ fn run(
                 // A fork must never silently become a blank conversation.
                 client.attach_session(target_session.as_deref().unwrap()).map_err(classify)?
             } else {
-                attach(&client, target_session.as_deref(), config.working_dir.clone()).map_err(classify)?
+                crate::timing::timed("session attach", || {
+                    attach(&client, target_session.as_deref(), config.working_dir.clone())
+                })
+                .map_err(classify)?
             };
             Ok((client, session))
         });
@@ -312,15 +315,18 @@ fn run(
                 if session_loop(&client, &sid, busy, &stream, &inbox, &emit, started) {
                     break;
                 }
+                crate::timing::stage("session lost after", started.elapsed());
                 "Connection lost".into()
             }
             Err(Failure::Stopped) => break,
             Err(Failure::Fatal(reason)) => {
+                crate::timing::event("session fatal", &reason);
                 phase(ConnectionPhase::Failed { reason });
                 return;
             }
             Err(Failure::Retry(e)) => {
                 crate::timing::stage("session connect failed", started.elapsed());
+                crate::timing::event("session connect error", &e);
                 e
             }
         };
@@ -336,6 +342,7 @@ fn run(
             return;
         }
         let delay = (config.base_backoff * 2u32.saturating_pow(attempt - 1)).min(Duration::from_secs(30));
+        crate::timing::event("session retry", &format!("attempt={attempt} backoff={}ms", delay.as_millis()));
         if !inbox.lock().unwrap().sleep(delay) {
             break;
         }
@@ -375,8 +382,12 @@ fn session_loop(
         },
     ] {
         let (client, snapshots) = (client.clone(), snapshots.clone());
+        let label = format!("initial {}", snapshot_name(&req));
         std::thread::spawn(move || {
-            if let Ok(frame) = client.request(req) {
+            let start = std::time::Instant::now();
+            let reply = client.request(req);
+            crate::timing::stage(&label, start.elapsed());
+            if let Ok(frame) = reply {
                 let _ = snapshots.send(frame.event);
             }
         });
@@ -455,8 +466,12 @@ fn session_loop(
                 history_superseded = true;
             }
             let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
+            let label = format!("request {}", request.name());
             std::thread::spawn(move || {
-                if let Some(event) = execute(&client, &sid, request) {
+                let start = std::time::Instant::now();
+                let reply = execute(&client, &sid, request);
+                crate::timing::stage(&label, start.elapsed());
+                if let Some(event) = reply {
                     let _ = results.send(event);
                 }
             });
@@ -466,6 +481,7 @@ fn session_loop(
         }
         if runtime_info_due.is_some_and(|due| std::time::Instant::now() >= due) {
             runtime_info_due = None;
+            crate::timing::event("runtime_info not pushed", "falling back to request");
             let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
             std::thread::spawn(move || {
                 if let Ok(frame) = client.request(jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid }) {
@@ -475,8 +491,8 @@ fn session_loop(
         }
         match stream.next_timeout(Duration::from_millis(50)) {
             Some(event) => {
-                if matches!(event, ApiEvent::RuntimeInfo { .. }) {
-                    runtime_info_due = None;
+                if matches!(event, ApiEvent::RuntimeInfo { .. }) && runtime_info_due.take().is_some() {
+                    crate::timing::stage("session runtime_info pushed", started.elapsed());
                 }
                 // A streamed History is newer than the initial snapshot.
                 history_superseded |= matches!(&event, ApiEvent::History { .. });
@@ -507,7 +523,10 @@ fn session_loop(
                     });
                 }
             }
-            None if client.is_closed() => return false,
+            None if client.is_closed() => {
+                crate::timing::event("stream closed", "link dropped");
+                return false;
+            }
             None => {}
         }
     }
@@ -544,6 +563,36 @@ fn is_turn_content(event: &ApiEvent) -> bool {
             | ApiEvent::ToolExec { .. }
             | ApiEvent::ToolDone { .. }
     )
+}
+
+fn snapshot_name(req: &jcode_sdk::ApiRequest) -> &'static str {
+    use jcode_sdk::ApiRequest as A;
+    match req {
+        A::GetHistory { .. } => "history",
+        A::ListModels { .. } => "models",
+        A::ListSessions { .. } => "sessions",
+        _ => "other",
+    }
+}
+
+impl Request {
+    /// Stable label for timing logs. Never includes user content.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Request::Message { .. } => "message",
+            Request::Cancel { .. } => "cancel",
+            Request::SoftInterrupt { .. } => "soft_interrupt",
+            Request::CancelSoftInterrupts { .. } => "cancel_soft_interrupts",
+            Request::Ping { .. } => "ping",
+            Request::GetHistory { .. } => "history",
+            Request::SetModel { .. } => "set_model",
+            Request::SetReasoningEffort { .. } => "set_reasoning_effort",
+            Request::Compact { .. } => "compact",
+            Request::RenameSession { .. } => "rename",
+            Request::Clear { .. } => "clear",
+            Request::ListSessions { .. } => "list_sessions",
+        }
+    }
 }
 
 /// Run one request. Returns an event for the reducer: the reply worth

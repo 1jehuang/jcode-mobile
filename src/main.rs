@@ -64,6 +64,7 @@ impl gpui::AssetSource for Assets {
 }
 
 fn main() {
+    let _ = jcode_mobile_core::timing::process_start();
     // Open the opt-in local sink before input arrives, not on the first scroll.
     let _ = perf::start();
     if std::env::var_os("JCODE_VOICE_DEMO").is_some() {
@@ -80,7 +81,7 @@ fn main() {
         if let Some(account) = &account
             && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
         {
-            jcode_mobile_core::cloud::prewarm(account);
+            jcode_mobile_core::timing::timed("app prewarm", || jcode_mobile_core::cloud::prewarm(account));
         }
         if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref()) {
             log::warn!("jcode-mobile: crash upload failed: {e}");
@@ -90,8 +91,10 @@ fn main() {
     // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
     application.on_open_urls(ios_ext::handle_urls);
     application.run(|cx: &mut App| {
+        jcode_mobile_core::timing::stage("app launched", jcode_mobile_core::timing::process_start().elapsed());
         log::info!("jcode-mobile: launched");
         load_fonts(cx);
+        jcode_mobile_core::timing::stage("app fonts loaded", jcode_mobile_core::timing::process_start().elapsed());
         log::info!("jcode-mobile: fonts loaded");
         app::init(cx);
         // JCODE_MOBILE_SIZE=WxH overrides the device (e.g. 375x667 for an SE).

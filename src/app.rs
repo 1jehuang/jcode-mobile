@@ -101,6 +101,10 @@ pub struct MobileApp {
     /// Soft keyboard currently covers the bottom of the screen.
     keyboard_up: bool,
     screen: Screen,
+    /// When the active tab started connecting, until its transcript is painted.
+    open_started: Option<std::time::Instant>,
+    /// First frame after launch not yet logged.
+    first_frame_pending: bool,
     safe: SafeArea,
     /// Fixed device size for the desktop preview; None on a real phone.
     pub device: Option<(f32, f32)>,
@@ -334,6 +338,8 @@ impl MobileApp {
             browser_login: None,
             started: std::time::Instant::now(),
             keyboard_up: false,
+            open_started: None,
+            first_frame_pending: true,
             sim_kb: Default::default(),
             inset_anim: None,
             inset_last: std::time::Instant::now(),
@@ -657,6 +663,7 @@ impl MobileApp {
             let _ = tx.unbounded_send(o);
         });
         self.connection = Some(conn);
+        self.open_started = Some(std::time::Instant::now());
         self.stream_motion.reset();
         self.follow = true;
         self.pump(self.active_tab, rx, cx);
@@ -2655,9 +2662,34 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
         .child(label(msg.to_string(), t.text, 12.).flex_1().min_w_0().whitespace_normal())
 }
 
+/// Logs a frame build that blows the budget badly enough to feel like a hang.
+struct FrameTimer(std::time::Instant);
+
+impl Drop for FrameTimer {
+    fn drop(&mut self) {
+        let build = self.0.elapsed();
+        if build > std::time::Duration::from_millis(50) {
+            jcode_mobile_core::timing::stage("ui slow frame build", build);
+        }
+    }
+}
+
 impl Render for MobileApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _perf = crate::perf::span("app.build");
+        // Always-on: logs launch-to-first-render, tap-to-transcript-render and
+        // slow (>50ms) frame builds to gpui.log via conn_timing.
+        let _frame = FrameTimer(std::time::Instant::now());
+        if std::mem::take(&mut self.first_frame_pending) {
+            jcode_mobile_core::timing::stage("app first render", jcode_mobile_core::timing::process_start().elapsed());
+        }
+        if let Some(opened) = self.open_started
+            && !self.session.transcript.is_empty()
+        {
+            self.open_started = None;
+            jcode_mobile_core::timing::stage("ui open to transcript render", opened.elapsed());
+            jcode_mobile_core::timing::event("ui transcript render", &format!("entries={}", self.session.transcript.len()));
+        }
         if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }
         self.system_tick(window, cx);
         self.sync_spinner_tick(cx);
