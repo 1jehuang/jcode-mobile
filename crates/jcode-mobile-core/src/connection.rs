@@ -244,8 +244,10 @@ fn run(
     let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false });
     let mut attempt: u32 = 0;
     loop {
+        let started = std::time::Instant::now();
         phase(if attempt == 0 { ConnectionPhase::Connecting } else { ConnectionPhase::Reconnecting { attempt } });
         let outcome = open(&config, &inbox, &emit).map_err(classify).and_then(|client| {
+            crate::timing::stage("session connect", started.elapsed());
             if let Some(source) = fork_from.as_deref() {
                 // Attach exactly the requested source. Never fall back to a new
                 // empty session when the source no longer exists.
@@ -273,6 +275,7 @@ fn run(
         }
         let last_error: String = match outcome {
             Ok((client, session)) => {
+                crate::timing::stage("session ready", started.elapsed());
                 let sid = session.session_id.clone();
                 target_session = Some(sid.clone());
                 phase(ConnectionPhase::Connected);
@@ -285,7 +288,7 @@ fn run(
                 let busy = session_is_busy(&session.status);
                 emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
                 let stream = client.events(Some(&sid));
-                if session_loop(&client, &sid, busy, &stream, &inbox, &emit) {
+                if session_loop(&client, &sid, busy, &stream, &inbox, &emit, started) {
                     break;
                 }
                 "Connection lost".into()
@@ -295,7 +298,10 @@ fn run(
                 phase(ConnectionPhase::Failed { reason });
                 return;
             }
-            Err(Failure::Retry(e)) => e,
+            Err(Failure::Retry(e)) => {
+                crate::timing::stage("session connect failed", started.elapsed());
+                e
+            }
         };
         attempt += 1;
         if let Some(max) = config.max_reconnect_attempts
@@ -326,6 +332,7 @@ fn session_loop(
     stream: &jcode_sdk::EventStream,
     inbox: &Mutex<Inbox>,
     emit: &dyn Fn(ConnectionOutput),
+    started: std::time::Instant,
 ) -> bool {
     let (results, outcomes) = mpsc::channel::<ApiEvent>();
     let (snapshots, initial) = mpsc::channel();
@@ -364,6 +371,9 @@ fn session_loop(
     loop {
         while let Ok(event) = initial.try_recv() {
             if matches!(event, ApiEvent::History { .. }) {
+                if !initial_history_seen {
+                    crate::timing::stage("session history", started.elapsed());
+                }
                 initial_history_seen = true;
                 if history_superseded {
                     continue;

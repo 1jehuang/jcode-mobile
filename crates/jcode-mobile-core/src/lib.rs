@@ -17,6 +17,7 @@ pub mod git_info;
 pub mod routes;
 pub mod voice;
 pub mod session;
+pub mod timing;
 pub mod todos;
 
 /// The harness API client this core is built on.

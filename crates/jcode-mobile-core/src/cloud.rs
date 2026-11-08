@@ -312,8 +312,10 @@ pub fn connect(
         && let (Some(target), Some(key)) = (state.target(), state.key())
     {
         progress("Connecting to your Jcode Cloud machine…");
+        let direct_started = Instant::now();
         match crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT) {
             Ok(ssh) => {
+                crate::timing::stage("direct ssh", direct_started.elapsed());
                 let ssh = cache_master(account, ssh);
                 progress("Opening your Jcode session…");
                 match ssh.open_client() {
@@ -328,10 +330,11 @@ pub fn connect(
                 // Address was reassigned. Never trust it again without the control plane.
                 crate::cloud_direct::forget_target(account);
             }
-            Err(_) => {}
+            Err(_) => crate::timing::stage("direct ssh failed", direct_started.elapsed()),
         }
         check_cancelled()?;
     }
+    let control_started = Instant::now();
     let mut cloud = client_for(account);
     cloud.poll_interval = Duration::from_millis(250);
     let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)?;
@@ -339,6 +342,7 @@ pub fn connect(
     let target = match wait_for_host_or_direct(&cloud, account, &key, progress, cancelled)? {
         HostWait::Ready(target) => target,
         HostWait::Direct(ssh) => {
+            crate::timing::stage("control plane wake + direct ssh", control_started.elapsed());
             let ssh = cache_master(account, ssh);
             progress("Opening your Jcode session…");
             let client = ssh.open_client()?;
@@ -347,6 +351,7 @@ pub fn connect(
         }
     };
     check_cancelled()?;
+    crate::timing::stage("control plane ready", control_started.elapsed());
     progress("Connecting to your Jcode Cloud machine…");
     let master = crate::cloud_ssh::CloudSsh::connect(target.clone(), key)?;
     check_cancelled()?;
@@ -429,15 +434,22 @@ pub fn prewarm(account: &Account) {
             cache.as_ref().and_then(|entry| entry.for_account(&account, Instant::now()))
         };
         if let Some(ssh) = cached.filter(|s| !s.is_closed()) {
-            ssh.refill();
-            return;
+            // Foregrounding after suspension leaves sockets that look open
+            // but are dead. Prove the master now, not when the user taps a
+            // session (which would otherwise wait 2s and then go cold).
+            if ssh.revalidate() {
+                return;
+            }
+            clear_warm_target();
         }
         // A real connect in progress already does this work.
         let Ok(_opening) = COLD_CONNECT.try_lock() else { return };
+        let started = Instant::now();
         if let Some(state) = crate::cloud_direct::load_or_create(&account)
             && let (Some(target), Some(key)) = (state.target(), state.key())
             && let Ok(ssh) = crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT)
         {
+            crate::timing::stage("prewarm direct ssh", started.elapsed());
             cache_master(&account, ssh).refill();
         }
     });

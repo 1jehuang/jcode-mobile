@@ -3563,6 +3563,7 @@ dependencies = [
  "dirs 6.0.0",
  "jcode-harness-api",
  "jcode-sdk",
+ "log",
  "rand 0.10.3",
  "russh",
  "security-framework",

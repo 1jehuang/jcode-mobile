@@ -148,6 +148,31 @@ impl PreparedSsh {
         Ok(client)
     }
 
+    /// After the app was suspended, sockets are often dead while still
+    /// looking open. Discard the spare and prove the master with a fresh
+    /// channel. Returns false when the master should be thrown away.
+    pub(crate) fn revalidate(&self) -> bool {
+        let started = Instant::now();
+        drop(self.0.state.lock().unwrap().spare.take());
+        if self.0.ssh.is_closed() {
+            return false;
+        }
+        match self.0.ssh.open_client_timeout(SPARE_OPEN_TIMEOUT) {
+            Ok(client) => {
+                let mut state = self.0.state.lock().unwrap();
+                if state.spare.is_none() {
+                    state.spare = Some((Instant::now(), client));
+                }
+                trace("master revalidated", started);
+                true
+            }
+            Err(e) => {
+                trace("master revalidation failed", started);
+                e.kind != ErrorKind::Disconnected && !self.0.ssh.is_closed()
+            }
+        }
+    }
+
     pub(crate) fn refill(&self) {
         {
             let mut state = self.0.state.lock().unwrap();
@@ -219,12 +244,10 @@ enum Outgoing {
     Close,
 }
 
-/// Startup stage timings on stderr when `JCODE_STARTUP_TRACE` is set.
+/// Startup stage timings. Always logged (iOS: NSLog and Documents/gpui.log);
+/// also on stderr when `JCODE_STARTUP_TRACE` is set. Never logs addresses.
 fn trace(stage: &str, since: Instant) {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("JCODE_STARTUP_TRACE").is_some()) {
-        eprintln!("startup_trace {stage} +{:?}", since.elapsed());
-    }
+    crate::timing::stage(stage, since.elapsed());
 }
 
 fn failed(message: impl Into<String>) -> Error {
@@ -317,7 +340,10 @@ impl CloudSsh {
                         // API hello and commands are small, latency-sensitive
                         // frames. Do not wait for Nagle/delayed-ACK batching.
                         nodelay: true,
-                        keepalive_interval: Some(Duration::from_secs(20)),
+                        // Mobile networks drop silently (backgrounding, cell
+                        // handoff). Detect a dead peer in ~30s, not ~80s.
+                        keepalive_interval: Some(Duration::from_secs(10)),
+                        keepalive_max: 2,
                         ..Default::default()
                     });
                     let mut session = russh::client::connect(
