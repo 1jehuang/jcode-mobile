@@ -1,4 +1,5 @@
-//! Native microphone PCM streamed through the same Nari transport as desktop.
+//! Native microphone PCM streamed through the authenticated Jcode cloud Nari relay.
+use jcode_mobile_core::cloud::Account;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -21,8 +22,11 @@ pub struct Recording {
 
 impl Recording {
     /// Called on a background executor, never the UI thread.
-    pub fn start() -> Result<Self, String> {
-        let key = jcode_voice::nari_api_key().ok_or_else(|| "Nari voice is not configured. Add NARI_API_KEY to your Jcode nari.env configuration.".to_string())?;
+    pub fn start(account: Account) -> Result<Self, String> {
+        let relay = relay_url(&account.api_base)?;
+        if account.api_key.is_empty() {
+            return Err("Sign in to use voice transcription.".into());
+        }
         // Twenty seconds of 50 ms frames bounds memory while network setup completes.
         let (tx, rx) = tokio::sync::mpsc::channel(400);
         // Keep EOF gated until stop confirms successful capture. On cancellation
@@ -42,9 +46,13 @@ impl Recording {
                         .build()
                         .map_err(|_| "Unable to start voice networking.".to_string())?;
                     runtime.block_on(async move {
-                        let session = jcode_voice::NariSession::connect(&key, thread_cancel)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let session = jcode_voice::NariSession::connect_relay(
+                            &relay,
+                            &account.api_key,
+                            thread_cancel,
+                        )
+                        .await
+                        .map_err(cloud_voice_error)?;
                         session
                             .run(rx, |event| {
                                 if let jcode_voice::NariEvent::Transcript(text) = event {
@@ -54,7 +62,7 @@ impl Recording {
                                 }
                             })
                             .await
-                            .map_err(|e| e.to_string())
+                            .map_err(cloud_voice_error)
                     })
                 })();
                 if let Ok(mut events) = final_events.lock() {
@@ -115,6 +123,45 @@ impl Recording {
             .map_err(|_| "Voice networking stopped unexpectedly.".to_string())?
     }
 }
+
+/// Derive the relay only from the signed-in account's configured HTTPS API.
+/// Never redirect an account bearer to a separately configured provider URL.
+fn relay_url(api_base: &str) -> Result<String, String> {
+    let invalid = || "The signed-in cloud voice endpoint is invalid.".to_string();
+    let mut url = url::Url::parse(api_base).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    let path = format!("{}/voice/realtime", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    url.set_scheme("wss").map_err(|_| invalid())?;
+    Ok(url.into())
+}
+
+fn cloud_voice_error(error: jcode_voice::VoiceError) -> String {
+    use jcode_voice::VoiceError;
+    match error {
+        VoiceError::NariNotConfigured | VoiceError::Http(401) => {
+            "Cloud voice authorization failed. Check your Jcode sign-in and subscription.".into()
+        }
+        VoiceError::Http(403) | VoiceError::Unavailable => {
+            "Cloud voice is unavailable for this Jcode account.".into()
+        }
+        VoiceError::NariCreditsExhausted | VoiceError::Http(402) => {
+            "Cloud voice capacity is unavailable. Please try again later.".into()
+        }
+        VoiceError::NariRejected | VoiceError::Http(503) => {
+            "Cloud voice is not ready. Please try again later.".into()
+        }
+        other => other.to_string(),
+    }
+}
 impl Drop for Recording {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Release);
@@ -126,6 +173,38 @@ impl Drop for Recording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_errors_do_not_request_a_phone_provider_key() {
+        for error in [
+            jcode_voice::VoiceError::NariNotConfigured,
+            jcode_voice::VoiceError::NariCreditsExhausted,
+            jcode_voice::VoiceError::NariRejected,
+            jcode_voice::VoiceError::Http(503),
+        ] {
+            let message = cloud_voice_error(error);
+            assert!(message.starts_with("Cloud voice"));
+            assert!(!message.contains("API key"));
+            assert!(!message.contains("Add credits"));
+        }
+    }
+
+    #[test]
+    fn cloud_relay_is_derived_from_account_api_without_credential_overrides() {
+        assert_eq!(
+            relay_url("https://cloud.example/v1/").unwrap(),
+            "wss://cloud.example/v1/voice/realtime"
+        );
+        for base in [
+            "http://cloud.example/v1",
+            "https://user:secret@cloud.example/v1",
+            "https://cloud.example/v1?redirect=elsewhere",
+            "https://cloud.example/v1#fragment",
+            "not a URL",
+        ] {
+            assert!(relay_url(base).is_err(), "accepted {base}");
+        }
+    }
 
     fn fake() -> (Recording, tokio::sync::mpsc::Receiver<Vec<i16>>) {
         let (tx, rx) = tokio::sync::mpsc::channel(2);

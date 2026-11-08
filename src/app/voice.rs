@@ -419,11 +419,11 @@ impl MobileApp {
     }
 
     fn begin_voice(&mut self, auto_send: bool, cx: &mut Context<Self>) {
-        if self.account.is_none() {
+        let Some(account) = self.account.clone() else {
             self.voice.error = Some("Sign in to use voice transcription.".into());
             cx.notify();
             return;
-        }
+        };
         self.voice.error = None;
         self.voice.busy = true;
         self.voice.starting = true;
@@ -440,7 +440,7 @@ impl MobileApp {
         };
         let generation = self.voice.generation;
         let tab = self.active_tab;
-        let task = cx.background_spawn(async move { Recording::start() });
+        let task = cx.background_spawn(async move { Recording::start(account) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {

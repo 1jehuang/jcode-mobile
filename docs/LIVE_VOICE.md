@@ -2,11 +2,11 @@
 
 ## Nari streaming, shared with desktop
 
-Mobile and the desktop simulator use the transport-only `jcode-voice` crate, the same `NariSession` protocol implementation used by Jcode Desktop. Native microphone capture supplies bounded mono 16 kHz signed PCM16 frames to its realtime WebSocket. There are no batch previews, overlap merging, full-recording transcription uploads, managed-cloud speech requests, or Groq fallback.
+Mobile and the desktop simulator use the transport-only `jcode-voice` crate, the same `NariSession` protocol implementation used by Jcode Desktop. Native microphone capture supplies bounded mono 16 kHz signed PCM16 frames through the signed-in account's authenticated Jcode cloud realtime relay. The cloud connects only to Nari. There are no batch previews, overlap merging, full-recording transcription uploads, or Groq fallback.
 
 Nari sends full aggregate transcript revisions, including corrections and retractions. These replace the provisional speech in the actual input editor after the original typed draft. Stopping capture flushes the final PCM tail and finalizes the existing stream. Network setup and finalization run off the UI thread. Response latency still depends on the network and recognition service.
 
-The shared credential loader reads `NARI_API_KEY` or the user's Jcode `nari.env` configuration. The Linux simulator uses the same configuration as desktop. Nari provider usage is separate from Jcode cloud credits. Keys are not embedded in the app or included in logs. An iPhone needs its own securely provisioned credential; a desktop configuration file is not automatically available on iOS. No new iOS credential-entry or sync workflow is supplied by this migration.
+Mobile uses the account's Jcode bearer credential only against that account's HTTPS cloud API, upgraded to `wss` at `/voice/realtime`. The server owns `NARI_API_KEY`, authenticates and authorizes requests, and relays the bounded Nari protocol. No provider key is loaded or embedded on the phone, and there is no direct-provider fallback. Desktop's independent direct Nari configuration remains unchanged. Cloud rollout and a server-owned Nari credential are prerequisites, source changes alone do not activate the deployed endpoint.
 
 ## Waveform and gestures
 

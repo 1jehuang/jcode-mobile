@@ -24,6 +24,7 @@ gpui.workspace = true
 jcode-mobile-core.workspace = true
 jcode-voice = { path = "../jcode/crates/jcode-voice", default-features = false }
 tokio = { version = "1", features = ["rt", "sync", "time", "net"] }
+url = "2"
 anyhow = "1"
 futures = "0.3"
 unicode-segmentation = "1"
