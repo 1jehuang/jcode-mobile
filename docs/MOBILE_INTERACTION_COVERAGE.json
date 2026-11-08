@@ -2135,6 +2135,7 @@
     {
       "controls": {
         "debug_selector:literal:voice-control": 1,
+        "debug_selector:literal:voice-live-waveform": 1,
         "debug_selector:literal:voice-overscroll-mic": 1,
         "id:literal:voice-control": 1
       },
@@ -2144,6 +2145,9 @@
           "note": "Pure tests assert phase-independent reveal geometry and bounded smoothstep opacity. Offline rendered fixtures check unclipped held lock, same-frame travel, lifecycle continuity and reduced motion without resizing the composer. GPU pixels, physical frame pacing and real microphone capture remain unverified.",
           "tests": [
             "src/voice_visual.rs::tests::preparing_never_claims_recording",
+            "src/voice_visual.rs::tests::waveform_uses_only_recent_actual_samples_and_pads_silence",
+            "src/voice_visual.rs::tests::waveform_sanitizes_nonfinite_and_out_of_range_levels",
+            "src/voice_visual.rs::tests::waveform_geometry_stays_inside_existing_mic_height",
             "src/voice_visual.rs::tests::locked_explains_explicit_stop",
             "src/voice_visual.rs::tests::mic_reveal_tracks_pull_and_is_bounded",
             "src/voice_visual.rs::tests::async_phase_changes_never_move_the_reveal",
@@ -2164,6 +2168,19 @@
           "tests": []
         }
       ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/voice_visual.rs::render_live",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [{
+        "kind": "state_model_mocked",
+        "note": "Preview compatibility wrapper delegates to the same live renderer with empty real-signal history. Audio timing and physical display pacing are not tested.",
+        "tests": ["src/voice_visual.rs::tests::waveform_uses_only_recent_actual_samples_and_pads_silence"]
+      }],
       "coverage_scope": "partial",
       "events": {},
       "handler": false,

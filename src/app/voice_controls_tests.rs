@@ -122,7 +122,7 @@ fn supported_preview_accepts_only_deliberate_bottom_overscroll(cx: &mut TestAppC
         app.feel.voice_pan_ended = true;
         assert!(!app.voice_wheel_eligible(&wheel(-80., TouchPhase::Moved)));
         app.offline = true;
-        app.cancel_voice();
+        app.cancel_voice(cx);
         cx.notify();
     });
 }

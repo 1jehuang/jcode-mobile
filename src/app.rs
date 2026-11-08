@@ -611,7 +611,7 @@ impl MobileApp {
     }
 
     fn start_connection_target(&mut self, resume: Option<String>, working_dir: Option<String>, fork_from: Option<String>, cx: &mut Context<Self>) {
-        self.cancel_voice();
+        self.cancel_voice(cx);
         if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
         let mut config = Config::cloud(account);
@@ -660,7 +660,7 @@ impl MobileApp {
 
     fn park_active(&mut self, cx: &mut Context<Self>) {
         self.scroll_perf_started = None;
-        self.cancel_voice();
+        self.cancel_voice(cx);
         let draft = self.composer.read(cx).save_draft();
         let preview_composer = cx.new(|cx| {
             let mut input = TextInput::new("Message jcode…", cx);
@@ -711,7 +711,7 @@ impl MobileApp {
         self.tab_order.remove(pos);
         self.tab_motion.remove(&id);
         if id == self.active_tab {
-            self.cancel_voice();
+            self.cancel_voice(cx);
             if let Some(c) = self.connection.take() {
                 c.stop();
             }
@@ -908,7 +908,7 @@ impl MobileApp {
             return;
         }
         static ASKED: std::sync::Once = std::sync::Once::new();
-        self.cancel_voice();
+        self.cancel_voice(cx);
         if !self.offline {
             ASKED.call_once(crate::notify::request_permission);
         }
@@ -1005,7 +1005,7 @@ impl MobileApp {
         if self.account.is_some() { haptics::play(Haptic::Rigid); }
         self.git_info = git_info::GitState::default();
         self.cloud_machine = cloud_machine::MachineState::default();
-        self.cancel_voice();
+        self.cancel_voice(cx);
         if !self.offline {
             ios_system::forget_index();
         }
@@ -2067,7 +2067,7 @@ impl MobileApp {
                             .a11y_button("Discard voice recording")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 haptics::play(Haptic::Light);
-                                this.cancel_voice_animated();
+                                this.cancel_voice_animated(cx);
                                 cx.notify();
                             }))
                     } else if processing && !has_text {

@@ -608,7 +608,7 @@ impl MobileApp {
             .active(|el| el.bg(t.background))
             .on_click(cx.listener(|this, _, _, cx| {
                 crate::haptics::play(crate::haptics::Haptic::Light);
-                this.cancel_voice();
+                this.cancel_voice(cx);
                 this.screen = Screen::Settings;
                 this.close_drawer(cx);
             }))

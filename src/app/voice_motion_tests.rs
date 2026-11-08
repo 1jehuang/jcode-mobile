@@ -187,7 +187,7 @@ fn released_voice_processing_completion_and_cancel_are_continuous(cx: &mut TestA
         view.update(cx, |app, cx| {
             let before = app.feel.voice_gesture.pull;
             if cancel {
-                app.cancel_voice_animated();
+                app.cancel_voice_animated(cx);
             } else {
                 app.voice.busy = false;
                 app.voice.auto_send = false;

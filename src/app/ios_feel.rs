@@ -95,7 +95,7 @@ impl MobileApp {
                     haptics::play(Haptic::Light);
                     self.finish_overscroll_voice(cx);
                 }
-                VoiceAction::Cancel => self.cancel_voice_animated(),
+                VoiceAction::Cancel => self.cancel_voice_animated(cx),
             }
         }
         cx.notify();
@@ -131,7 +131,7 @@ impl MobileApp {
         if event.touch_phase == TouchPhase::Cancelled {
             self.feel.voice_pan_ended = true;
             if tracking {
-                self.cancel_voice_animated();
+                self.cancel_voice_animated(cx);
                 cx.notify();
             }
             return tracking;
@@ -354,12 +354,12 @@ impl MobileApp {
             else { Phase::Pulling };
         let height = if visible { voice_visual::reveal_height(pull, phase) } else { 0. };
         let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
-        let indicator = voice_visual::render(pull, phase, elapsed, crate::system::reduce_motion(), t);
+        let indicator = voice_visual::render_live(pull, phase, elapsed, crate::system::reduce_motion(), t, self.voice.levels());
         let indicator = if self.voice.auto_send && (self.voice.starting || self.voice.recording.is_some()) {
             div().id("stop-dictation").debug_selector(|| "stop-dictation".into())
                 .role(gpui::Role::Button)
                 .aria_label(format!("{}. Tap microphone to stop recording and send", phase.label()))
-                .w(px(44.)).h_full().cursor_pointer()
+                .w(px(voice_visual::LIVE_WIDTH)).h_full().cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.feel.voice_gesture.dismiss();
                     this.feel.voice_frame_at = Some(Instant::now());
@@ -430,7 +430,7 @@ impl MobileApp {
         let dt = self.feel.voice_frame_at.map_or(0., |at| now.duration_since(at).as_secs_f32());
         self.feel.voice_frame_at = Some(now);
         if (self.feel.voice_gesture.active() || self.voice.auto_send) && !self.scene().menus {
-            self.cancel_voice();
+            self.cancel_voice(cx);
         }
         let wheel_timer = !self.feel.voice_phased && self.feel.voice_wheel_at.is_some();
         if wheel_timer && self.feel.voice_wheel_at.is_some_and(|at| now.duration_since(at).as_secs_f32() > 0.18) {

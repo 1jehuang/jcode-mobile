@@ -3,6 +3,18 @@ use super::*;
 use crate::voice_capture::Recording;
 
 #[derive(Default)]
+struct LiveDictation {
+    original: Option<crate::text_input::InputDraft>,
+    base: String,
+    shown: Option<String>,
+    transcript: String,
+    consumed: usize,
+    pending: bool,
+    next_preview: Option<std::time::Instant>,
+    levels: Vec<f32>,
+}
+
+#[derive(Default)]
 pub(super) struct VoiceState {
     pub recording: Option<Recording>,
     pub busy: bool,
@@ -13,6 +25,7 @@ pub(super) struct VoiceState {
     stop_requested: bool,
     generation: u64,
     error: Option<String>,
+    live: LiveDictation,
 }
 impl VoiceState {
     pub fn status(&self) -> Option<String> {
@@ -48,8 +61,89 @@ impl VoiceState {
     pub fn has_error(&self) -> bool {
         self.error.is_some()
     }
+
+    pub(super) fn levels(&self) -> &[f32] {
+        &self.live.levels
+    }
 }
 impl MobileApp {
+    /// Remove only our own provisional text. User edits and IME state are never
+    /// rolled back if they changed the input after a partial result was painted.
+    fn restore_voice_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        let owned = self.voice.live.shown.as_deref()
+            .is_some_and(|shown| self.composer.read(cx).text() == shown);
+        if let Some(draft) = self.voice.live.original.take() {
+            if owned {
+                self.composer.update(cx, |input, cx| input.restore_draft(draft, cx));
+            }
+        }
+        owned
+    }
+
+    fn finish_voice_preview(&mut self, generation: u64, tab: u64, consumed: usize,
+        result: Result<String, String>, cx: &mut Context<Self>) {
+        if self.voice.generation != generation || self.active_tab != tab
+            || !self.voice.live.pending || self.voice.busy || self.voice.starting { return; }
+        self.voice.live.pending = false;
+        // A failed preview never prevents capture or the authoritative final
+        // pass. Move past silence too, rather than repeatedly uploading it.
+        self.voice.live.consumed = consumed;
+        if let Ok(text) = result {
+            self.voice.live.transcript = jcode_mobile_core::voice::merge_preview(
+                &self.voice.live.transcript, &text);
+            if self.voice.live.shown.as_deref()
+                .is_some_and(|shown| self.composer.read(cx).text() == shown) {
+                let text = jcode_mobile_core::voice::append(
+                    &self.voice.live.base, &self.voice.live.transcript);
+                self.composer.update(cx, |input, cx| input.set_text(text.clone(), cx));
+                self.voice.live.shown = Some(text);
+            }
+        }
+        cx.notify();
+    }
+
+    fn poll_live_voice(&mut self, generation: u64, tab: u64, cx: &mut Context<Self>) -> bool {
+        if self.voice.generation != generation || self.active_tab != tab { return false; }
+        let Some(recording) = self.voice.recording.as_ref() else { return false; };
+        let levels = recording.levels();
+        if levels != self.voice.live.levels {
+            self.voice.live.levels = levels;
+            cx.notify();
+        }
+        let now = std::time::Instant::now();
+        if self.voice.live.pending || self.voice.live.next_preview.is_some_and(|at| now < at) {
+            return true;
+        }
+        let Some(wav) = recording.snapshot() else { return true; };
+        self.voice.live.next_preview = Some(now + Duration::from_millis(1500));
+        let Some((wav, consumed)) = jcode_mobile_core::voice::preview_chunk(
+            &wav, self.voice.live.consumed) else { return true; };
+        let Some(account) = self.account.clone() else { return false; };
+        self.voice.live.pending = true;
+        let task = cx.background_spawn(async move {
+            jcode_mobile_core::voice::transcribe_preview(&account, wav)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.finish_voice_preview(generation, tab, consumed, result, cx);
+            });
+        }).detach();
+        true
+    }
+
+    fn start_live_voice(&mut self, cx: &mut Context<Self>) {
+        let generation = self.voice.generation;
+        let tab = self.active_tab;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+                if !this.update(cx, |this, cx| this.poll_live_voice(generation, tab, cx))
+                    .unwrap_or(false) { break; }
+            }
+        }).detach();
+    }
+
     /// Start while the finger is still held, not after release.
     pub(super) fn start_overscroll_voice(&mut self, cx: &mut Context<Self>) {
         if cfg!(any(target_os = "ios", target_os = "linux")) && self.scene_allows_voice() {
@@ -88,6 +182,10 @@ impl MobileApp {
         self.voice.stop_requested = false;
         self.voice.began = None;
         let auto_send = std::mem::take(&mut self.voice.auto_send);
+        let partial = self.voice.live.transcript.clone();
+        let had_preview = !partial.is_empty();
+        let owned_preview = self.restore_voice_draft(cx);
+        self.voice.live = LiveDictation::default();
         match result {
             Ok(text) if !text.trim().is_empty() => {
                 // Voice sends only its own transcript. Never send or clear a draft
@@ -113,6 +211,11 @@ impl MobileApp {
                     self.follow = true;
                     self.feel_sent();
                 } else {
+                    if had_preview && !owned_preview {
+                        self.voice.error = Some("Your edited voice draft was kept. Review it before sending.".into());
+                        cx.notify();
+                        return;
+                    }
                     let draft =
                         jcode_mobile_core::voice::append(self.composer.read(cx).text(), &text);
                     self.composer
@@ -124,13 +227,25 @@ impl MobileApp {
                     }
                 }
             }
-            Ok(_) => self.voice.error = Some("No speech detected. Nothing was sent.".into()),
-            Err(error) => self.voice.error = Some(error),
+            result => {
+                if had_preview && owned_preview {
+                    let draft = jcode_mobile_core::voice::append(self.composer.read(cx).text(), &partial);
+                    self.composer.update(cx, |input, cx| input.set_text(draft, cx));
+                }
+                self.voice.error = Some(match result {
+                    Err(error) if had_preview => format!("{error} Live voice draft kept. Review before sending."),
+                    Err(error) => error,
+                    _ if had_preview => "Final transcription was empty. Live voice draft kept. Review before sending.".into(),
+                    _ => "No speech detected. Nothing was sent.".into(),
+                });
+            }
         }
         cx.notify();
     }
 
-    pub(super) fn cancel_voice(&mut self) {
+    pub(super) fn cancel_voice(&mut self, cx: &mut Context<Self>) {
+        self.restore_voice_draft(cx);
+        self.voice.live = LiveDictation::default();
         self.voice.generation = self.voice.generation.wrapping_add(1);
         self.voice.recording = None;
         self.voice.busy = false;
@@ -147,9 +262,9 @@ impl MobileApp {
 
     /// User cancellation clears capture immediately while the mic returns gently.
     /// Navigation continues to use cancel_voice, which discards the whole surface.
-    pub(super) fn cancel_voice_animated(&mut self) {
+    pub(super) fn cancel_voice_animated(&mut self, cx: &mut Context<Self>) {
         let mut gesture = std::mem::take(&mut self.feel.voice_gesture);
-        self.cancel_voice();
+        self.cancel_voice(cx);
         gesture.dismiss();
         self.feel.voice_gesture = gesture;
         self.feel_voice_motion_changed();
@@ -189,7 +304,7 @@ impl MobileApp {
 
     fn transcribe_voice(&mut self, cx: &mut Context<Self>) {
         let Some(account) = self.account.clone() else {
-            self.cancel_voice();
+            self.cancel_voice(cx);
             cx.notify();
             return;
         };
@@ -236,6 +351,8 @@ impl MobileApp {
                 self.voice.recording = Some(recording);
                 if self.voice.stop_requested {
                     self.transcribe_voice(cx);
+                } else {
+                    self.start_live_voice(cx);
                 }
             }
             Err(error) => {
@@ -270,6 +387,13 @@ impl MobileApp {
         self.voice.locked = false;
         self.voice.began = Some(std::time::Instant::now());
         self.voice.generation = self.voice.generation.wrapping_add(1);
+        self.voice.live = LiveDictation {
+            original: Some(self.composer.read(cx).save_draft()),
+            base: self.composer.read(cx).text().to_string(),
+            shown: Some(self.composer.read(cx).text().to_string()),
+            next_preview: Some(std::time::Instant::now() + Duration::from_millis(1200)),
+            ..LiveDictation::default()
+        };
         let generation = self.voice.generation;
         let tab = self.active_tab;
         let task = cx.background_spawn(async move { Recording::start() });
@@ -296,6 +420,10 @@ impl MobileApp {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+#[path = "voice_live_tests.rs"]
+mod live_tests;
 
 #[cfg(test)]
 mod tests {
@@ -330,7 +458,7 @@ mod tests {
             assert!(!app.voice.starting && !app.voice.busy && !app.voice.locked);
             assert!(!app.voice.auto_send && !app.voice.stop_requested);
             assert!(app.voice.began.is_none() && app.voice.recording.is_none());
-            app.cancel_voice();
+            app.cancel_voice(cx);
             assert!(app.voice.status().is_none());
             // Stop without a recording is a no-op, not a network transcription.
             app.transcribe_voice(cx);
@@ -423,7 +551,7 @@ mod tests {
         });
         view.update(cx, |app, cx| {
             let generation = app.voice.generation;
-            app.cancel_voice();
+            app.cancel_voice(cx);
             app.finish_dictation(generation, app.active_tab, Ok("stale".into()), cx);
             app.finish_dictation(
                 app.voice.generation,
@@ -500,7 +628,7 @@ mod tests {
             assert!(app.voice.stop_requested);
             app.lock_overscroll_voice(cx);
             let generation = app.voice.generation;
-            app.cancel_voice();
+            app.cancel_voice(cx);
             app.voice_started(
                 generation,
                 app.active_tab,
