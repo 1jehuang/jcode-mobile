@@ -112,6 +112,9 @@ fn main() {
                 let mut app = MobileApp::new(safe, window, cx);
                 if !cfg!(target_os = "ios") {
                     app.device = Some((w, h));
+                    if std::env::var("JCODE_MOBILE_DEMO").as_deref() == Ok("todos") {
+                        app.seed_todo_demo();
+                    }
                 }
                 app
             }),

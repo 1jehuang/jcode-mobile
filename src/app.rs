@@ -218,7 +218,7 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let offline = cfg!(test);
+        let offline = cfg!(test) || std::env::var("JCODE_MOBILE_DEMO").is_ok();
         use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration, TextInputPurpose};
         let email = cx.new(|cx| {
             let mut t = TextInput::new("you@example.com", cx);
@@ -421,6 +421,28 @@ impl MobileApp {
         }
         let _ = window;
         app
+    }
+
+    /// Desktop dev hook (JCODE_MOBILE_DEMO=todos): an offline chat showing the
+    /// pinned todo list and a scrollable transcript, for screenshots.
+    pub fn seed_todo_demo(&mut self) {
+        use jcode_mobile_core::ToolCall;
+        self.screen = Screen::Chat;
+        self.session.phase = ConnectionPhase::Connected;
+        let todo = |id: &str, input: &str| ToolCall {
+            id: id.into(), name: "todo".into(), input: input.into(), output: String::new(), status: ToolStatus::Succeeded,
+        };
+        let mut id = 0;
+        let mut push = |role, text: &str, calls: Vec<ToolCall>| {
+            id += 1;
+            self.session.transcript.push(TranscriptEntry { id, role, text: text.into(), reasoning: String::new(), tool_calls: calls, is_streaming: false, is_queued: false });
+        };
+        push(Role::User, "Add a scrollbar and a pinned todo list to the mobile app.", vec![]);
+        push(Role::Assistant, "Planning the work.", vec![todo("t1", r#"{"phases":[{"phase":1,"lanes":[{"lane":"ui","items":[{"name":"Find transcript scroll view","status":"pending"},{"name":"Add todo reducer in core","status":"pending"},{"name":"Render pinned todo panel","status":"pending"},{"name":"Add transcript scrollbar","status":"pending"},{"name":"Verify build and tests","status":"pending"}]}]}]}"#)]);
+        for _ in 0..6 {
+            push(Role::Assistant, "Reading the transcript layout and the session model to see where scroll state and tool calls live. The scroll handle tracks offset and max offset, which is enough to draw an overlay thumb.", vec![]);
+        }
+        push(Role::Assistant, "Reducer and panel done.", vec![todo("t2", r#"{"update":[{"name":"Find transcript scroll view","status":"completed"},{"name":"Add todo reducer in core","status":"completed"},{"name":"Render pinned todo panel","status":"in_progress"}]}"#)]);
     }
 
     #[cfg(test)]
