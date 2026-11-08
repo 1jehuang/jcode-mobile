@@ -150,8 +150,6 @@ pub struct MobileApp {
     scroll_perf_started: Option<std::time::Instant>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
-    follow_last: std::time::Instant,
-    follow_max: gpui::Pixels,
     /// Long-press on a tab: generation of the pending hold timer.
     tab_hold: Option<u64>,
     /// The hold already fired, so the release must not also count as a tap.
@@ -336,8 +334,6 @@ impl MobileApp {
             scroll_perf_started: None,
             expanded_tools: Default::default(),
             follow: true,
-            follow_last: std::time::Instant::now(),
-            follow_max: px(0.),
             tab_hold: None,
             hold_fired: false,
             tab_menu: None,
@@ -665,8 +661,6 @@ impl MobileApp {
         self.expanded_tools = p.expanded_tools;
         self.follow = p.follow;
         self.auto_send = p.auto_send;
-        self.follow_last = std::time::Instant::now();
-        self.follow_max = self.transcript_scroll.max_offset().y;
         self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
         crate::haptics::play(crate::haptics::Haptic::Selection);
         cx.notify();
@@ -695,8 +689,6 @@ impl MobileApp {
             self.expanded_tools = p.expanded_tools;
             self.follow = p.follow;
             self.auto_send = p.auto_send;
-            self.follow_last = std::time::Instant::now();
-            self.follow_max = self.transcript_scroll.max_offset().y;
             self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
         } else if let Some(i) = self.parked.iter().position(|p| p.id == id) {
             if let Some(c) = self.parked.swap_remove(i).connection {
@@ -1566,49 +1558,53 @@ impl MobileApp {
 
     fn render_chat_inner(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.build");
-        // Follow is released by upward input, never by streamed layout growth.
+        // Follow is a layout-time tail anchor, not a second scroll animation.
+        // Render only knows the previous layout's maximum. Easing toward that
+        // stale maximum made each streamed chunk (and thinking-row transition)
+        // drift behind, then catch up on later orb/animation frames. GPUI applies
+        // this request after measuring the new content, before painting it.
         let max = self.transcript_scroll.max_offset().y;
-        let mut off = -self.transcript_scroll.offset().y;
-        // Streamed text grows the transcript a chunk at a time. Ease toward
-        // the end instead of snapping, so following reads as one glide.
-        let now = std::time::Instant::now();
-        let dt = now.duration_since(self.follow_last).as_secs_f32().min(0.05);
-        self.follow_last = now;
-        // Layout lags one frame behind new content: keep ticking while the
-        // end moves, or the glide stops short and text hides under the composer.
-        let grew = max != self.follow_max;
-        self.follow_max = max;
-        if self.follow && grew {
-            window.request_animation_frame();
+        let off = -self.transcript_scroll.offset().y;
+        if self.follow {
+            self.transcript_scroll.scroll_to_bottom();
         }
-        if self.follow && off < max {
-            off = px(crate::scroll_follow::offset(
-                f32::from(off), f32::from(max),
-                f32::from(self.feel.g.transcript.map_or(window.viewport_size().height, |b| b.size.height)),
-                dt, crate::system::reduce_motion(),
-            ));
-            self.transcript_scroll.set_offset(gpui::point(px(0.), -off));
-            if off < max {
-                window.request_animation_frame();
-            }
-        }
-        let at_bottom = max - off < px(56.);
+        let at_bottom = self.follow || max - off < px(56.);
         let entries = &self.session.transcript;
         let mut prompt_n = 0;
         let mut rows = transcript_layout::Rows::default();
         #[cfg(test)]
         { rows.uncoalesced = self.disable_transcript_coalescing; }
         let viewport = self.transcript_scroll.bounds().size.height;
+        // An anchored layout can move far beyond the previous offset (history
+        // attach, jump-to-latest, or a large streamed append). Cull from the
+        // bottom instead, using known suffix heights as a conservative lower
+        // bound. Unknown/new rows count zero, never hiding a visible tail row.
+        let mut geometry = Vec::with_capacity(entries.len());
+        for e in entries {
+            if e.role == Role::User { prompt_n += 1; }
+            let key = transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width());
+            geometry.push((key, self.transcript_heights.get(key), px(0.)));
+        }
+        let mut suffix = px(0.);
+        for (_, height, after) in geometry.iter_mut().rev() {
+            *after = suffix;
+            suffix += height.unwrap_or(px(0.)) + px(14.);
+        }
+        prompt_n = 0;
         let mut top = Some(px(12.));
         #[cfg(test)]
         { self.rendered_transcript_rows = 0; }
-        for e in entries {
+        for (e, (key, height, after)) in entries.iter().zip(geometry) {
             if e.role == Role::User {
                 prompt_n += 1;
             }
-            let key = transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width());
-            let height = self.transcript_heights.get(key);
-            let skip = height.is_some_and(|height| transcript_layout::offscreen(top, height, off, viewport));
+            let skip = height.is_some_and(|height| {
+                if self.follow {
+                    transcript_layout::before_tail(after, window.viewport_size().height)
+                } else {
+                    transcript_layout::offscreen(top, height, off, viewport)
+                }
+            });
             #[cfg(test)]
             let skip = skip && !self.disable_transcript_windowing;
             if skip {
@@ -1629,7 +1625,9 @@ impl MobileApp {
         }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
-            rows.push(orb_row(&self.activity_orb, a, t.text_muted).into_any_element());
+            rows.push(orb_row(&self.activity_orb, a, t.text_muted)
+                .id("transcript-activity").debug_selector(|| "transcript-activity".into())
+                .into_any_element());
         }
         if let Some(err) = self.session.error_banner.clone() {
             rows.push(
@@ -1705,18 +1703,10 @@ impl MobileApp {
                         }))
                         .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows.finish()))
                         .child({
-                            let scroll = self.transcript_scroll.clone();
-                            let follow = self.follow;
                             let scroll_started = self.scroll_perf_started.take();
-                            // Render sees the previous layout's maximum. Check
-                            // again after layout so a lone tool update cannot
-                            // leave the tail hidden until the next network event.
-                            gpui::canvas(|_, _, _| (), move |_, _, window, _| {
+                            gpui::canvas(|_, _, _| (), move |_, _, _, _| {
                                 if let Some(started) = scroll_started {
                                     crate::perf::record("transcript.scroll_to_paint", started.elapsed());
-                                }
-                                if follow && scroll.max_offset().y != max {
-                                    window.request_animation_frame();
                                 }
                             }).absolute().inset_0()
                         }),
@@ -1742,7 +1732,7 @@ impl MobileApp {
                             .child("↓")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.follow = true;
-                                // render_chat glides to the end.
+                                // The next layout anchors to the current tail.
                                 cx.notify()
                             })),
                     )

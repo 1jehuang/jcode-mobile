@@ -15,6 +15,12 @@ use std::{
 const MAX_ROWS: usize = 4096;
 const OVERSCAN: f32 = 400.;
 
+/// `height_after` is a lower bound because unmeasured suffix rows count zero.
+/// The full window height safely bounds the transcript even during a resize.
+pub(super) fn before_tail(height_after: Pixels, viewport: Pixels) -> bool {
+    viewport > px(0.) && height_after > viewport + px(OVERSCAN)
+}
+
 /// Collapse contiguous hidden rows into one layout node. Preserve the internal
 /// row gaps here, while the parent flex gap supplies gaps between runs.
 #[derive(Default)]
@@ -207,6 +213,9 @@ mod tests {
 
     #[test]
     fn unknown_geometry_and_overscan_never_hide_visible_rows() {
+        assert!(!before_tail(px(1000.), px(600.)));
+        assert!(before_tail(px(1001.), px(600.)));
+        assert!(!before_tail(px(1001.), px(0.)));
         assert!(!offscreen(None, px(50.), px(1000.), px(600.)));
         assert!(!offscreen(Some(px(900.)), px(200.), px(1000.), px(600.)));
         assert!(!offscreen(Some(px(600.)), px(10.), px(1000.), px(600.)));
