@@ -52,12 +52,14 @@ impl gpui::AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         Ok(match path {
             "icons/cloud.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/cloud.svg"))),
+            "icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/git-branch.svg"))),
+            "icons/refresh.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/refresh.svg"))),
             _ => None,
         })
     }
 
     fn list(&self, _path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
-        Ok(vec!["icons/cloud.svg".into()])
+        Ok(vec!["icons/cloud.svg".into(), "icons/git-branch.svg".into(), "icons/refresh.svg".into()])
     }
 }
 
@@ -122,6 +124,10 @@ fn main() {
                     app.device = Some((w, h));
                     if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref() && demo.starts_with("todos") {
                         app.seed_todo_demo(demo == "todos-expanded");
+                    }
+                    if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref() && demo.starts_with("git") {
+                        app.seed_todo_demo(false);
+                        app.seed_git_demo(demo);
                     }
                 }
                 app

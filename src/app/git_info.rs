@@ -10,35 +10,127 @@ mod tests;
 
 const TRIGGER: f32 = 48.;
 
-/// A terminal-style frame with its title interrupting the top border.
-fn git_frame(id: &'static str, title: &'static str, t: &Theme) -> gpui::Div {
+/// Widget palette, shared with the pinned todo card so both overlays read as
+/// one family: purple for refs, blue for local-only work, amber for hashes.
+fn rgb8(r: u8, g: u8, b: u8) -> Hsla {
+    gpui::Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a: 1. }.into()
+}
+fn ref_color() -> Hsla {
+    rgb8(190, 165, 235)
+}
+fn local_color() -> Hsla {
+    rgb8(110, 160, 245)
+}
+
+/// Fixed row height, scaled with Dynamic Type, so the commit graph's rail
+/// stays continuous from row to row.
+fn row_height() -> f32 {
+    f32::from(crate::system::fs(30.))
+}
+
+/// One titled section of the widget: an uppercase caption with a count and a
+/// right-aligned summary, then its rows.
+fn git_section(
+    id: &'static str,
+    title: &'static str,
+    count: Option<usize>,
+    summary: Option<AnyElement>,
+    t: &Theme,
+) -> gpui::Div {
     div()
         .debug_selector(move || id.into())
-        .relative()
         .w_full()
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .mt(px(8.))
-        .px(px(9.))
-        .pt(px(15.))
-        .pb(px(9.))
-        .border_1()
-        .border_color(t.border_focus)
-        .rounded(px(5.))
+        .px(px(14.))
+        .pt(px(12.))
+        .pb(px(6.))
         .child(
-            label(title, t.text_secondary, 12.)
-                .absolute()
-                .top(px(-9.))
-                .left(px(8.))
-                .px(px(5.))
-                .bg(t.background),
+            git_row()
+                .pb(px(6.))
+                .child(label(title, t.text_secondary, 11.).font_weight(gpui::FontWeight::BOLD))
+                .when_some(count, |d, n| d.child(label(n.to_string(), t.text_muted, 11.)))
+                .child(div().flex_1())
+                .children(summary),
         )
 }
 
 fn git_row() -> gpui::Div {
-    div().w_full().min_w_0().flex().items_center().gap(px(6.))
+    div().w_full().min_w_0().flex().items_center().gap(px(8.))
+}
+
+/// Porcelain XY code to a single badge letter and tint: the staged side wins,
+/// untracked reads as U, any unmerged pair as a red `!`.
+fn status_badge(code: &str, t: &Theme) -> (&'static str, Hsla) {
+    let bytes = code.as_bytes();
+    let (x, y) = (bytes.first().copied().unwrap_or(b' '), bytes.get(1).copied().unwrap_or(b' '));
+    if x == b'U' || y == b'U' || (x == y && matches!(x, b'A' | b'D')) {
+        return ("!", t.error);
+    }
+    match if x == b' ' { y } else { x } {
+        b'?' => ("U", t.ok),
+        b'A' => ("A", t.ok),
+        b'D' => ("D", t.error),
+        b'R' => ("R", local_color()),
+        b'C' => ("C", local_color()),
+        b'M' | b'T' => ("M", t.warning),
+        _ => ("·", t.text_muted),
+    }
+}
+
+/// Split a status path into (directory, file name), following renames and
+/// keeping the trailing slash of untracked directories on the name.
+fn split_path(path: &str) -> (&str, &str) {
+    let path = path.rsplit_once(" -> ").map_or(path, |(_, new)| new);
+    let base = path.strip_suffix('/').unwrap_or(path);
+    match base.rfind('/') {
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => ("", path),
+    }
+}
+
+fn diff_totals(stats: &str) -> (u64, u64) {
+    stats.lines().fold((0, 0), |(a, r), line| {
+        let mut columns = line.split('\t');
+        let mut next = || columns.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+        (a.saturating_add(next()), r.saturating_add(next()))
+    })
+}
+
+/// Green/red proportion bar for a set of line changes.
+fn diff_bar(added: u64, removed: u64, t: &Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .h(px(3.))
+        .flex()
+        .gap(px(2.))
+        .rounded_full()
+        .overflow_hidden()
+        .when(added > 0, |d| d.child(div().h_full().flex_basis(px(0.)).flex_grow(added as f32).bg(t.ok)))
+        .when(removed > 0, |d| d.child(div().h_full().flex_basis(px(0.)).flex_grow(removed as f32).bg(t.error)))
+}
+
+fn plus_minus(added: &str, removed: &str, t: &Theme) -> gpui::Div {
+    let binary = added == "-";
+    div()
+        .flex_none()
+        .flex()
+        .justify_end()
+        .gap(px(5.))
+        .child(label(if binary { "bin".to_string() } else { format!("+{added}") }, if binary { t.text_muted } else { t.ok }, 11.))
+        .when(!binary && removed != "0", |d| d.child(label(format!("−{removed}"), t.error, 11.)))
+}
+
+fn more_toggle(expanded: bool, hidden: usize, noun: &str, t: &Theme) -> gpui::Div {
+    git_row()
+        .h(px(32.))
+        .pl(px(26.))
+        .child(label(
+            if expanded { "Show fewer ▴".to_string() } else { format!("{hidden} more {noun} ▾") },
+            t.text_muted,
+            11.5,
+        ))
 }
 
 fn commit_columns(line: &str) -> (&str, &str, &str) {
@@ -265,6 +357,23 @@ pub(super) struct GitState {
 }
 
 impl MobileApp {
+    /// Preview-only fixture for `JCODE_MOBILE_DEMO=git[-expanded]`.
+    pub fn seed_git_demo(&mut self, demo: &str) {
+        let expanded = demo == "git-expanded";
+        self.git_info.open = true;
+        self.git_info.show_all_files = expanded;
+        self.git_info.show_all_commits = expanded;
+        self.git_info.snapshot = Some(GitSnapshot {
+            root: "/home/demo/jcode-mobile".into(),
+            branch: "main".into(),
+            status: " M src/app/git_info.rs\n M src/main.rs\nA  assets/icons/git-branch.svg\n D docs/old.md\n?? assets/icons/refresh.svg\n?? scratch/".into(),
+            recent_commits: "09567d4\tperf(connect): always-on conn_timing log\t2 hours ago\n9435fa3\tdocs(voice): record iOS TLS hotfix\t5 hours ago\nc3fb286\ttest(voice): await snapshot ack\t1 day ago\nd72341b\tFix iOS voice certificate trust\t2 days ago\n9636cfa\tRecord cloud-only voice release\t3 days ago\n1a2b3c4\tInitial git widget\t1 week ago".into(),
+            diff_stat: "120\t48\tsrc/app/git_info.rs\n6\t1\tsrc/main.rs\n3\t0\tassets/icons/git-branch.svg\n0\t40\tdocs/old.md".into(),
+            ahead: 2,
+            behind: 0,
+        });
+    }
+
     fn render_git_commits(
         &self,
         snapshot: &GitSnapshot,
@@ -277,7 +386,7 @@ impl MobileApp {
         } else {
             5
         };
-        let mut panel = git_frame("git-commits", "Commits", t);
+        let mut panel = git_section("git-commits", "COMMITS", Some(commits.len()), None, t);
         for line in commits.iter().take(limit) {
             let (hash, subject, age) = commit_columns(line);
             panel = panel.child(
@@ -342,7 +451,7 @@ impl MobileApp {
         } else {
             5
         };
-        let mut panel = git_frame("git-overview", "Overview", t).child(
+        let mut panel = git_section("git-overview", "OVERVIEW", None, None, t).child(
             git_row()
                 .child(label("◆", gpui::rgb(0x8fb8ff).into(), 12.))
                 .child(

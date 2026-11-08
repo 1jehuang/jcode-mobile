@@ -975,7 +975,6 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cgl"
 version = "0.3.2"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "libc",
 ]
@@ -1129,7 +1128,6 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1651,7 +1649,6 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2600,7 +2597,6 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2679,7 +2675,6 @@ dependencies = [
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "block",
@@ -2708,7 +2703,6 @@ dependencies = [
 [[package]]
 name = "gpui_ios"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2732,7 +2726,6 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2778,7 +2771,6 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2825,7 +2817,6 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2836,7 +2827,6 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2850,7 +2840,6 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "schemars",
  "serde",
@@ -2860,7 +2849,6 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "log",
@@ -2870,7 +2858,6 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2898,7 +2885,6 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2924,7 +2910,6 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3136,7 +3121,6 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -4131,7 +4115,6 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -5060,7 +5043,6 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "collections",
  "serde",
@@ -5820,7 +5802,6 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "derive_refineable",
 ]
@@ -6158,7 +6139,6 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6807,7 +6787,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "heapless",
  "log",
@@ -7627,7 +7606,6 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "perf",
  "quote",
@@ -9126,7 +9104,6 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9143,7 +9120,6 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -9154,7 +9130,6 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=805b2dd6a8d0d37a7aa2c234739b24a134ee7cea#805b2dd6a8d0d37a7aa2c234739b24a134ee7cea"
 
 [[package]]
 name = "zune-core"
@@ -9221,3 +9196,7 @@ dependencies = [
  "syn 3.0.9",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "gpui_perf"
+version = "0.1.0"
