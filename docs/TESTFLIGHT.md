@@ -1,5 +1,11 @@
 # TestFlight release record
 
+## Build 1794144761, uploaded November 8, 2026 (Pacific)
+
+- Source: `f4706c316d0100806a3b371107668661b19ce903` (clean tree). Adds SSH zlib compression, always-on timing logs, floating git pull-tab card, connection/foreground revalidation fixes and RuntimeInfo open-latency reduction since 1794134170.
+- Signed IPA SHA-256: `60ad44b677d64a8cf06f78a991dd041440f37c768be2aae6a0e0f6b100beeac1`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794144761/`.
+- Uploaded about 05:34 Pacific. Apple build ID `03bdf1b5-0d17-4ada-94ec-e8ff53f66684`, processing `VALID`, internal `IN_BETA_TESTING`. No new test run for this release.
+
 ## Build 1794134170, uploaded November 8, 2026 (Pacific)
 
 - Fixes voice TLS trust on iOS. The previous native-root loader searched for Unix/OpenSSL certificate files absent on iPhone. Shared transport now explicitly uses bundled trusted roots, preserving certificate, hostname and expiry verification.
