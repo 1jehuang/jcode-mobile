@@ -206,6 +206,9 @@ pub struct SessionState {
     pub pending_interrupts: Vec<String>,
     /// System notifications for the shell to post (drain after `apply`).
     pub alerts: Vec<Alert>,
+    /// Server todo state (`GetTodoState`), the TUI's pinned card source.
+    /// `None` on servers without the capability; the UI then replays tool calls.
+    pub todo_state: Option<jcode_sdk::todo::TodoSnapshot>,
     next_id: u64,
     /// Transcript entries that came from the last History snapshot.
     history_len: usize,
@@ -240,6 +243,7 @@ impl Default for SessionState {
             notices: vec![],
             pending_interrupts: vec![],
             alerts: vec![],
+            todo_state: None,
             next_id: 1,
             history_len: 0,
         }
@@ -381,7 +385,15 @@ impl SessionState {
         use ApiEvent::*;
         match event {
             HelloOk { server, .. } => self.server_version = Some(server),
+            TodoState { session_id, state } => {
+                if self.session_id.as_deref().is_none_or(|s| s == session_id) {
+                    self.todo_state = Some(state);
+                }
+            }
             Attached { session } => {
+                if self.session_id.as_deref() != Some(session.session_id.as_str()) {
+                    self.todo_state = None;
+                }
                 if let Some(t) = session.title.clone() {
                     self.session_title = Some(t.clone());
                     self.session_titles.insert(session.session_id.clone(), t);

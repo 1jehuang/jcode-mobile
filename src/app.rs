@@ -445,11 +445,14 @@ impl MobileApp {
             self.session.transcript.push(TranscriptEntry { id, role, text: text.into(), reasoning: String::new(), tool_calls: calls, is_streaming: false, is_queued: false });
         };
         push(Role::User, "Add a scrollbar and a pinned todo list to the mobile app.", vec![]);
-        push(Role::Assistant, "Planning the work.", vec![todo("t1", r#"{"phases":[{"phase":1,"lanes":[{"lane":"core","items":[{"name":"Find transcript scroll view","status":"pending"},{"name":"Add todo reducer in core","status":"pending"},{"name":"Port TUI glyph palette","status":"pending"}]},{"lane":"ui","items":[{"name":"Render pinned todo panel","status":"pending"},{"name":"Git edge pull tab","status":"pending"},{"name":"Add transcript scrollbar","status":"pending"},{"name":"Verify build and tests","status":"pending"}]}]}]}"#)]);
+        push(Role::Assistant, "Planning the work.", vec![todo("t1", r#"{"plan":{"user_intention":"Bring the TUI pinned todo card to mobile"},"phases":[
+            {"phase":1,"lanes":[{"lane":"core","items":[{"name":"Read TUI todo card renderer","status":"pending"},{"name":"Use server todo_state","status":"pending"}]}]},
+            {"phase":2,"lanes":[{"lane":"ui","owner":"worker","items":[{"name":"Phase and lane sections","status":"pending"},{"name":"Blocker glyphs","status":"pending"}]},{"lane":"git","items":[{"name":"Right-edge pull tab","status":"pending"}]}]},
+            {"phase":3,"lanes":[{"lane":"verify","items":[{"name":"Screenshot preview","status":"pending"},{"name":"Ship TestFlight build","status":"pending"}]}]}]}"#)]);
         for _ in 0..6 {
-            push(Role::Assistant, "Reading the transcript layout and the session model to see where scroll state and tool calls live. The scroll handle tracks offset and max offset, which is enough to draw an overlay thumb.", vec![]);
+            push(Role::Assistant, "Reading the TUI's pinned todo card: phase pips in the header, purple lane headers with per-lane dot strips, and blocker glyphs.", vec![]);
         }
-        push(Role::Assistant, "Reducer and panel done.", vec![todo("t2", r#"{"update":[{"name":"Find transcript scroll view","status":"completed"},{"name":"Add todo reducer in core","status":"completed"},{"name":"Render pinned todo panel","status":"in_progress"},{"name":"Port TUI glyph palette","status":"cancelled"}]}"#)]);
+        push(Role::Assistant, "Core done, UI in progress.", vec![todo("t2", r#"{"update":[{"name":"Read TUI todo card renderer","status":"completed"},{"name":"Use server todo_state","status":"completed"},{"name":"Phase and lane sections","status":"in_progress"},{"name":"Right-edge pull tab","status":"completed"},{"name":"Blocker glyphs","blocked_by":["Phase and lane sections"]},{"name":"Ship TestFlight build","completely_blocked":{"reason":"needs App Store Connect login"}}]}"#)]);
     }
 
     #[cfg(test)]
@@ -1852,63 +1855,125 @@ impl MobileApp {
         self.feel_voice_surface(content, t, cx)
     }
 
-    /// Pinned todo band, styled after the TUI's pinned todo card: a status pip
-    /// strip (green done, blue active, hollow open) with a count, then the
-    /// active item. Expanded, items are grouped under purple lane headers with
-    /// per-lane pips and the TUI's glyphs (✓ ● ○ ✗).
+    /// Pinned todo board, the mobile form of the TUI's pinned todo card.
+    /// Source is the server's todo state (phases, lanes, owners, blockers,
+    /// plan, goals); older servers fall back to replaying todo tool calls.
+    ///
+    /// Collapsed: plan intention, `phase 1 ●●● phase 2 ●○` pip header, the
+    /// active item and any ✋ blockers. Expanded: every phase as a section,
+    /// lanes as purple headers with owner chips and per-lane pips.
     fn pinned_todos(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use jcode_mobile_core::todos::{self, TodoItem};
-        let list = todos::current(&self.session.transcript);
-        if list.is_empty() { return None; }
+        use jcode_mobile_core::todos::{self, Mark};
+        let fallback;
+        let snapshot = match &self.session.todo_state {
+            Some(s) => s,
+            None => { fallback = todos::from_transcript(&self.session.transcript); &fallback }
+        };
+        let board = todos::board(snapshot);
+        if board.is_empty() { return None; }
         let c = |r: u8, g: u8, b: u8| -> Hsla { gpui::Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a: 1. }.into() };
-        let (done_c, active_c, open_c, cancel_c) = (c(100, 180, 100), c(110, 160, 245), c(90, 90, 105), c(190, 105, 115));
+        let done_c = c(100, 180, 100);
+        let active_c = c(110, 160, 245);
+        let self_c = c(255, 200, 100);
+        let warn_c = c(225, 165, 90);
         let lane_c = c(190, 165, 235);
         let meta_c = c(155, 165, 180);
-        let pip = |x: &TodoItem| {
-            let (g, col) = if x.is_cancelled() { ("✗", cancel_c) } else if x.is_done() { ("●", done_c) } else if x.is_active() { ("●", active_c) } else { ("○", open_c) };
-            label(g, col, 11.)
+        let dim_c = c(120, 120, 135);
+        let pip_of = move |m: Mark| match m {
+            Mark::Done => ("●", done_c), Mark::Cancelled => ("✗", c(190, 105, 115)),
+            Mark::SelfActive => ("●", self_c), Mark::Active => ("●", active_c),
+            Mark::Blocked => ("⊘", warn_c), Mark::CompletelyBlocked => ("✋", warn_c),
+            Mark::Open => ("○", c(90, 90, 105)),
         };
-        let pips = |items: &[&TodoItem]| div().flex().flex_wrap().gap(px(2.)).children(items.iter().map(|x| pip(x)));
-        let done = list.iter().filter(|x| x.is_done()).count();
-        let all: Vec<&TodoItem> = list.iter().collect();
-        let all_done = done == list.len();
-        let focus = list.iter().find(|x| x.is_active()).or_else(|| list.iter().find(|x| !x.is_done()));
-        let expanded = self.todos_expanded;
-        let item_row = |x: &TodoItem| {
-            let (g, gc, tc) = if x.is_cancelled() { ("✗", cancel_c, c(145, 130, 135)) }
-                else if x.is_done() { ("✓", c(105, 190, 125), c(135, 150, 145)) }
-                else if x.is_active() { ("●", active_c, c(170, 190, 220)) }
-                else { ("○", c(135, 145, 160), c(155, 170, 195)) };
+        let pips = move |items: Vec<&jcode_mobile_core::jcode_sdk::todo::TodoItem>| {
+            div().flex().flex_wrap().items_center().children(items.into_iter().map(move |x| {
+                let (g, col) = pip_of(todos::mark(x));
+                label(g, col, 11.)
+            }))
+        };
+        let item_row = move |x: &jcode_mobile_core::jcode_sdk::todo::TodoItem| {
+            let m = todos::mark(x);
+            let (g, gc) = match m { Mark::Done => ("✓", c(105, 190, 125)), Mark::Open => ("○", c(135, 145, 160)), _ => pip_of(m) };
+            let tc = match m {
+                Mark::Done => c(135, 150, 145), Mark::Cancelled => c(145, 130, 135),
+                Mark::Active | Mark::SelfActive => c(170, 190, 220), _ => c(155, 170, 195),
+            };
+            let note = x.external_blocker.as_ref().filter(|_| !m.finished()).map(|b| b.reason.clone())
+                .or_else(|| (!x.blocked_by.is_empty() && !m.finished()).then(|| format!("after {}", x.blocked_by.join(", "))));
             div().flex().items_start().gap(px(8.)).min_w_0()
-                .child(label(g, gc, 13.).flex_none().w(px(12.)))
-                .child(label(x.name.clone(), tc, 13.).flex_1().min_w_0()
-                    .when(x.is_cancelled(), |d| d.line_through()))
+                .child(label(g, gc, 13.).flex_none().w(px(14.)))
+                .child(div().flex_1().min_w_0().flex().flex_col()
+                    .child(label(x.content.clone(), tc, 13.).when(m == Mark::Cancelled, |d| d.line_through()))
+                    .when_some(note, |d, n| d.child(label(n, warn_c, 11.))))
         };
+        let current = board.current_phase();
+        let staged = board.staged();
+        let total = board.items().count();
+        let done = board.items().filter(|x| todos::mark(x).finished()).count();
+        let all_done = done == total;
+        let expanded = self.todos_expanded;
+
+        // Header pips, labelled per phase like the TUI (`phase 1 ●●●  phase 2 ●○`).
+        let header_pips = div().flex().flex_wrap().items_center().gap_x(px(10.)).gap_y(px(2.)).flex_1().min_w_0()
+            .children(board.phases.iter().enumerate().map(|(i, p)| {
+                let lc = if Some(i) == current { active_c } else if p.done() { done_c } else { dim_c };
+                div().flex().items_center().gap(px(4.))
+                    .when_some(p.number.filter(|_| staged), |d, n| d.child(label(format!("{n}"), lc, 11.)))
+                    .child(pips(p.items().collect()))
+            }));
         let header = div().flex().items_center().gap(px(10.)).min_w_0()
-            .child(pips(&all).flex_1().min_w_0())
-            .child(label(if all_done { "✓ done".to_string() } else { format!("{done}/{}", list.len()) }, if all_done { done_c } else { meta_c }, 12.).flex_none())
+            .child(header_pips)
+            .child(label(if all_done { "✓ done".to_string() } else { format!("{done}/{total}") }, if all_done { done_c } else { meta_c }, 12.).flex_none())
             .child(label(if expanded { "▴" } else { "▾" }, meta_c, 12.).flex_none());
+        let intention = board.intention.clone().or(board.title.clone());
+        let blockers: Vec<_> = board.blockers().map(|(x, r)| format!("✋ {}: {r}", x.content)).collect();
+
+        let lane_view = |lane: &todos::Lane, named: bool| {
+            div().flex().flex_col().gap(px(4.))
+                .when(named, |d| d.child(div().flex().items_center().gap(px(6.)).min_w_0()
+                    .child(label(lane.name.clone().unwrap_or_else(|| "other".into()), lane_c, 12.).font_weight(gpui::FontWeight::BOLD))
+                    .when_some(lane.owner.clone(), |d, o| d.child(
+                        div().px(px(5.)).rounded(px(4.)).bg(t.surface_elevated).child(label(o, meta_c, 10.))))
+                    .child(pips(lane.items.iter().collect()))))
+                .children(lane.items.iter().map(|x| item_row(x)))
+        };
         let body = if expanded {
-            let groups = todos::lanes(&list);
-            let named = groups.iter().any(|(k, _)| k.is_some());
-            div().id("todo-list").max_h(px(300.)).overflow_y_scroll().flex().flex_col().gap(px(5.)).pt(px(8.))
-                .children(groups.into_iter().map(|(lane, items)| {
-                    div().flex().flex_col().gap(px(4.))
-                        .when(named, |d| d.child(div().flex().items_center().gap(px(8.)).pt(px(2.))
-                            .child(label(lane.unwrap_or("other").to_string(), lane_c, 12.).font_weight(gpui::FontWeight::BOLD))
-                            .child(pips(&items))))
-                        .children(items.into_iter().map(|x| item_row(x)))
+            div().id("todo-list").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap(px(10.)).pt(px(8.))
+                .children(board.phases.iter().enumerate().map(|(i, p)| {
+                    let named = p.lanes.iter().any(|l| l.name.is_some());
+                    let n_done = p.items().filter(|x| todos::mark(x).finished()).count();
+                    let n = p.items().count();
+                    let lc = if Some(i) == current { active_c } else if p.done() { done_c } else { dim_c };
+                    div().flex().flex_col().gap(px(6.))
+                        .when_some(p.number.filter(|_| staged), |d, num| d.child(
+                            div().flex().items_center().gap(px(8.)).pb(px(2.)).border_b_1().border_color(t.border)
+                                .child(label(format!("Phase {num}"), lc, 12.).font_weight(gpui::FontWeight::BOLD))
+                                .child(label(if p.done() { "✓".into() } else { format!("{n_done}/{n}") }, lc, 11.))
+                                .when(Some(i) == current, |d| d.child(label("current", active_c, 10.)))))
+                        .children(p.lanes.iter().map(|l| lane_view(l, named)))
+                }))
+                .children(board.goals.iter().map(|(g, f)| {
+                    label(format!("{}↻ {f}", g.as_ref().map(|g| format!("{g} · ")).unwrap_or_default()), meta_c, 11.)
                 }))
                 .into_any_element()
         } else {
-            div().pt(px(6.)).children(focus.map(|x| item_row(x))).into_any_element()
+            div().pt(px(6.)).flex().flex_col().gap(px(4.))
+                .children(board.focus().map(|x| {
+                    let lane = board.phases.iter().flat_map(|p| &p.lanes).find(|l| l.items.iter().any(|i| i.id == x.id)).and_then(|l| l.name.clone());
+                    div().flex().flex_col().gap(px(2.))
+                        .when_some(lane, |d, l| d.child(label(l, lane_c, 11.)))
+                        .child(item_row(x))
+                }))
+                .into_any_element()
         };
         Some(div().id("pinned-todos").debug_selector(|| "pinned-todos".into()).a11y_button("Todo list")
             .mx(px(14.)).my(px(6.)).px(px(12.)).py(px(9.)).rounded(px(12.))
             .bg(t.surface).border_1().border_color(t.border).cursor_pointer()
             .on_click(cx.listener(|this, _, _, cx| { this.todos_expanded = !this.todos_expanded; cx.notify(); }))
+            .when_some(intention, |d, i| d.child(label(i, meta_c, 11.).truncate().pb(px(4.))))
             .child(header)
             .when(!all_done || expanded, |d| d.child(body))
+            .children(blockers.into_iter().map(|b| label(b, warn_c, 11.).pt(px(4.))))
             .into_any_element())
     }
 

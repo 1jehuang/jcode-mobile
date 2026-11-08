@@ -345,6 +345,7 @@ fn session_loop(
             }
         });
     }
+    fetch_todo_state(client, sid, &snapshots);
     drop(snapshots);
     // History replaces the reducer's transcript. Once local commands have
     // advanced it, an initial snapshot may be stale and must not rewind that
@@ -419,6 +420,12 @@ fn session_loop(
                                 ));
                 }
                 let turn_ended = matches!(&event, ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. });
+                // Todo writes change the pinned board; refresh it from the
+                // server's persisted state (same source as the TUI card).
+                let todo_changed = matches!(&event, ApiEvent::ToolDone { name, .. } if name.eq_ignore_ascii_case("todo"));
+                if todo_changed || turn_ended {
+                    fetch_todo_state(client, sid, &results);
+                }
                 if turn_ended {
                     joined_busy = false;
                 }
@@ -436,6 +443,19 @@ fn session_loop(
             None => {}
         }
     }
+}
+
+/// Fetch the pinned todo board in the background. Older servers lack the
+/// capability; their error reply is dropped rather than shown as a banner.
+fn fetch_todo_state(client: &JcodeClient, sid: &str, out: &mpsc::Sender<ApiEvent>) {
+    let (client, sid, out) = (client.clone(), sid.to_string(), out.clone());
+    std::thread::spawn(move || {
+        if let Ok(frame) = client.request(jcode_sdk::ApiRequest::GetTodoState { session_id: sid })
+            && matches!(frame.event, ApiEvent::TodoState { .. })
+        {
+            let _ = out.send(frame.event);
+        }
+    });
 }
 
 /// Session statuses that mean a turn is in flight. The bridge reports
@@ -696,6 +716,8 @@ mod tests {
                         reply(&mut w, None, json!({"ev":"text_delta","session_id":"s1","text":"live"}));
                         reply(&mut w, None, json!({"ev":"turn_done","session_id":"s1"}));
                     }
+                    // Old server: never answers the todo board fetch.
+                    "get_todo_state" => {}
                     other => panic!("unexpected request: {other}"),
                 }
                 if sent && snapshots.len() == 4 {
