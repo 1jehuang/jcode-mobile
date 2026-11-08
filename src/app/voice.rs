@@ -1,6 +1,6 @@
 //! Ephemeral voice capture. Never persisted, automatically discarded on navigation.
 use super::*;
-use crate::voice_capture::Recording;
+use crate::voice_stream::Recording;
 
 #[derive(Default)]
 struct LiveDictation {
@@ -8,9 +8,6 @@ struct LiveDictation {
     base: String,
     shown: Option<String>,
     transcript: String,
-    consumed: usize,
-    pending: bool,
-    next_preview: Option<std::time::Instant>,
     levels: Vec<f32>,
 }
 
@@ -41,7 +38,10 @@ impl VoiceState {
         } else if self.recording.is_some() && self.locked {
             Some("Mic locked on. Tap Stop and send, or cancel to discard.".into())
         } else if self.recording.is_some() && self.auto_send {
-            Some("Recording. Move back down to finish, or release while deeply pulled to lock.".into())
+            Some(
+                "Recording. Move back down to finish, or release while deeply pulled to lock."
+                    .into(),
+            )
         } else if self.recording.is_some() {
             Some("Recording. Tap stop to transcribe, or cancel to discard.".into())
         } else if self.busy {
@@ -70,76 +70,95 @@ impl MobileApp {
     /// Remove only our own provisional text. User edits and IME state are never
     /// rolled back if they changed the input after a partial result was painted.
     fn restore_voice_draft(&mut self, cx: &mut Context<Self>) -> bool {
-        let owned = self.voice.live.shown.as_deref()
+        let owned = self
+            .voice
+            .live
+            .shown
+            .as_deref()
             .is_some_and(|shown| self.composer.read(cx).text() == shown);
         if let Some(draft) = self.voice.live.original.take() {
             if owned {
-                self.composer.update(cx, |input, cx| input.restore_draft(draft, cx));
+                self.composer
+                    .update(cx, |input, cx| input.restore_draft(draft, cx));
             }
         }
         owned
     }
 
-    fn finish_voice_preview(&mut self, generation: u64, tab: u64, consumed: usize,
-        result: Result<String, String>, cx: &mut Context<Self>) {
-        if self.voice.generation != generation || self.active_tab != tab
-            || !self.voice.live.pending || self.voice.busy || self.voice.starting { return; }
-        if result.as_ref().err().is_some_and(|error| matches!(error.as_str(),
-            jcode_mobile_core::voice::ACCESS_DENIED | jcode_mobile_core::voice::SIGN_IN_REQUIRED)) {
-            // Permanent access failures must not leave a live-looking mic that
-            // silently retries forever. Keep any recognized speech for review.
-            self.voice.recording = None;
-            self.feel.voice_gesture.dismiss();
-            self.feel.voice_wheel_at = None;
-            self.feel.voice_pan_ended = true;
-            self.finish_dictation(generation, tab, result, cx);
+    fn apply_voice_revision(
+        &mut self,
+        generation: u64,
+        tab: u64,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.voice.generation != generation
+            || self.active_tab != tab
+            || self.voice.live.original.is_none()
+            || self.voice.busy
+            || self.voice.starting
+        {
             return;
         }
-        self.voice.live.pending = false;
-        // Transient failures never prevent capture or the authoritative final
-        // pass. Move past silence too, rather than repeatedly uploading it.
-        self.voice.live.consumed = consumed;
-        if let Ok(text) = result {
-            self.voice.live.transcript = jcode_mobile_core::voice::merge_preview(
-                &self.voice.live.transcript, &text);
-            if self.voice.live.shown.as_deref()
-                .is_some_and(|shown| self.composer.read(cx).text() == shown) {
-                let text = jcode_mobile_core::voice::append(
-                    &self.voice.live.base, &self.voice.live.transcript);
-                self.composer.update(cx, |input, cx| input.set_text(text.clone(), cx));
-                self.voice.live.shown = Some(text);
-            }
+        // Nari publishes the complete aggregate, including corrections and
+        // retractions. Never overlap-merge it with an older hypothesis.
+        self.voice.live.transcript = text;
+        if self
+            .voice
+            .live
+            .shown
+            .as_deref()
+            .is_some_and(|shown| self.composer.read(cx).text() == shown)
+        {
+            let text = jcode_mobile_core::voice::append(
+                &self.voice.live.base,
+                &self.voice.live.transcript,
+            );
+            self.composer
+                .update(cx, |input, cx| input.set_text(text.clone(), cx));
+            self.voice.live.shown = Some(text);
         }
         cx.notify();
     }
 
+    fn finish_live_voice(
+        &mut self,
+        generation: u64,
+        tab: u64,
+        result: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.voice.generation != generation || self.active_tab != tab {
+            return;
+        }
+        self.voice.recording = None;
+        self.feel.voice_gesture.dismiss();
+        self.feel.voice_wheel_at = None;
+        self.feel.voice_pan_ended = true;
+        self.finish_dictation(generation, tab, result, cx);
+    }
+
     fn poll_live_voice(&mut self, generation: u64, tab: u64, cx: &mut Context<Self>) -> bool {
-        if self.voice.generation != generation || self.active_tab != tab { return false; }
-        let Some(recording) = self.voice.recording.as_ref() else { return false; };
+        if self.voice.generation != generation || self.active_tab != tab {
+            return false;
+        }
+        let Some(recording) = self.voice.recording.as_ref() else {
+            return false;
+        };
         let levels = recording.levels();
+        let revision = recording.poll_transcript();
+        let finished = recording.poll_finished();
         if levels != self.voice.live.levels {
             self.voice.live.levels = levels;
             cx.notify();
         }
-        let now = std::time::Instant::now();
-        if self.voice.live.pending || self.voice.live.next_preview.is_some_and(|at| now < at) {
-            return true;
+        if let Some(text) = revision {
+            self.apply_voice_revision(generation, tab, text, cx);
         }
-        let Some(wav) = recording.snapshot() else { return true; };
-        self.voice.live.next_preview = Some(now + Duration::from_millis(1500));
-        let Some((wav, consumed)) = jcode_mobile_core::voice::preview_chunk(
-            &wav, self.voice.live.consumed) else { return true; };
-        let Some(account) = self.account.clone() else { return false; };
-        self.voice.live.pending = true;
-        let task = cx.background_spawn(async move {
-            jcode_mobile_core::voice::transcribe_preview(&account, wav)
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                this.finish_voice_preview(generation, tab, consumed, result, cx);
-            });
-        }).detach();
+        if let Some(result) = finished {
+            self.finish_live_voice(generation, tab, result, cx);
+            return false;
+        }
         true
     }
 
@@ -148,11 +167,18 @@ impl MobileApp {
         let tab = self.active_tab;
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(50)).await;
-                if !this.update(cx, |this, cx| this.poll_live_voice(generation, tab, cx))
-                    .unwrap_or(false) { break; }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                if !this
+                    .update(cx, |this, cx| this.poll_live_voice(generation, tab, cx))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     /// Start while the finger is still held, not after release.
@@ -195,6 +221,7 @@ impl MobileApp {
         let auto_send = std::mem::take(&mut self.voice.auto_send);
         let partial = self.voice.live.transcript.clone();
         let had_preview = !partial.is_empty();
+        let had_live_draft = self.voice.live.original.is_some();
         let owned_preview = self.restore_voice_draft(cx);
         self.voice.live = LiveDictation::default();
         match result {
@@ -222,8 +249,10 @@ impl MobileApp {
                     self.follow = true;
                     self.feel_sent();
                 } else {
-                    if had_preview && !owned_preview {
-                        self.voice.error = Some("Your edited voice draft was kept. Review it before sending.".into());
+                    if had_live_draft && !owned_preview {
+                        self.voice.error = Some(
+                            "Your edited voice draft was kept. Review it before sending.".into(),
+                        );
                         cx.notify();
                         return;
                     }
@@ -240,8 +269,10 @@ impl MobileApp {
             }
             result => {
                 if had_preview && owned_preview {
-                    let draft = jcode_mobile_core::voice::append(self.composer.read(cx).text(), &partial);
-                    self.composer.update(cx, |input, cx| input.set_text(draft, cx));
+                    let draft =
+                        jcode_mobile_core::voice::append(self.composer.read(cx).text(), &partial);
+                    self.composer
+                        .update(cx, |input, cx| input.set_text(draft, cx));
                 }
                 self.voice.error = Some(match result {
                     Err(error) if had_preview => format!("{error} Live voice draft kept. Review before sending."),
@@ -314,11 +345,11 @@ impl MobileApp {
     }
 
     fn transcribe_voice(&mut self, cx: &mut Context<Self>) {
-        let Some(account) = self.account.clone() else {
+        if self.account.is_none() {
             self.cancel_voice(cx);
             cx.notify();
             return;
-        };
+        }
         let Some(recording) = self.voice.recording.take() else {
             return;
         };
@@ -329,11 +360,7 @@ impl MobileApp {
         self.voice.stop_requested = false;
         let generation = self.voice.generation;
         let tab = self.active_tab;
-        let task = cx.background_spawn(async move {
-            recording
-                .stop()
-                .and_then(|wav| jcode_mobile_core::voice::transcribe(&account, wav))
-        });
+        let task = cx.background_spawn(async move { recording.stop() });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -402,7 +429,6 @@ impl MobileApp {
             original: Some(self.composer.read(cx).save_draft()),
             base: self.composer.read(cx).text().to_string(),
             shown: Some(self.composer.read(cx).text().to_string()),
-            next_preview: Some(std::time::Instant::now() + Duration::from_millis(1200)),
             ..LiveDictation::default()
         };
         let generation = self.voice.generation;

@@ -13,71 +13,57 @@ fn seed(app: &mut MobileApp, text: &str, cx: &mut Context<MobileApp>) {
         original: Some(app.composer.read(cx).save_draft()),
         base: text.to_string(),
         shown: Some(text.to_string()),
-        pending: true,
         ..LiveDictation::default()
     };
 }
 
-fn preview(app: &mut MobileApp, text: &str, consumed: usize, cx: &mut Context<MobileApp>) {
-    app.voice.live.pending = true;
-    app.finish_voice_preview(
-        app.voice.generation,
-        app.active_tab,
-        consumed,
-        Ok(text.into()),
-        cx,
-    );
+fn revision(app: &mut MobileApp, text: &str, cx: &mut Context<MobileApp>) {
+    app.apply_voice_revision(app.voice.generation, app.active_tab, text.into(), cx);
 }
 
 #[gpui::test]
-fn partials_append_to_typed_base_and_merge_overlapping_speech(cx: &mut TestAppContext) {
+fn aggregate_revisions_replace_correct_and_retract_speech(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
         seed(app, "Typed draft", cx);
-        preview(app, "hello world", 100, cx);
+        revision(app, "hello world", cx);
         assert_eq!(app.composer.read(cx).text(), "Typed draft hello world");
-        assert!(!app.voice.live.pending);
-        assert_eq!(app.voice.live.consumed, 100);
-        preview(app, "world again", 200, cx);
+        revision(app, "hello corrected world", cx);
         assert_eq!(
             app.composer.read(cx).text(),
-            "Typed draft hello world again"
+            "Typed draft hello corrected world"
         );
-        assert_eq!(app.voice.live.transcript, "hello world again");
-        assert_eq!(app.voice.live.consumed, 200);
+        assert_eq!(app.voice.live.transcript, "hello corrected world");
+        revision(app, "hello", cx);
+        assert_eq!(app.composer.read(cx).text(), "Typed draft hello");
+        revision(app, "", cx);
+        assert_eq!(app.composer.read(cx).text(), "Typed draft");
+        assert!(app.voice.live.transcript.is_empty());
         assert!(app.session.transcript.is_empty());
     });
 }
 
 #[gpui::test]
-fn preview_callbacks_ignore_wrong_generation_tab_and_final_processing(cx: &mut TestAppContext) {
+fn revisions_ignore_wrong_generation_tab_and_final_processing(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
         seed(app, "Untouched", cx);
         let generation = app.voice.generation;
         let tab = app.active_tab;
-        app.finish_voice_preview(generation.wrapping_add(1), tab, 90, Ok("stale".into()), cx);
-        app.finish_voice_preview(
-            generation,
-            tab.wrapping_add(1),
-            90,
-            Ok("wrong tab".into()),
-            cx,
-        );
+        app.apply_voice_revision(generation.wrapping_add(1), tab, "stale".into(), cx);
+        app.apply_voice_revision(generation, tab.wrapping_add(1), "wrong tab".into(), cx);
         app.voice.busy = true;
-        app.finish_voice_preview(generation, tab, 90, Ok("during final".into()), cx);
+        app.apply_voice_revision(generation, tab, "during final".into(), cx);
         app.voice.busy = false;
         app.voice.starting = true;
-        app.finish_voice_preview(generation, tab, 90, Ok("during startup".into()), cx);
+        app.apply_voice_revision(generation, tab, "during startup".into(), cx);
         app.voice.starting = false;
         assert_eq!(app.composer.read(cx).text(), "Untouched");
-        assert!(app.voice.live.pending);
-        assert_eq!(app.voice.live.consumed, 0);
         assert!(app.voice.live.transcript.is_empty());
-        app.voice.live.pending = false;
-        app.finish_voice_preview(generation, tab, 90, Ok("unsolicited".into()), cx);
+        app.voice.live.original = None;
+        app.apply_voice_revision(generation, tab, "unsolicited".into(), cx);
         assert_eq!(app.composer.read(cx).text(), "Untouched");
     });
 }
@@ -95,7 +81,7 @@ fn cancellation_restores_saved_text_and_selection_and_rejects_late_preview(
         let original = app.composer.read(cx).save_draft();
         app.voice.live.original = Some(original.clone());
         let generation = app.voice.generation;
-        preview(app, "temporary speech", 100, cx);
+        revision(app, "temporary speech", cx);
         assert_eq!(app.composer.read(cx).selected_text(), "");
         app.cancel_voice(cx);
         assert_eq!(app.composer.read(cx).text(), "Original 日本語 draft");
@@ -107,7 +93,7 @@ fn cancellation_restores_saved_text_and_selection_and_rejects_late_preview(
         app.composer
             .update(cx, |input, cx| input.restore_draft(original, cx));
         assert_eq!(app.composer.read(cx).text(), restored_text);
-        app.finish_voice_preview(generation, app.active_tab, 200, Ok("late".into()), cx);
+        app.apply_voice_revision(generation, app.active_tab, "late".into(), cx);
         assert_eq!(app.composer.read(cx).text(), restored_text);
         assert!(app.voice.live.original.is_none());
         assert!(app.voice.live.levels.is_empty());
@@ -121,12 +107,16 @@ fn user_edits_after_partial_are_never_overwritten_by_preview_cancel_or_final(
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
-        for finish in [false, true] {
+        for (finish, aggregate) in [
+            (false, "partial continued"),
+            (true, "partial continued"),
+            (true, ""),
+        ] {
             seed(app, "Typed", cx);
-            preview(app, "partial", 100, cx);
+            revision(app, "partial", cx);
             app.composer
                 .update(cx, |input, cx| input.set_text("My deliberate edit", cx));
-            preview(app, "partial continued", 200, cx);
+            revision(app, aggregate, cx);
             assert_eq!(app.composer.read(cx).text(), "My deliberate edit");
             if finish {
                 app.voice.busy = true;
@@ -158,7 +148,7 @@ fn authoritative_final_replaces_preview_instead_of_duplicating_it(cx: &mut TestA
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
         seed(app, "Typed draft", cx);
-        preview(app, "provisional words", 100, cx);
+        revision(app, "provisional words", cx);
         app.voice.busy = true;
         app.finish_dictation(
             app.voice.generation,
@@ -185,7 +175,7 @@ fn auto_send_sends_only_authoritative_voice_and_restores_typed_draft(cx: &mut Te
         app.session.phase = ConnectionPhase::Connected;
         app.session.session_id = Some("offline-live-voice-fixture".into());
         seed(app, "Never send my typed draft", cx);
-        preview(app, "unfinished voice", 100, cx);
+        revision(app, "unfinished voice", cx);
         app.voice.auto_send = true;
         app.voice.busy = true;
         app.finish_dictation(
@@ -206,9 +196,7 @@ fn auto_send_sends_only_authoritative_voice_and_restores_typed_draft(cx: &mut Te
 }
 
 #[gpui::test]
-fn preview_errors_advance_consumption_and_final_errors_keep_reviewable_speech(
-    cx: &mut TestAppContext,
-) {
+fn stream_final_errors_keep_reviewable_speech(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
@@ -217,17 +205,8 @@ fn preview_errors_advance_consumption_and_final_errors_keep_reviewable_speech(
             Ok("   ".into()),
         ] {
             seed(app, "Original draft", cx);
-            app.finish_voice_preview(
-                app.voice.generation,
-                app.active_tab,
-                80,
-                Err("preview unavailable".into()),
-                cx,
-            );
-            assert_eq!(app.voice.live.consumed, 80);
-            assert!(!app.voice.live.pending);
             assert_eq!(app.composer.read(cx).text(), "Original draft");
-            preview(app, "temporary", 160, cx);
+            revision(app, "temporary", cx);
             app.voice.busy = true;
             app.finish_dictation(app.voice.generation, app.active_tab, final_result, cx);
             assert_eq!(app.composer.read(cx).text(), "Original draft temporary");
@@ -239,20 +218,25 @@ fn preview_errors_advance_consumption_and_final_errors_keep_reviewable_speech(
 }
 
 #[gpui::test]
-fn denied_preview_stops_capture_surface_and_keeps_review_draft(cx: &mut TestAppContext) {
+fn stream_failure_stops_capture_surface_and_keeps_review_draft(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
-        for error in [jcode_mobile_core::voice::ACCESS_DENIED, jcode_mobile_core::voice::SIGN_IN_REQUIRED] {
+        for error in [
+            "Nari rejected the voice session",
+            "Nari credits are exhausted",
+        ] {
             seed(app, "Original draft", cx);
-            preview(app, "recognized speech", 32_000, cx);
+            revision(app, "recognized speech", cx);
             app.voice.auto_send = true;
             app.voice.locked = true;
-            app.voice.live.pending = true;
-            app.finish_voice_preview(app.voice.generation, app.active_tab, 64_000, Err(error.into()), cx);
-            assert_eq!(app.composer.read(cx).text(), "Original draft recognized speech");
+            app.finish_live_voice(app.voice.generation, app.active_tab, Err(error.into()), cx);
+            assert_eq!(
+                app.composer.read(cx).text(),
+                "Original draft recognized speech"
+            );
             assert!(app.voice.recording.is_none());
-            assert!(!app.voice.auto_send && !app.voice.locked && !app.voice.busy && !app.voice.live.pending);
+            assert!(!app.voice.auto_send && !app.voice.locked && !app.voice.busy);
             assert!(app.voice.error.as_deref().unwrap().starts_with(error));
             assert!(app.session.transcript.is_empty());
             assert!(!app.poll_live_voice(app.voice.generation, app.active_tab, cx));
