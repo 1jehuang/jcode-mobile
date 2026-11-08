@@ -23,7 +23,133 @@ pub fn render_reasoning(src: &str, t: &Theme) -> AnyElement {
 }
 
 pub fn render(src: &str, t: &Theme) -> AnyElement {
-    render_parsed(&cached_parse(src), t)
+    render_parsed(&cached_parse(src), t, &[])
+}
+
+/// A uniform alpha deficit over the newest released source bytes only.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct StreamFade {
+    pub(crate) bytes: usize,
+    pub(crate) amount: f32,
+}
+
+pub(crate) fn render_streaming(src: &str, t: &Theme, fade: StreamFade) -> AnyElement {
+    let parsed = cached_parse(src);
+    let fades = block_fades(src, &parsed, fade);
+    render_parsed(&parsed, t, &fades)
+}
+
+pub(crate) fn render_reasoning_streaming(src: &str, t: &Theme, fade: StreamFade) -> AnyElement {
+    let muted = Theme {
+        text: t.text_muted,
+        text_strong: t.text_muted,
+        ..*t
+    };
+    render_streaming(src, &muted, fade)
+}
+
+fn block_inline(block: &Block) -> Option<&ParsedInline> {
+    match block {
+        Block::Paragraph(text)
+        | Block::Heading(text)
+        | Block::Bullet(text)
+        | Block::Ordered(_, text) => Some(text),
+        Block::Code(_) => None,
+    }
+}
+
+/// Parse the already-visible source prefix using the same parser. Compare its
+/// rendered bytes, not approximate markdown marker lengths, to keep old prose
+/// fully opaque even when the release lands inside an existing paragraph.
+/// Code keeps full contrast, matching the desktop policy.
+fn block_fades(src: &str, parsed: &ParsedMarkdown, fade: StreamFade) -> Vec<StreamFade> {
+    if fade.bytes == 0 || fade.amount <= 0.0 {
+        return Vec::new();
+    }
+    let start = src.floor_char_boundary(src.len().saturating_sub(fade.bytes));
+    let old = cached_parse(&src[..start]);
+    parsed
+        .0
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let Some(text) = block_inline(block) else {
+                return StreamFade::default();
+            };
+            let old_text = old.0.get(index).and_then(block_inline);
+            let shared = old_text.map_or(0, |old| {
+                text.text
+                    .chars()
+                    .zip(old.text.chars())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(c, _)| c.len_utf8())
+                    .sum()
+            });
+            StreamFade {
+                bytes: text.text.len() - shared,
+                ..fade
+            }
+        })
+        .collect()
+}
+
+fn fade_tail_highlights(
+    text: &str,
+    fade: StreamFade,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    if fade.bytes == 0 || fade.amount <= 0.0 {
+        return Vec::new();
+    }
+    let start = text.floor_char_boundary(text.len().saturating_sub(fade.bytes));
+    vec![(
+        start..text.len(),
+        HighlightStyle {
+            fade_out: Some(fade.amount.clamp(0.0, 1.0)),
+            ..Default::default()
+        },
+    )]
+}
+
+/// GPUI consumes highlights as consecutive runs, not overlapping overlays.
+/// Split existing emphasis/code ranges at the fade boundary and add alpha to
+/// their styles. Appending an overlapping fade would duplicate shaped bytes.
+fn merge_fade_highlights(
+    text: &str,
+    highlights: Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    fade: StreamFade,
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    let tail = fade_tail_highlights(text, fade);
+    let Some((tail, alpha)) = tail.first() else {
+        return highlights;
+    };
+    let mut merged = Vec::with_capacity(highlights.len() + 3);
+    let mut append = |range: std::ops::Range<usize>, style: HighlightStyle| {
+        let split = tail.start.clamp(range.start, range.end);
+        if range.start < split {
+            merged.push((range.start..split, style));
+        }
+        if split < range.end {
+            merged.push((
+                split..range.end,
+                HighlightStyle {
+                    fade_out: alpha.fade_out,
+                    ..style
+                },
+            ));
+        }
+    };
+    let mut at = 0;
+    for (range, style) in highlights {
+        if at < range.start {
+            append(at..range.start, HighlightStyle::default());
+        }
+        at = range.end;
+        append(range, style);
+    }
+    if at < text.len() {
+        append(at..text.len(), HighlightStyle::default());
+    }
+    merged
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -183,7 +309,7 @@ fn parse_markdown(src: &str) -> ParsedMarkdown {
     ParsedMarkdown(blocks)
 }
 
-fn render_parsed(parsed: &ParsedMarkdown, t: &Theme) -> AnyElement {
+fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> AnyElement {
     let mut col = div()
         .w_full()
         .min_w_0()
@@ -193,10 +319,11 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme) -> AnyElement {
         .gap(px(8.))
         .text_size(crate::system::fs(13.5))
         .line_height(crate::system::fs(21.));
-    for block in &parsed.0 {
+    for (index, block) in parsed.0.iter().enumerate() {
+        let fade = fades.get(index).copied().unwrap_or_default();
         match block {
             Block::Paragraph(text) => {
-                col = col.child(inline(text, t));
+                col = col.child(inline(text, t, fade));
             }
             Block::Code(code) => {
                 col = col.child(
@@ -221,7 +348,7 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme) -> AnyElement {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(crate::system::fs(14.))
-                        .child(inline(h, t)),
+                        .child(inline(h, t, fade)),
                 );
             }
             Block::Bullet(item) => {
@@ -233,7 +360,7 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme) -> AnyElement {
                         .gap(px(8.))
                         .pl(px(4.))
                         .child(div().text_color(t.text_muted).child("•"))
-                        .child(div().flex_1().min_w_0().child(inline(item, t))),
+                        .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
                 );
             }
             Block::Ordered(num, item) => {
@@ -245,7 +372,7 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme) -> AnyElement {
                         .gap(px(6.))
                         .pl(px(4.))
                         .child(div().text_color(t.text_muted).child(num.clone()))
-                        .child(div().flex_1().min_w_0().child(inline(item, t))),
+                        .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
                 );
             }
         }
@@ -269,6 +396,99 @@ fn ordered_item(line: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fades_merge_with_emphasis_without_overlapping_or_duplicating_bytes() {
+        let text = "old bold é new";
+        let bold = HighlightStyle {
+            font_weight: Some(FontWeight::SEMIBOLD),
+            ..Default::default()
+        };
+        for start in (0..=text.len()).filter(|start| text.is_char_boundary(*start)) {
+            let runs = merge_fade_highlights(
+                text,
+                vec![(4..11, bold)],
+                StreamFade {
+                    bytes: text.len() - start,
+                    amount: 0.85,
+                },
+            );
+            if start == text.len() {
+                assert_eq!(runs, vec![(4..11, bold)]);
+                continue;
+            }
+            let mut at = 0;
+            for (range, style) in runs {
+                assert_eq!(range.start, at, "runs remain contiguous");
+                assert!(text.is_char_boundary(range.end));
+                assert_eq!(
+                    style.font_weight,
+                    (range.start >= 4 && range.end <= 11).then_some(FontWeight::SEMIBOLD)
+                );
+                assert_eq!(style.fade_out, (range.start >= start).then_some(0.85));
+                at = range.end;
+            }
+            assert_eq!(at, text.len(), "exactly one run per shaped byte");
+        }
+    }
+
+    #[test]
+    fn streaming_fade_preserves_old_blocks_and_old_inline_prefix() {
+        let old = "# **é**\n\nOld `code` and **bold** ";
+        let new = "new *中*\n\n- fresh\n```\nraw\n```";
+        let src = format!("{old}{new}");
+        let parsed = parse_markdown(&src);
+        let fades = block_fades(
+            &src,
+            &parsed,
+            StreamFade {
+                bytes: new.len(),
+                amount: 0.85,
+            },
+        );
+        assert_eq!(fades[0].bytes, 0);
+        assert_eq!(fades[1].bytes, "new 中".len());
+        assert_eq!(fades[2].bytes, "fresh".len());
+        assert_eq!(
+            fades[3],
+            StreamFade::default(),
+            "code remains full contrast"
+        );
+        let prose = block_inline(&parsed.0[1]).unwrap();
+        let highlights = fade_tail_highlights(&prose.text, fades[1]);
+        let range = &highlights[0].0;
+        assert_eq!(&prose.text[range.clone()], "new 中");
+        assert_eq!(&prose.text[..range.start], "Old code and bold ");
+        assert_eq!(
+            parse_markdown(&src),
+            parsed,
+            "fade never alters measured text"
+        );
+        assert!(block_fades(&src, &parsed, StreamFade::default()).is_empty());
+    }
+
+    #[test]
+    fn fade_ranges_are_utf8_safe_and_clamped() {
+        let ranges = fade_tail_highlights(
+            "a🦀",
+            StreamFade {
+                bytes: 1,
+                amount: 2.0,
+            },
+        );
+        assert_eq!(ranges[0].0, 1..5);
+        assert_eq!(ranges[0].1.fade_out, Some(1.0));
+        assert!(
+            fade_tail_highlights(
+                "é",
+                StreamFade {
+                    bytes: 99,
+                    amount: 0.0
+                }
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn chunked_inline_matches_scalar_reference() {
@@ -850,7 +1070,7 @@ fn parse_inline_impl<const CHUNKED: bool>(
     (out, spans)
 }
 
-fn inline(parsed: &ParsedInline, t: &Theme) -> AnyElement {
+fn inline(parsed: &ParsedInline, t: &Theme, fade: StreamFade) -> AnyElement {
     let highlights = parsed
         .spans
         .iter()
@@ -867,6 +1087,7 @@ fn inline(parsed: &ParsedInline, t: &Theme) -> AnyElement {
             )
         })
         .collect::<Vec<_>>();
+    let highlights = merge_fade_highlights(&parsed.text, highlights, fade);
     div()
         .min_w_0()
         .max_w_full()
