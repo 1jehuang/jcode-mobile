@@ -37,3 +37,12 @@ The backend now emits `Started` for the first finger delta and zero-delta `Ended
 Offline tests cover draft ownership, aggregate corrections and retractions, cancellation, stale results, authoritative final replacement, waveform bounds, bounded PCM, final tail draining and commit ordering. Native simulator acceptance uses an isolated display and dedicated PipeWire monitor with synthetic speech, without touching the physical microphone or speakers. Current migration results are recorded after execution below.
 
 No physical iOS gesture or device GPU frame-pacing claim is made. Source changes are not a TestFlight release.
+
+## Migration acceptance, November 8, 2026
+
+- The actual native simulator passed real Nari recognition, not a mocked transcription service. Synthetic speech reached `parec` through an isolated PipeWire monitor, appeared live beside the preserved typed draft, and finalized after continuous upward-then-downward movement. Deep release kept capture running, and Cancel stopped it without discarding the pre-gesture draft. The measured waveform was visible. Evidence is in the local scratch `voice-simulator/nari-*.png` files and acceptance task `387289567o`.
+- All 90 mobile voice regressions passed against the launcher's local GPUI backend, hosted run `20261108-011514606-1192689`.
+- The full iOS target check passed, run `20261108-011634186-1203765`, using the configured local Apple SDK fallback because the hosted sysroot does not support that target. This does not validate a physical iPhone microphone or provision its Nari credential.
+- The unfiltered full workspace attempt reached 369 passing application tests, 11 ignored and one existing selection-overlay fixture failure: `selection_is_read_only_copyable_and_done_releases_focus`, asserting that its fixture exercises overlapping hit regions. Run `20261108-011714940-1223853`. No voice regression failed.
+- Repeating the complete workspace with only that known fixture excluded passed 447 tests, with 14 ignored and one filtered out, hosted run `20261108-011940134-1242911`: `justrust test --workspace -- --test-threads=1 --skip selection_is_read_only_copyable_and_done_releases_focus`. This is not an unfiltered green suite.
+- The old managed-cloud speech route was removed in cloud source commit `eec4834`, with 424 worker tests passing. Production was not redeployed and no secrets or billing settings were changed. The new simulator talks directly to Nari and does not depend on that route.
