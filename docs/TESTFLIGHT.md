@@ -43,3 +43,9 @@
 ## Validation limits
 
 The reported bouncing thinking/transcript rendering was observed by the user on physical iOS. No iPhone was connected to the release workstation during investigation. Linux GPUI layout tests can check transcript anchoring and reader-scroll behavior but cannot prove physical-device frame pacing or Metal presentation quality.
+
+## Build 1794124180, uploaded November 7, 2026 (Pacific)
+
+- Source: `5fa86ca` (same application code as 1794117691, docs-only delta).
+- Signed IPA SHA-256: `e77b020c772756ea369cb9bceb1906095f403770a6857a9c77e95d6cc0702c6e`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794124180/`.
+- Uploaded at about 23:52 Pacific, upload state `COMPLETE`.
