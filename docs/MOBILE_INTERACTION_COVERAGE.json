@@ -80,10 +80,12 @@
         "debug_selector:literal:err": 1,
         "debug_selector:literal:err-empty": 1,
         "debug_selector:literal:jump": 1,
+        "debug_selector:literal:transcript-activity": 1,
         "id:literal:err": 1,
         "id:literal:err-empty": 1,
         "id:literal:jump": 1,
         "id:literal:transcript": 1,
+        "id:literal:transcript-activity": 1,
         "id:tuple:literal:entry": 1
       },
       "coverage": [
@@ -97,9 +99,11 @@
         },
         {
           "kind": "state_model_mocked",
-          "note": "Long transcript/tool reasoning fixtures check narrow viewport layout, not delivery of real streamed tool responses.",
+          "note": "Modeled transcript fixtures check narrow viewport layout and first-painted-frame anchoring during streamed growth, thinking/responding transitions, footer removal, resize and warmed-history jump/append. transcript-activity is a noninteractive measurement selector. No real socket responses or physical iOS frame pacing are covered.",
           "tests": [
-            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone",
+            "src/app/scroll_tests.rs::followed_stream_and_thinking_transitions_anchor_in_the_same_layout",
+            "src/app/scroll_tests.rs::tail_anchor_materializes_cached_bottom_on_first_jump_and_append"
           ]
         },
         {
