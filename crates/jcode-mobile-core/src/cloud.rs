@@ -275,7 +275,10 @@ pub fn connect(
             // An API startup timeout does not mean SSH authentication is stale.
             // Keep the master so a retry does not register another key and
             // repeat cloud provisioning on an otherwise healthy connection.
-            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected => {
+            // But a socket that died while the app was suspended also just
+            // times out. Prove the master before keeping it, or every retry
+            // would wait out the full open timeout on a dead connection.
+            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
                 return Err(error);
             }
             // A dead master must go back through the authenticated control
@@ -298,7 +301,10 @@ pub fn connect(
                 check_cancelled()?;
                 return Ok(client);
             }
-            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected => {
+            // But a socket that died while the app was suspended also just
+            // times out. Prove the master before keeping it, or every retry
+            // would wait out the full open timeout on a dead connection.
+            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
                 return Err(error);
             }
             Err(_) => clear_warm_target(),

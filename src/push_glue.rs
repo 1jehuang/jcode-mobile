@@ -164,6 +164,11 @@ impl MobileApp {
                     return;
                 }
                 notify::clear_badge();
+                // Sockets often die silently while suspended. Probe every
+                // live tab now and cut any pending reconnect backoff short.
+                for c in self.connection.iter().chain(self.parked.iter().filter_map(|p| p.connection.as_ref())) {
+                    c.wake();
+                }
                 if let Some(account) = self.account.clone() {
                     cloud::prewarm(&account);
                     self.refresh_agents_status(cx);

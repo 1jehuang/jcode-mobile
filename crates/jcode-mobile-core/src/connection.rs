@@ -85,8 +85,15 @@ pub enum Request {
 
 enum Command {
     Send(Request),
+    /// The app returned to the foreground: prove the link now and retry a
+    /// pending reconnect immediately instead of after its backoff.
+    Wake,
     Stop,
 }
+
+/// How long a foreground liveness probe may take before the link is presumed
+/// dead. Suspended sockets often look open until keepalives give up.
+const WAKE_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Cheap, cloneable handle used by the UI to send requests.
 #[derive(Clone)]
@@ -134,6 +141,11 @@ impl Connection {
         id
     }
 
+    /// Call when the app returns to the foreground.
+    pub fn wake(&self) {
+        let _ = self.commands.send(Command::Wake);
+    }
+
     pub fn stop(&self) {
         let _ = self.commands.send(Command::Stop);
     }
@@ -163,6 +175,7 @@ struct Inbox {
     rx: Receiver<Command>,
     queued: Vec<Request>,
     stopped: bool,
+    woken: bool,
 }
 
 impl Inbox {
@@ -170,6 +183,7 @@ impl Inbox {
         loop {
             match self.rx.try_recv() {
                 Ok(Command::Send(r)) => self.queued.push(r),
+                Ok(Command::Wake) => self.woken = true,
                 Ok(Command::Stop) | Err(TryRecvError::Disconnected) => {
                     self.stopped = true;
                     return;
@@ -178,12 +192,16 @@ impl Inbox {
             }
         }
     }
-    /// Sleep up to `d`, waking early on stop. Returns false when stopped.
+    /// Sleep up to `d`, waking early on stop or foreground. Returns false when stopped.
     fn sleep(&mut self, d: Duration) -> bool {
         let until = std::time::Instant::now() + d;
         while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
             match self.rx.recv_timeout(left) {
                 Ok(Command::Send(r)) => self.queued.push(r),
+                Ok(Command::Wake) => {
+                    self.woken = true;
+                    break;
+                }
                 Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => {
                     self.stopped = true;
                     return false;
@@ -241,7 +259,7 @@ fn run(
 ) {
     let phase = |p| emit(ConnectionOutput::Phase(p));
     let mut fork_from = config.fork_from.clone();
-    let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false });
+    let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false, woken: false });
     let mut attempt: u32 = 0;
     loop {
         let started = std::time::Instant::now();
@@ -318,6 +336,11 @@ fn run(
         if !inbox.lock().unwrap().sleep(delay) {
             break;
         }
+        // A wake during backoff means the user is looking. Further failures
+        // should retry quickly again rather than continuing a long backoff.
+        if std::mem::take(&mut inbox.lock().unwrap().woken) {
+            attempt = 1;
+        }
     }
     phase(ConnectionPhase::Disconnected);
 }
@@ -368,6 +391,9 @@ fn session_loop(
     let mut joined_busy = attached_busy;
     let mut first_content_seen = false;
     let mut resync_at_turn_end = false;
+    // Outstanding foreground probe: deadline and its reply channel.
+    let mut probe: Option<(std::time::Instant, Receiver<bool>)> = None;
+    inbox.lock().unwrap().woken = false;
     loop {
         while let Ok(event) = initial.try_recv() {
             if matches!(event, ApiEvent::History { .. }) {
@@ -381,14 +407,36 @@ fn session_loop(
             }
             emit(ConnectionOutput::Event(event));
         }
-        let queued = {
+        let (queued, woken) = {
             let mut i = inbox.lock().unwrap();
             i.drain();
             if i.stopped {
                 return true;
             }
-            std::mem::take(&mut i.queued)
+            (std::mem::take(&mut i.queued), std::mem::take(&mut i.woken))
         };
+        if woken && probe.is_none() {
+            let (tx, rx) = mpsc::channel();
+            let client = client.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(client.ping().is_ok());
+            });
+            probe = Some((std::time::Instant::now() + WAKE_PROBE_TIMEOUT, rx));
+        }
+        if let Some((deadline, rx)) = &probe {
+            match rx.try_recv() {
+                Ok(true) => probe = None,
+                Ok(false) | Err(TryRecvError::Disconnected) => {
+                    crate::timing::stage("wake probe failed", started.elapsed());
+                    return false;
+                }
+                Err(TryRecvError::Empty) if std::time::Instant::now() >= *deadline => {
+                    crate::timing::stage("wake probe timed out", started.elapsed());
+                    return false;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
         for request in queued {
             if matches!(
                 request,
@@ -485,6 +533,8 @@ fn is_turn_content(event: &ApiEvent) -> bool {
 fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent> {
     use jcode_sdk::ApiRequest as A;
     let s = || sid.to_string();
+    // User-authored input must never vanish silently when the link drops.
+    let user_input = matches!(request, Request::Message { .. } | Request::SoftInterrupt { .. });
     let result = match request {
         Request::Message { content, .. } => client.send_message(sid, &content, vec![], None).map(|_| None),
         Request::SoftInterrupt { id, content, urgent } => client
@@ -513,7 +563,11 @@ fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent
     };
     match result {
         Ok(event) => event,
-        Err(e) if e.kind == ErrorKind::Disconnected => None,
+        Err(e) if e.kind == ErrorKind::Disconnected && !user_input => None,
+        Err(e) if user_input => Some(ApiEvent::Error {
+            code: jcode_sdk::api::ErrorCode::Internal,
+            message: format!("Message may not have been sent ({}). Check the transcript after reconnecting and resend if missing.", e.message),
+        }),
         Err(e) => Some(ApiEvent::Error { code: jcode_sdk::api::ErrorCode::Internal, message: e.message }),
     }
 }
@@ -609,6 +663,56 @@ mod tests {
                 .map(|r| r["session_id"].as_str().unwrap()).collect();
             assert_eq!(attached, if fail { vec!["source"] } else { vec!["source", "fork"] });
         }
+    }
+
+    /// A suspended socket looks open but never answers. Foregrounding must
+    /// detect that with a probe and reconnect instead of waiting on keepalives.
+    #[test]
+    fn wake_reconnects_a_silently_dead_link() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = vec![];
+            for (n, s) in listener.incoming().enumerate() {
+                let s = s.unwrap();
+                held.push(s.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let mut w = s.try_clone().unwrap();
+                    for line in BufReader::new(s).lines() {
+                        let Ok(line) = line else { return };
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        let id = req["id"].as_u64();
+                        match req["req"].as_str().unwrap() {
+                            "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                            "create_session" | "attach_session" => reply(&mut w, id, json!({"ev":"attached","session":{"session_id":"s1","status":"idle"}})),
+                            // The first link goes dark: requests are swallowed.
+                            "ping" if n == 0 => {}
+                            "ping" => reply(&mut w, id, json!({"ev":"ack"})),
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        let factory: TransportFactory =
+            Arc::new(move || Ok(Box::new(Tcp(TcpStream::connect(addr).unwrap())) as Box<dyn Transport>));
+        let mut cfg = Config::custom(factory);
+        cfg.base_backoff = Duration::from_millis(1);
+        let (conn, rx) = Connection::start_with_channel(cfg, None);
+        let wait_for = |want: fn(&ConnectionOutput) -> bool, secs| {
+            let until = std::time::Instant::now() + Duration::from_secs(secs);
+            while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+                if let Ok(o) = rx.recv_timeout(left) && want(&o) {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(wait_for(|o| matches!(o, ConnectionOutput::Phase(ConnectionPhase::Connected)), 5));
+        conn.wake();
+        assert!(wait_for(|o| matches!(o, ConnectionOutput::Phase(ConnectionPhase::Reconnecting { .. })), 8));
+        assert!(wait_for(|o| matches!(o, ConnectionOutput::Phase(ConnectionPhase::Connected)), 5));
+        conn.stop();
     }
 
     /// Fake harness: hello, create_session, snapshot, then one streamed turn.
