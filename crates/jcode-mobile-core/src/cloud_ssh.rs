@@ -351,6 +351,18 @@ impl CloudSsh {
                         // handoff). Detect a dead peer in ~30s, not ~80s.
                         keepalive_interval: Some(Duration::from_secs(10)),
                         keepalive_max: 2,
+                        // Transcripts and model lists are 0.2-1.2 MB of JSON
+                        // that compresses ~10x, and transfer, not the
+                        // server, dominates opening a session over cellular.
+                        // Delayed zlib starts only after auth.
+                        preferred: russh::Preferred {
+                            compression: std::borrow::Cow::Borrowed(&[
+                                russh::compression::ZLIB_LEGACY,
+                                russh::compression::ZLIB,
+                                russh::compression::NONE,
+                            ]),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     });
                     let mut session = russh::client::connect(
