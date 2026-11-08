@@ -871,6 +871,8 @@ impl MobileApp {
     }
 
     fn pump(&mut self, tab: u64, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
+        let opened = std::time::Instant::now();
+        let mut history_logged = false;
         cx.spawn(async move |this, cx| {
             while let Some(first) = rx.next().await {
                 // Coalesce bursts of streaming deltas into one frame.
@@ -878,6 +880,11 @@ impl MobileApp {
                 while let Ok(o) = rx.try_recv() {
                     batch.push(o);
                 }
+                let has_history = !history_logged
+                    && batch.iter().any(|o| {
+                        matches!(o, ConnectionOutput::Event(jcode_mobile_core::ApiEvent::History { .. }))
+                    });
+                let apply_start = std::time::Instant::now();
                 let ok = this
                     .update(cx, |this, cx| {
                         if tab != this.active_tab {
@@ -910,6 +917,13 @@ impl MobileApp {
                         cx.notify();
                     })
                     .is_ok();
+                if has_history {
+                    history_logged = true;
+                    // UI side of open latency: main-thread apply cost and
+                    // total time from tab open to transcript in state.
+                    jcode_mobile_core::timing::stage("ui_history_apply", apply_start.elapsed());
+                    jcode_mobile_core::timing::stage("ui_open_to_history", opened.elapsed());
+                }
                 if !ok {
                     break;
                 }
