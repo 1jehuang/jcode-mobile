@@ -260,6 +260,24 @@ fn run(
     commands: Receiver<Command>,
     emit: impl Fn(ConnectionOutput),
 ) {
+    // Cloud sessions cache every History snapshot so the next open can paint
+    // instantly. Custom endpoints (tests, probes) never touch the disk cache.
+    let caching = matches!(config.endpoint, Endpoint::Cloud(_));
+    let mut showed_cached = false;
+    let emit = move |o: ConnectionOutput| {
+        if caching && let ConnectionOutput::Event(event @ ApiEvent::History { .. }) = &o {
+            crate::transcript_cache::store(event);
+        }
+        emit(o)
+    };
+    if caching
+        && config.fork_from.is_none()
+        && let Some(cached) = target_session.as_deref().and_then(crate::transcript_cache::load)
+    {
+        // Shown while connecting; the fresh snapshot replaces it on arrival.
+        emit(ConnectionOutput::Event(cached));
+        showed_cached = true;
+    }
     let phase = |p| emit(ConnectionOutput::Phase(p));
     let mut fork_from = config.fork_from.clone();
     let inbox = Mutex::new(Inbox { rx: commands, queued: vec![], stopped: false, woken: false });
@@ -312,7 +330,7 @@ fn run(
                 let busy = session_is_busy(&session.status);
                 emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
                 let stream = client.events(Some(&sid));
-                if session_loop(&client, &sid, busy, &stream, &inbox, &emit, started) {
+                if session_loop(&client, &sid, busy, &stream, &inbox, &emit, started, std::mem::take(&mut showed_cached)) {
                     break;
                 }
                 crate::timing::stage("session lost after", started.elapsed());
@@ -366,6 +384,7 @@ fn session_loop(
     inbox: &Mutex<Inbox>,
     emit: &dyn Fn(ConnectionOutput),
     started: std::time::Instant,
+    showed_cached: bool,
 ) -> bool {
     let (results, outcomes) = mpsc::channel::<ApiEvent>();
     let (snapshots, initial) = mpsc::channel();
@@ -419,6 +438,16 @@ fn session_loop(
                 }
                 initial_history_seen = true;
                 if history_superseded {
+                    if showed_cached {
+                        // The screen still shows the cached snapshot. Refetch
+                        // so the explicit reply (which always applies) fixes it.
+                        let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
+                        std::thread::spawn(move || {
+                            if let Some(event) = execute(&client, &sid, Request::GetHistory { id: 0 }) {
+                                let _ = results.send(event);
+                            }
+                        });
+                    }
                     continue;
                 }
             }
