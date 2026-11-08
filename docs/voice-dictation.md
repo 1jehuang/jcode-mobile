@@ -1,61 +1,80 @@
 # Voice dictation
 
-The microphone beside Send records a message on iOS. Tap it again to stop and
-transcribe. The result is appended to the current draft, never automatically
-sent. Existing text, including text typed while transcription is running, is
-preserved. Cancel dictation discards the attempt. Leaving its tab, sending the
-draft, opening Settings, signing out, or an audio/background interruption also
-discards capture or ignores its stale result.
+Mobile dictation streams native microphone audio through the signed-in account's
+Jcode cloud relay. It shares `jcode-voice::NariSession` with desktop. There is no
+phone provider key, direct-provider fallback, batch preview, or final WAV upload.
+The server owns the Nari credential. See `LIVE_VOICE.md` for protocol and rollout
+history, and `VOICE_GESTURES.md` for the current pull/reverse/lock interaction.
 
-## Service and privacy
+## Draft and lifecycle safety
 
-Mobile uses the same subscription-backed `POST /audio/transcriptions` WAV
-endpoint as `jcode-voice`, authenticated with the signed-in account. This is the
-batch transcription path, not desktop's direct Nari streaming path. No separate
-provider key is stored on the phone.
+Live recognition revises provisional text beside the original typed draft.
+Finalization uses the authoritative result, without appending provisional words
+again. Gesture-triggered sending sends the spoken result only. Cancel, navigation,
+Settings, sign-out, backgrounding and audio interruption stop capture or invalidate
+stale results. User edits are never overwritten when restoring an owned preview.
+Errors preserve available speech as an unsent review draft.
 
-Native capture is PCM16 mono at 16 kHz, limited to five minutes and 10 MiB. A
-private temporary WAV is removed after stop, cancel, or failure. Removal is
-best-effort if the filesystem itself fails. Audio and recognition text are not
-logged or persisted by the dictation implementation. The normal draft behavior
-still applies after text is inserted. The Linux preview supports real microphone
-capture using `parec` and a PulseAudio-compatible server. Its audio stays in memory
-rather than a temporary file. The current composer exposes voice through the
-bottom-overscroll gesture, with **Stop and send** and **Cancel dictation** controls
-while recording. See `VOICE_GESTURES.md` for that send-on-release workflow.
+Native capture supplies bounded mono PCM16 at 16 kHz, with a five-minute local
+safety ceiling. The cloud pilot has stricter duration and start limits documented
+in `LIVE_VOICE.md`. iOS incrementally reads a private temporary WAV, removed after
+stop, cancellation or failure. Deletion is best-effort on filesystem failure.
+Linux preview streams `parec` output through a PulseAudio-compatible server.
+Audio, waveform history, provider credentials and raw provider responses are not
+logged by the dictation implementation.
+
+## TLS certificate trust
+
+The shared voice transport uses an explicit Rustls connector with the bundled
+Mozilla/WebPKI root set. Certificate chains, validity and hostnames are still
+verified. It does not disable TLS verification or accept arbitrary certificates.
+The explicit connector also avoids changing backend behavior through Cargo
+feature unification.
+
+This corrects the November 8, 2026 iPhone error **Unable to reach the voice
+transcription service**: the previous `rustls-native-certs` dependency selected
+Unix/OpenSSL certificate-file discovery on iOS, which has no such system CA
+bundle. The cloud relay itself was reachable.
+
+A credential-free production probe reproduced the old failure with an empty
+system trust store (`SSL_CERT_FILE=/dev/null`, `SSL_CERT_DIR` pointing to an empty
+directory). Under those same conditions the corrected connector completed TLS
+and reached the relay's expected HTTP 401 for an intentionally invalid bearer.
+The probe used no microphone, valid credential, audio or billable transcription.
+This validates public-certificate transport, not a physical iPhone recording.
 
 ## Automated validation
 
-- `justrust test --workspace voice` covers authenticated multipart upload with a
-  local HTTP server, invalid recordings, draft append behavior, stale/canceled
-  and wrong-tab results, Linux WAV encoding and subprocess cleanup, and capture
-  rejection on unsupported desktop platforms. Tests never open a microphone.
+- `justrust test --workspace voice -- --test-threads=1` exercises mobile voice,
+  draft ownership, capture limits, streaming finalization and cancellation.
+  Automated tests do not open the physical microphone.
+- In the shared jcode repository, focused `jcode-voice` tests verify the bundled
+  root set, explicit Rustls connector, relay authentication and streaming protocol.
 - With the Apple SDK/compiler environment from `scripts/ios-bundle.sh`,
   `justrust check --target aarch64-apple-ios` validates native APIs.
 - `justrust build --target aarch64-apple-ios --release --target-dir target`
-  additionally validates native linking. The binary must link AVFoundation.
-- The app bundle must include `NSMicrophoneUsageDescription`, generated by
-  `scripts/ios-bundle.sh`.
+  also validates native linking. The binary must link AVFoundation.
+- The bundle must include `NSMicrophoneUsageDescription`, generated by
+  `scripts/ios-bundle.sh`. A TestFlight update is needed for native code fixes.
 
 ## Physical iPhone acceptance checklist
 
-1. Install a newly built app bundle and sign in with a voice-enabled account.
-2. Tap the mic. Confirm the iOS permission prompt and the orange system
-   microphone indicator. Denying permission must show an actionable error
-   without modifying the draft.
-3. Grant permission, record a short phrase, and tap stop. Confirm the phrase is
-   inserted into the draft, no message is sent, and the system mic indicator
-   turns off. Type while waiting and confirm both typed and dictated text remain.
-4. Record again, then Cancel dictation. Confirm no text is inserted and the
-   microphone indicator turns off. Repeat while switching/closing the active
-   tab, opening Settings, and signing out.
-5. While recording, background the app or cause an audio interruption. Confirm
-   capture stops and the interrupted recording is not inserted or uploaded.
-6. Start another recording immediately after cancel. A temporary busy error is
-   acceptable while native cleanup finishes, but simultaneous microphone
-   sessions must never occur.
-7. Confirm network/service failures preserve the existing draft and allow retry.
+1. Install the corrected TestFlight build and sign in with a voice-enabled Jcode
+   account. Pull upward to begin recording. Confirm the iOS permission prompt and
+   orange system microphone indicator. Permission denial must preserve the draft.
+2. Record a short phrase and confirm live recognition and measured waveform.
+   Reverse the pull to finish. Confirm spoken text is finalized once, and any
+   typed draft remains intact. Verify send behavior from `VOICE_GESTURES.md`.
+3. Deep-release to lock, then stop. Confirm recording does not stop during a held
+   speaking pause, and that the microphone indicator turns off after finalization.
+4. Start again and Cancel dictation. Repeat while switching/closing tabs, opening
+   Settings and signing out. No canceled speech should be sent.
+5. Background the app or cause an audio interruption while recording. Confirm
+   capture stops and the interrupted recording is not committed as successful.
+6. Start again immediately after cancel. A temporary busy error is acceptable
+   while cleanup finishes, but simultaneous capture sessions must never occur.
+7. Confirm network/service errors preserve the draft and allow retry. Test both
+   Wi-Fi and cellular to exercise the native certificate path on actual hardware.
 
-Native compilation/linking and automated tests do not substitute for this
-hardware acceptance checklist. A connected iPhone and working usbmuxd are needed
-for installation from the Linux development machine.
+Native compilation, rootless TLS probes and automated gesture tests do not
+substitute for this physical-device acceptance checklist.
