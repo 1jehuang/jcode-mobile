@@ -166,9 +166,12 @@ impl PreparedSsh {
                 trace("master revalidated", started);
                 true
             }
-            Err(e) => {
+            Err(_) => {
+                // A suspended socket usually times out rather than reporting
+                // Disconnected. Any failure here means the master is unproven,
+                // and keeping it would make the next tap stall then go cold.
                 trace("master revalidation failed", started);
-                e.kind != ErrorKind::Disconnected && !self.0.ssh.is_closed()
+                false
             }
         }
     }
