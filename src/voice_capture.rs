@@ -1,11 +1,141 @@
 //! Microphone capture. All native objects stay on a dedicated recording worker.
 
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
+#[derive(Default)]
+struct Live {
+    requested: AtomicBool,
+    state: Mutex<LiveState>,
+}
+#[derive(Default)]
+struct LiveState {
+    snapshot: Option<Vec<u8>>,
+    levels: std::collections::VecDeque<f32>,
+}
+impl Live {
+    fn snapshot(&self) -> Option<Vec<u8>> {
+        let result = self.state.try_lock().ok()?.snapshot.take();
+        if result.is_none() {
+            self.requested.store(true, Ordering::Release);
+        }
+        result
+    }
+    fn level(&self, level: f32) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.levels.len() == 24 {
+                state.levels.pop_front();
+            }
+            state.levels.push_back(if level.is_finite() {
+                level.clamp(0.0, 1.0)
+            } else {
+                0.0
+            });
+        }
+    }
+    fn publish(&self, bytes: Option<Vec<u8>>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.snapshot = bytes;
+        }
+    }
+}
+
+fn pcm_level(pcm: &[u8]) -> f32 {
+    let count = pcm.len() / 2;
+    if count == 0 {
+        return 0.0;
+    }
+    (pcm.chunks_exact(2)
+        .map(|s| {
+            let value = i16::from_le_bytes([s[0], s[1]]) as f64 / 32768.0;
+            value * value
+        })
+        .sum::<f64>()
+        / count as f64)
+        .sqrt() as f32
+}
+
+// AVAudioRecorder's in-progress file can have placeholder chunk sizes. Walk chunks,
+// not fixed offsets: native WAV files may include JUNK/FLLR before their data.
+fn current_wav(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
+    if bytes.len() < 44
+        || bytes.len() > 10 * 1024 * 1024
+        || &bytes[..4] != b"RIFF"
+        || &bytes[8..12] != b"WAVE"
+    {
+        return None;
+    }
+    let mut offset = 12usize;
+    let mut alignment = None;
+    while offset.checked_add(8)? <= bytes.len() {
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().ok()?) as usize;
+        if &bytes[offset..offset + 4] == b"fmt " {
+            if size < 16 || offset.checked_add(8 + size)? > bytes.len() {
+                return None;
+            }
+            if u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().ok()?) != 1 {
+                return None;
+            }
+            alignment =
+                Some(u16::from_le_bytes(bytes[offset + 20..offset + 22].try_into().ok()?) as usize);
+        }
+        if &bytes[offset..offset + 4] == b"data" {
+            let alignment = alignment.filter(|a| *a > 0)?;
+            let available = bytes.len() - offset - 8;
+            let size = available / alignment * alignment;
+            if size == 0 {
+                return None;
+            }
+            bytes.truncate(offset + 8 + size);
+            bytes[offset + 4..offset + 8].copy_from_slice(&(size as u32).to_le_bytes());
+            let riff_size = (bytes.len() - 8) as u32;
+            bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+            return Some(bytes);
+        }
+        offset = offset
+            .checked_add(8)?
+            .checked_add(size)?
+            .checked_add(size % 2)?;
+    }
+    None
+}
+
 pub struct Recording {
     #[cfg(any(target_os = "ios", target_os = "linux"))]
     worker: Option<imp::Worker>,
 }
 
 impl Recording {
+    /// Nonblocking demand/poll API. The first call requests a worker-built WAV;
+    /// poll until Some, then request the next snapshot at the desired cadence.
+    pub fn snapshot(&self) -> Option<Vec<u8>> {
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        {
+            self.worker.as_ref()?.live.snapshot()
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
+    /// Latest (at most 24) normalized microphone RMS amplitudes, oldest first.
+    pub fn levels(&self) -> Vec<f32> {
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        {
+            self.worker
+                .as_ref()
+                .and_then(|w| w.live.state.try_lock().ok())
+                .map(|s| s.levels.iter().copied().collect())
+                .unwrap_or_default()
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        {
+            Vec::new()
+        }
+    }
     /// Call off the UI thread: permission approval can take up to two minutes.
     pub fn start() -> Result<Self, String> {
         #[cfg(any(target_os = "ios", target_os = "linux"))]
@@ -84,6 +214,7 @@ mod imp {
         }
     }
     pub(super) struct Worker {
+        pub(super) live: Arc<super::Live>,
         command: mpsc::Sender<bool>,
         join: thread::JoinHandle<Result<Vec<u8>, String>>,
     }
@@ -108,6 +239,8 @@ mod imp {
             })?;
         let reservation = Reservation;
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let live = Arc::new(super::Live::default());
+        let worker_live = live.clone();
         let (command, commands) = mpsc::channel();
         let notifications_command = command.clone();
         let join = thread::Builder::new()
@@ -136,10 +269,29 @@ mod imp {
                         return Ok(Vec::new());
                     }
                     // Native recordForDuration also enforces this limit independently.
-                    let keep = match commands.recv_timeout(Duration::from_secs(300)) {
-                        Ok(keep) => keep,
-                        Err(mpsc::RecvTimeoutError::Timeout) => true,
-                        Err(_) => false,
+                    let started = std::time::Instant::now();
+                    let keep = loop {
+                        match commands.recv_timeout(Duration::from_millis(50)) {
+                            Ok(keep) => break keep,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        }
+                        if started.elapsed() >= Duration::from_secs(300) { break true; }
+                        if let Some(recorder) = capture.recorder.as_ref() {
+                            unsafe {
+                                let _: () = msg_send![&**recorder, updateMeters];
+                                let db: f32 = msg_send![&**recorder, averagePowerForChannel: 0usize];
+                                worker_live.level(10.0f32.powf(db / 20.0));
+                            }
+                        }
+                        if worker_live.requested.swap(false, Ordering::AcqRel) {
+                            let snapshot = File::open(&capture.path.0).ok().and_then(|file| {
+                                let mut bytes = Vec::new();
+                                file.take(MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
+                                super::current_wav(bytes)
+                            });
+                            worker_live.publish(snapshot);
+                        }
                     };
                     capture.stop();
                     if interrupted.load(Ordering::Acquire) {
@@ -168,7 +320,11 @@ mod imp {
             })
             .map_err(|e| format!("Cannot start recording worker: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Worker { command, join }),
+            Ok(Ok(())) => Ok(Worker {
+                live,
+                command,
+                join,
+            }),
             Ok(Err(error)) => {
                 let _ = join.join();
                 Err(error)
@@ -343,6 +499,7 @@ mod imp {
                 if interrupted.load(Ordering::Acquire) {
                     return Err("Recording interrupted during setup".into());
                 }
+                let _: () = msg_send![&**recorder, setMeteringEnabled: Bool::YES];
                 let ok: Bool = msg_send![&**recorder, recordForDuration: 300.0f64];
                 if !ok.as_bool() {
                     return Err("iOS could not start microphone recording".into());
@@ -387,7 +544,7 @@ mod imp {
         io::Read,
         os::fd::AsRawFd,
         process::{Child, Command, Stdio},
-        sync::mpsc,
+        sync::{Arc, atomic::Ordering, mpsc},
         thread,
         time::{Duration, Instant},
     };
@@ -396,6 +553,7 @@ mod imp {
     const MAX_PCM: usize = 10 * 1024 * 1024 - 44;
 
     pub(super) struct Worker {
+        pub(super) live: Arc<super::Live>,
         command: mpsc::Sender<bool>,
         join: thread::JoinHandle<Result<Vec<u8>, String>>,
     }
@@ -438,6 +596,8 @@ mod imp {
         duration: Duration,
         max_pcm: usize,
     ) -> Result<Worker, String> {
+        let live = Arc::new(super::Live::default());
+        let worker_live = live.clone();
         let (command, commands) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join = thread::Builder::new().name("voice-capture".into()).spawn(move || {
@@ -458,6 +618,10 @@ mod imp {
                     Ok(false) | Err(mpsc::TryRecvError::Disconnected) => return Ok(Vec::new()),
                     Ok(true) => break,
                     Err(mpsc::TryRecvError::Empty) => {}
+                }
+                if worker_live.requested.swap(false, Ordering::AcqRel) {
+                    let complete = pcm.len() / 2 * 2;
+                    worker_live.publish(wav(pcm[..complete].to_vec()).ok().and_then(super::current_wav));
                 }
                 if started.elapsed() >= duration { break; }
                 if pcm.len() >= max_pcm { return Err("Recorded audio exceeds the 10 MiB limit".into()); }
@@ -484,7 +648,11 @@ mod imp {
                         let status = child.0.try_wait().map_err(|e| format!("Cannot inspect parec: {e}"))?;
                         return Err(format!("Microphone capture ended unexpectedly ({status:?}). Check the PulseAudio/PipeWire service and microphone permissions."));
                     }
-                    Ok(count) => pcm.extend_from_slice(&buffer[..count]),
+                    Ok(count) => {
+                        let previous = pcm.len();
+                        pcm.extend_from_slice(&buffer[..count]);
+                        worker_live.level(super::pcm_level(&pcm[previous / 2 * 2..]));
+                    },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(format!("Cannot read microphone audio: {e}")),
                 }
@@ -492,7 +660,11 @@ mod imp {
             wav(pcm)
         }).map_err(|e| format!("Cannot start recording worker: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Worker { command, join }),
+            Ok(Ok(())) => Ok(Worker {
+                live,
+                command,
+                join,
+            }),
             Ok(Err(error)) => {
                 let _ = join.join();
                 Err(error)
@@ -535,6 +707,61 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn live_snapshot_is_valid_and_capture_remains_cancellable() {
+            let mut process = Command::new("sh");
+            process.args(["-c", "printf '\\000\\100\\000\\300'; exec sleep 30"]);
+            let worker = start_command(process, MAX_DURATION, MAX_PCM).unwrap();
+            assert!(worker.live.snapshot().is_none());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let snapshot = loop {
+                if let Some(bytes) = worker.live.snapshot() {
+                    break bytes;
+                }
+                assert!(Instant::now() < deadline, "snapshot was not published");
+                thread::sleep(Duration::from_millis(10));
+            };
+            assert_eq!(&snapshot[44..], &[0, 64, 0, 192]);
+            assert_eq!(
+                u32::from_le_bytes(snapshot[4..8].try_into().unwrap()) as usize,
+                snapshot.len() - 8
+            );
+            assert_eq!(worker.live.state.lock().unwrap().levels.back(), Some(&0.5));
+            assert!(!worker.live.requested.load(Ordering::Acquire));
+            assert!(worker.finish(false).unwrap().is_empty());
+        }
+
+        #[test]
+        fn levels_are_bounded_and_snapshot_poll_does_not_wait_for_lock() {
+            let live = super::super::Live::default();
+            for _ in 0..100 {
+                live.level(2.0);
+            }
+            live.level(f32::NAN);
+            let state = live.state.lock().unwrap();
+            assert_eq!(state.levels.len(), 24);
+            assert!(state.levels.iter().all(|x| (0.0..=1.0).contains(x)));
+            assert!(live.snapshot().is_none());
+            assert_eq!(super::super::pcm_level(&[0, 0]), 0.0);
+            assert_eq!(super::super::pcm_level(&[0, 128]), 1.0);
+        }
+
+        #[test]
+        fn native_wav_placeholder_sizes_and_extra_chunks_are_repaired() {
+            let original = wav(vec![0, 64, 0, 192]).unwrap();
+            let mut native = original[..36].to_vec();
+            native.extend_from_slice(b"JUNK\x02\0\0\0\0\0");
+            native.extend_from_slice(&original[36..]);
+            native[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+            native[50..54].copy_from_slice(&u32::MAX.to_le_bytes());
+            native.push(123); // incomplete PCM sample must never reach the network
+            let repaired = super::super::current_wav(native).unwrap();
+            assert_eq!(repaired.len(), 58);
+            assert_eq!(&repaired[50..54], &4u32.to_le_bytes());
+            assert_eq!(&repaired[4..8], &50u32.to_le_bytes());
+            assert!(super::super::current_wav(vec![0; 44]).is_none());
+            assert!(super::super::current_wav(original[..44].to_vec()).is_none());
+        }
         #[test]
         fn pcm_has_correct_wav_header() {
             let bytes = wav(vec![1, 2, 3, 4]).unwrap();
