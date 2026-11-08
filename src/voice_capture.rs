@@ -1051,6 +1051,31 @@ mod imp {
         }
 
         #[test]
+        fn linux_stream_cancel_does_not_flush_captured_partial_audio() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let mut process = Command::new("sh");
+            process.args(["-c", "printf '\\000\\100\\000\\300'; exec sleep 30"]);
+            let worker =
+                start_command_stream(process, MAX_DURATION, MAX_PCM, Some(sender)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            // A valid snapshot proves the PCM was read before cancellation.
+            loop {
+                if worker.live.snapshot().is_some() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "PCM was not captured");
+                thread::sleep(Duration::from_millis(5));
+            }
+            let started = Instant::now();
+            assert!(worker.finish(false).unwrap().is_empty());
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+
+        #[test]
         fn wav_tail_reads_only_new_pcm_and_handles_native_placeholder_headers() {
             use std::io::Write;
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
