@@ -155,3 +155,96 @@ use an owner's test account and paired iPhone to check:
 5. Inspect grouped notifications and badge reset behavior after foregrounding.
 
 Do not send test pushes to other users or use production secrets in test logs.
+
+## Many agents (v2)
+
+Users run many agents at once. Two rules follow:
+
+1. One aggregate Live Activity for the whole account, not one per session.
+   It shows counts plus the most urgent few sessions, and it is updated by
+   APNs (`apns-push-type: liveactivity`) so it stays current with the app
+   suspended or killed.
+2. Alerts degrade instead of dropping. Bursts become quiet, grouped
+   notifications rather than 429s.
+
+### POST /v1/agents/status (jcode server, host or user key)
+
+Full snapshot of one host's non-idle sessions. Idempotent. The server sends
+it on any state change (debounced ~2 s) and as a heartbeat every 5 minutes
+while any session is non-idle, then one final empty snapshot.
+
+```json
+{
+  "host": "<stable host id, 1..64 [A-Za-z0-9_.:-]>",
+  "sessions": [
+    {"session_id": "session_...", "title": "Fix login", "state": "running" | "waiting" | "error", "detail": "bash", "since": 1762590000}
+  ]
+}
+```
+
+Max 200 sessions per snapshot, titles <= 80 chars, detail <= 60 chars.
+Swarm workers owned by another session are included (they are agents too).
+`state`: `running` (thinking, responding or tools), `waiting` (needs input),
+`error` (last turn failed and nobody has replied yet). Idle sessions are omitted.
+A host whose snapshot is older than 15 minutes counts as empty.
+Reply `200 {"ok":true,"pushed":N}`.
+
+### GET /v1/agents/status (app)
+
+`200 {"state": <ContentState>}`, the same merged state that is pushed.
+
+### POST /v1/push/live-tokens (app)
+
+```json
+{"token":"<hex>","kind":"update"|"start","environment":"production"|"sandbox","bundle_id":"sh.jcode.mobile.rust"}
+```
+`update` is the per-activity push token (`Activity.pushTokenUpdates`). The
+Worker keeps the newest `update` token per device and drops older ones.
+`start` is the iOS 17.2+ push-to-start token (`pushToStartTokenUpdates`).
+`DELETE` with `{"token":"..."}` removes one. Sign-out deletes both kinds.
+
+### Merged ContentState (JSON keys exactly as Swift Codable)
+
+```json
+{
+  "running": 7, "waiting": 1, "errored": 0,
+  "items": [{"id": "session_...", "title": "Fix login", "state": "waiting", "detail": ""}],
+  "updatedAt": 1762590123
+}
+```
+`items` has at most 3 entries, ordered waiting, then error, then running
+(newest `since` first within a state). Times are Unix seconds (Int), never
+`Date`, because ActivityKit's push decoder uses the default JSON decoder.
+Attributes type: `JcodeAgentsAttributes` with `{"title":"jcode"}`.
+
+### Live Activity pushes (Worker)
+
+- Merge every fresh host snapshot for the account. If the ContentState
+  (ignoring `updatedAt`) equals the last one pushed, push nothing.
+- Topic `<bundle_id>.push-type.liveactivity`, `apns-push-type: liveactivity`.
+- `apns-priority: 10` when `waiting` or `errored` rose, otherwise `5`.
+- Payload `aps: {timestamp, event: "update", content-state, stale-date: now+1200}`.
+  A rise in `waiting` also includes `alert: {title, body}` so the island expands.
+- If nothing is active any more: `event: "end"` with `dismissal-date: now+900`.
+- If agents are active, no update token is registered and a `start` token
+  exists, send `event: "start"` with `attributes-type: "JcodeAgentsAttributes"`,
+  `attributes: {"title":"jcode"}`, the content-state and an alert.
+- On 410/BadDeviceToken, delete the token.
+
+### Alert bursts (Worker `/v1/push/send`)
+
+- The first 4 alerts per account per rolling 60 s are normal.
+- Further alerts in the window are sent with `interruption-level: passive`,
+  no sound and relevance 0.2, so they sit in the session's thread quietly.
+  `needs_input` and `turn_error` are never demoted.
+- The hard cap is 240 per minute. Beyond that the reply is 429.
+
+### App
+
+- The app runs one activity. When it starts the activity, it requests
+  `pushType: .token` and reports each token. It seeds the activity from
+  `GET /v1/agents/status` and overlays the live state of its own open tabs.
+  It starts the activity when anything is active and ends it when the merged
+  state is empty.
+- The tap URL is `jcode://session/<id>` for the top item, and the item rows
+  link to their own sessions on the Lock Screen.
