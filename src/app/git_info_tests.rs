@@ -155,7 +155,7 @@ fn raw_touch_pull_opens_git_without_reconnecting_or_recording(cx: &mut TestAppCo
                 gpui::PlatformInput::Touch(gpui::TouchEvent {
                     id: gpui::TouchId(1),
                     phase,
-                    position: start + point(px(0.), px(dy)),
+                    position: start - point(px(dy), px(0.)),
                     predicted_position: None,
                     force: None,
                 }),
@@ -200,19 +200,19 @@ fn git_pull_threshold_cancel_and_session_invalidation(cx: &mut TestAppContext) {
             .update(cx, |input, cx| input.set_text("Keep my draft", cx));
         assert!(!app.git_down(point(px(10.), start.y)));
         assert!(app.git_down(start));
-        app.git_move(start + point(px(0.), px(25.)), cx);
+        app.git_move(start - point(px(25.), px(0.)), cx);
         app.git_up(false, cx);
         assert!(!app.git_info.open, "short pulls must not open");
         assert!(app.git_down(start));
-        app.git_move(start + point(px(0.), px(70.)), cx);
+        app.git_move(start - point(px(70.), px(0.)), cx);
         app.git_up(true, cx);
         assert!(!app.git_info.open, "cancelled pulls must not open");
         assert!(app.git_down(start));
-        app.git_move(start + point(px(80.), px(50.)), cx);
+        app.git_move(start + point(px(-20.), px(80.)), cx);
         app.git_up(false, cx);
-        assert!(!app.git_info.open, "horizontal swipes must not open");
+        assert!(!app.git_info.open, "vertical drags must not open");
         assert!(app.git_down(start));
-        app.git_move(start + point(px(0.), px(70.)), cx);
+        app.git_move(start - point(px(70.), px(0.)), cx);
         app.git_up(false, cx);
         assert!(app.git_info.open);
         assert!(

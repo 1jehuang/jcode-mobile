@@ -1,4 +1,4 @@
-//! Dedicated top-right pull target. Git panel gesture handling. Git reads never enter the conversation.
+//! Dedicated right-edge pull tab. Git panel gesture handling. Git reads never enter the conversation.
 use super::*;
 use gpui::{Bounds, Pixels, Point};
 use jcode_mobile_core::git_info::{self, GitSnapshot};
@@ -364,7 +364,14 @@ impl MobileApp {
                 t.warning
             };
             let mut row = git_row()
-                .child(label(code.to_owned(), color, 12.).flex_none())
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(18.))
+                        .flex()
+                        .justify_center()
+                        .child(label(code.trim().to_owned(), color, 12.)),
+                )
                 .child(
                     label(path.to_owned(), t.text_secondary, 12.)
                         .flex_1()
@@ -488,10 +495,13 @@ impl MobileApp {
         let dx = f32::from(point.x - origin.x).abs();
         let dy = f32::from(point.y - origin.y);
         self.git_info.moved |= dx > 6. || dy.abs() > 6.;
-        self.git_info.pull = if dx > dy.abs().max(12.) {
+        // Pulled leftward out of the right edge. Mostly vertical drags are
+        // scrolling, not a pull.
+        let left = -f32::from(point.x - origin.x);
+        self.git_info.pull = if dy.abs() > left.max(12.) {
             0.
         } else {
-            dy.clamp(0., 96.)
+            left.clamp(0., 96.)
         };
         cx.notify();
         true
@@ -588,61 +598,69 @@ impl MobileApp {
         }
         let bounds = self.git_info.bounds.clone();
         let pull = self.git_info.pull;
+        let armed = pull >= TRIGGER;
+        // Edge tab: a slim grip tucked against the right edge. Pulling it left
+        // slides it out; release past TRIGGER (or tap) opens the Git panel.
+        // The touch target stays 28x72 even though only the grip is visible.
         div()
-            .flex_none()
-            .w_full()
+            .id("git-pull-handle")
+            .debug_selector(|| "git-pull-handle".into())
+            .a11y_button("Show Git information. Pull left from the edge or activate.")
+            .absolute()
+            .right_0()
+            .top(px(132.))
+            .h(px(72.))
+            .w(px(28. + pull))
             .flex()
             .justify_end()
-            .px(px(10.))
+            .items_center()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| this.open_git(cx)))
             .child(
                 div()
-                    .id("git-pull-handle")
-                    .debug_selector(|| "git-pull-handle".into())
-                    .a11y_button("Show Git information. Pull down or activate.")
-                    .relative()
-                    .w(px(88.))
-                    .h(px(44. + pull * 0.4))
+                    .h(px(56.))
+                    .w(px(10. + pull))
                     .flex()
-                    .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap(px(3.))
+                    .gap(px(4.))
+                    .overflow_hidden()
+                    .rounded_l(px(8.))
                     .border_1()
-                    .border_color(t.border)
-                    .rounded(px(6.))
-                    .bg(if pull >= TRIGGER {
-                        t.surface
-                    } else {
-                        t.background
-                    })
-                    .cursor_pointer()
+                    .border_r_0()
+                    .border_color(if armed { t.border_focus } else { t.border })
+                    .bg(if armed { t.surface } else { t.background })
                     .text_color(t.text_muted)
                     .text_size(crate::system::fs(11.))
-                    .child(if pull >= TRIGGER {
-                        "Release · Git"
-                    } else {
-                        "◇ Git ↓"
-                    })
-                    .child(div().w(px(28.)).h(px(3.)).rounded_full().bg(t.border_focus))
-                    .on_click(cx.listener(|this, _, _, cx| this.open_git(cx)))
-                    .child(
-                        gpui::canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
-                            .absolute()
-                            .inset_0(),
-                    ),
+                    .when(pull > 24., |d| d.child(if armed { "Release" } else { "Git" }))
+                    .child(div().flex_none().w(px(3.)).h(px(24.)).rounded_full().bg(t.border_focus)),
+            )
+            .child(
+                gpui::canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
             )
             .into_any_element()
     }
 
     pub(super) fn render_git_panel(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.git_info;
+        // Slide-out widget over the transcript, anchored to the pull tab's edge.
         div()
+            .debug_selector(|| "git-overlay".into())
             .occlude()
             .absolute()
-            .inset_0()
+            .top(px(8.))
+            .right(px(8.))
+            .w(gpui::relative(0.86))
+            .max_h(gpui::relative(0.72))
             .flex()
             .flex_col()
-            .bg(with_alpha(t.background, 0.98))
+            .rounded(px(14.))
+            .border_1()
+            .border_color(t.border_focus)
+            .shadow_lg()
+            .bg(t.background)
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -684,11 +702,6 @@ impl MobileApp {
                                 t.text_muted,
                                 12.,
                             ))
-                            .child(label(
-                                "Read-only snapshot. No fetch, commits, or file changes.",
-                                t.text_muted,
-                                11.,
-                            ))
                             .child(
                                 outline_button(
                                     "refresh-git",
@@ -713,9 +726,6 @@ impl MobileApp {
                             .when_some(state.snapshot.as_ref(), |d, snapshot| {
                                 d.child(self.render_git_commits(snapshot, t, cx))
                                     .child(self.render_git_overview(snapshot, t, cx))
-                                    .child(
-                                        label(snapshot.root.clone(), t.text_muted, 11.).truncate(),
-                                    )
                             }),
                     ),
             )
