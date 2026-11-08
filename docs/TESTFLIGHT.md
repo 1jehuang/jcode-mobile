@@ -50,6 +50,18 @@ The reported bouncing thinking/transcript rendering was observed by the user on 
 - Signed IPA SHA-256: `e77b020c772756ea369cb9bceb1906095f403770a6857a9c77e95d6cc0702c6e`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794124180/`.
 - Uploaded at about 23:52 Pacific, upload state `COMPLETE`.
 
+## Build 1794132459, uploaded November 8, 2026 (Pacific)
+
+- Source: `19e636742c41a49fae6a82d14c93dd2ce713f52b`. Mobile dictation uses only the signed-in Jcode account and authenticated cloud relay. No Nari provider-key setting, local key loader or direct-provider fallback is used.
+- Signed iOS build, distribution signing, ZIP CRC and all four bundle build numbers passed. Unrelated edits in `src/app/git_info.rs` and `src/app/modal_ownership_coverage.rs` were preserved, so this was not a clean-tree build. Archive-time working patch and provenance are saved with the release.
+- IPA SHA-256: `ded061bf1f397cca08093da7acd4344e3f26e802d70d4696ace214804f538fc1`. Unstripped binary SHA-256: `8b2fb2e60a495989fbdd1c883a11d80dccad46100a0a17b7712cd6507b62213e`. Exact artifacts archived under `~/.appstoreconnect/builds/1794132459/`.
+- Latest hosted workspace validation: **455 passed**, receipt `20261108-020908223-1625292`, excluding the known unrelated `selection_is_read_only_copyable_and_done_releases_focus` fixture. The unfiltered suite is not claimed green.
+- Production cloud version `e4aee21f-997a-4de1-af1e-593d4baffecf`, source `beaf1a5`, is active. Canonical existing services and bindings were preserved through the unchanged deployment guard. All **483 backend tests passed**, including the upgrade-timeout lifetime regressions.
+- Real production acceptance verified invalid bearer HTTP 401, paid-account WebSocket configuration, live partials, final transcript and final commit acknowledgment beyond ten seconds. Native desktop simulator without `NARI_API_KEY` passed live composer text, continuous reversal finish, deep-release locking and cancellation preserving the draft. The updated normal desktop simulator was reopened.
+- Dedicated provider credential is stored only as a cloud secret. Existing desktop key was untouched, and temporary provisioning files were removed. No payment or balance top-up was performed. Pilot limits are 60 seconds audio, 120 seconds connection lifetime, three starts per minute and thirty per day per paid account.
+- Apple build ID: `df914296-0490-45c2-94a3-818210a94984`. Upload `COMPLETE`, processing `VALID`, internal `IN_BETA_TESTING`, automatic notifications enabled, verified at about **02:22 Pacific**. External `READY_FOR_BETA_SUBMISSION` is not public-beta approval.
+- Published en-US notes explain account-only cloud dictation and gestures. Physical iPhone microphone/runtime/frame-pacing validation remains outstanding.
+
 ## Build 1794130164, uploaded November 8, 2026 (Pacific)
 
 - Includes shared Nari realtime dictation, actual microphone waveform, continuous pull/reverse completion, release-only deep-pull locking, and microphone/connection status above the composer input.
