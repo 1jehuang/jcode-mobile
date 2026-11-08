@@ -207,6 +207,8 @@ pub struct SessionState {
     /// System notifications for the shell to post (drain after `apply`).
     pub alerts: Vec<Alert>,
     next_id: u64,
+    /// Transcript entries that came from the last History snapshot.
+    history_len: usize,
 }
 
 impl Default for SessionState {
@@ -239,6 +241,7 @@ impl Default for SessionState {
             pending_interrupts: vec![],
             alerts: vec![],
             next_id: 1,
+            history_len: 0,
         }
     }
 }
@@ -386,7 +389,7 @@ impl SessionState {
                 if let Some(d) = session.working_dir.clone().filter(|d| !d.trim().is_empty()) {
                     self.working_dir = Some(d);
                 }
-                self.is_processing = session.status == "running";
+                self.is_processing = crate::connection::session_is_busy(&session.status);
                 self.session_id = Some(session.session_id);
             }
             Sessions { sessions } => {
@@ -438,7 +441,10 @@ impl SessionState {
                     v => serde_json::to_string_pretty(&v).unwrap_or_default(),
                 };
                 match self.find_tool(&call_id) {
-                    Some(t) => t.input = input,
+                    Some(t) => {
+                        t.input = input;
+                        fill_name(t, name);
+                    }
                     None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                         let mut t = self::ToolCall::new(call_id, name, ToolStatus::Running);
                         t.input = input;
@@ -447,7 +453,10 @@ impl SessionState {
                 }
             }
             ToolExec { call_id, name, .. } => match self.find_tool(&call_id) {
-                Some(t) => t.status = ToolStatus::Running,
+                Some(t) => {
+                    t.status = ToolStatus::Running;
+                    fill_name(t, name);
+                }
                 None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                     e.tool_calls.push(self::ToolCall::new(call_id, name, ToolStatus::Running))
                 }),
@@ -458,6 +467,7 @@ impl SessionState {
                     Some(t) => {
                         t.output = output;
                         t.status = status;
+                        fill_name(t, name);
                     }
                     None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                         let mut t = self::ToolCall::new(call_id, name, status);
@@ -474,7 +484,7 @@ impl SessionState {
                 self.server_phase = if phase.is_empty() { None } else { Some(phase) }
             }
             SessionStatus { status, .. } => match status.as_str() {
-                "running" => self.is_processing = true,
+                "running" | "processing" => self.is_processing = true,
                 "idle" | "cancelled" => self.turn_over(),
                 _ => {}
             },
@@ -573,18 +583,37 @@ impl SessionState {
         self.session_id = Some(session_id);
         self.pending_interrupts.clear();
 
-        // Keep trailing optimistic user messages the server has not seen yet.
-        let tail_len = self
-            .transcript
+        // Keep trailing optimistic user messages the server has not seen yet,
+        // and, while a turn runs, the output streamed live since the last
+        // snapshot. Stored history only holds completed messages, so a turn
+        // joined mid-stream would otherwise lose its in-flight reply.
+        let live_from = self.history_len.min(self.transcript.len());
+        let processing = self.is_processing;
+        let tail_len = self.transcript[live_from..]
             .iter()
             .rev()
-            .take_while(|e| e.role == Role::User && !e.is_queued)
+            .take_while(|e| match e.role {
+                Role::User => !e.is_queued,
+                Role::Assistant => processing,
+                Role::System => false,
+            })
             .count();
         let tail: Vec<_> = self.transcript.split_off(self.transcript.len() - tail_len);
         let history_user: HashSet<&str> =
             messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
-        let tail: Vec<_> =
-            tail.into_iter().filter(|e| !history_user.contains(e.text.as_str())).collect();
+        let history_assistant: HashSet<&str> =
+            messages.iter().filter(|m| m.role == "assistant").map(|m| m.content.as_str()).collect();
+        let tail: Vec<_> = tail
+            .into_iter()
+            .filter(|e| match e.role {
+                Role::User => !history_user.contains(e.text.as_str()),
+                // A settled live message the snapshot already stored.
+                _ => e.is_streaming
+                    || !e.tool_calls.is_empty()
+                    || e.text.is_empty()
+                    || !history_assistant.iter().any(|h| h.ends_with(e.text.as_str())),
+            })
+            .collect();
 
         let mut transcript = Vec::with_capacity(messages.len() + tail.len());
         for m in messages {
@@ -606,6 +635,7 @@ impl SessionState {
             entry.reasoning = reasoning;
             transcript.push(entry);
         }
+        self.history_len = transcript.len();
         transcript.extend(tail);
         self.transcript = transcript;
     }
@@ -679,6 +709,13 @@ impl SessionState {
                 self.transcript.pop();
             }
         }
+    }
+}
+
+/// A client that joined mid tool-input never saw `ToolStart` and its name.
+fn fill_name(t: &mut ToolCall, name: String) {
+    if t.name.is_empty() {
+        t.name = name;
     }
 }
 
@@ -1008,6 +1045,116 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].status, ToolStatus::Succeeded);
         assert_eq!(tools[0].output, "hi");
+    }
+
+    fn hm(role: &str, content: &str) -> HistoryMessage {
+        HistoryMessage { response_stats: None, role: role.into(), content: content.into() }
+    }
+
+    fn attach_running(s: &mut SessionState) {
+        let session: jcode_sdk::SessionInfo =
+            serde_json::from_value(serde_json::json!({"session_id":"s","status":"processing"})).unwrap();
+        ev(s, E::Attached { session });
+    }
+
+    /// Attaching to a running turn: live deltas can arrive before the history
+    /// snapshot. The snapshot must not drop them, nor be dropped itself.
+    #[test]
+    fn history_after_live_deltas_keeps_both() {
+        let mut s = SessionState::default();
+        attach_running(&mut s);
+        assert!(s.is_processing, "an attached 'processing' session is busy");
+        text(&mut s, " and over long spans");
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![hm("user", "earlier"), hm("assistant", "done"), hm("user", "write about rivers")],
+            images: vec![],
+        });
+        let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["earlier", "done", "write about rivers", " and over long spans"]);
+        assert!(s.transcript[3].is_streaming);
+        text(&mut s, " of time");
+        assert_eq!(s.transcript.len(), 4);
+        assert_eq!(s.transcript[3].text, " and over long spans of time");
+        // A later full snapshot during the turn replaces history but keeps the
+        // live tail exactly once.
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![hm("user", "earlier"), hm("assistant", "done"), hm("user", "write about rivers")],
+            images: vec![],
+        });
+        assert_eq!(s.transcript.len(), 4);
+        // After the turn the authoritative history replaces the truncated tail.
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![
+                hm("user", "earlier"),
+                hm("assistant", "done"),
+                hm("user", "write about rivers"),
+                hm("assistant", "Rivers carve stone and over long spans of time"),
+            ],
+            images: vec![],
+        });
+        let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["earlier", "done", "write about rivers", "Rivers carve stone and over long spans of time"]);
+    }
+
+    /// Live tool cards streamed before the snapshot survive it.
+    #[test]
+    fn history_keeps_live_tools_of_running_turn() {
+        let mut s = SessionState::default();
+        attach_running(&mut s);
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "t1".into(), name: "bash".into() });
+        ev(&mut s, E::History { session_id: sid(), messages: vec![hm("user", "go")], images: vec![] });
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript[1].tool_calls.len(), 1);
+        ev(&mut s, E::ToolDone { session_id: sid(), call_id: "t1".into(), name: "bash".into(), output: "x".into(), error: None });
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript[1].tool_calls[0].status, ToolStatus::Succeeded);
+    }
+
+    /// A settled live message the snapshot also contains is not duplicated.
+    #[test]
+    fn history_drops_live_text_it_already_stores() {
+        let mut s = SessionState::default();
+        attach_running(&mut s);
+        text(&mut s, "I'll run it now.");
+        ev(&mut s, E::TextDone { session_id: sid(), message_id: None });
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![hm("user", "go"), hm("assistant", "I'll run it now.")],
+            images: vec![],
+        });
+        let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["go", "I'll run it now."]);
+    }
+
+    /// Idle snapshot: stale assistant entries are replaced, never kept.
+    #[test]
+    fn idle_history_replaces_assistant_entries() {
+        let mut s = SessionState::default();
+        text(&mut s, "stale");
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        ev(&mut s, E::History { session_id: sid(), messages: vec![hm("assistant", "fresh")], images: vec![] });
+        let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["fresh"]);
+    }
+
+    #[test]
+    fn tool_joined_mid_input_gets_its_name() {
+        let mut s = SessionState::default();
+        attach_running(&mut s);
+        ev(&mut s, E::ToolInputDelta { session_id: sid(), call_id: "t1".into(), delta: "{}".into() });
+        ev(&mut s, E::ToolExec { session_id: sid(), call_id: "t1".into(), name: "bash".into() });
+        assert_eq!(s.transcript[0].tool_calls[0].name, "bash");
+    }
+
+    #[test]
+    fn processing_status_event_marks_busy() {
+        let mut s = SessionState::default();
+        ev(&mut s, E::SessionStatus { session_id: sid(), status: "processing".into(), pending_soft_interrupts: None });
+        assert!(s.is_processing);
     }
 
     #[test]

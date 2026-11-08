@@ -282,9 +282,10 @@ fn run(
                     server: client.server.clone(),
                     capabilities: client.capabilities.clone(),
                 }));
+                let busy = session_is_busy(&session.status);
                 emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
                 let stream = client.events(Some(&sid));
-                if session_loop(&client, &sid, &stream, &inbox, &emit) {
+                if session_loop(&client, &sid, busy, &stream, &inbox, &emit) {
                     break;
                 }
                 "Connection lost".into()
@@ -321,6 +322,7 @@ fn run(
 fn session_loop(
     client: &JcodeClient,
     sid: &str,
+    attached_busy: bool,
     stream: &jcode_sdk::EventStream,
     inbox: &Mutex<Inbox>,
     emit: &dyn Fn(ConnectionOutput),
@@ -344,15 +346,29 @@ fn session_loop(
         });
     }
     drop(snapshots);
-    // History replaces the reducer's transcript. Once commands or live events
-    // have advanced it, an initial snapshot may be stale and must not rewind
-    // that state. Explicit GetHistory replies still use the normal results path.
+    // History replaces the reducer's transcript. Once local commands have
+    // advanced it, an initial snapshot may be stale and must not rewind that
+    // state. Explicit GetHistory replies still use the normal results path.
+    // Live stream events do not supersede it: when attaching to a turn that is
+    // already running they are the tail of a conversation the snapshot holds,
+    // and the reducer merges them after the history.
     let mut history_superseded = false;
+    let mut initial_history_seen = false;
+    // Joined a turn already in flight. If the first live content is a delta,
+    // its start was never seen and the live message is truncated, so resync
+    // from history when the turn ends. Tool events carry their own identity.
+    let mut joined_busy = attached_busy;
+    let mut first_content_seen = false;
+    let mut resync_at_turn_end = false;
     loop {
         while let Ok(event) = initial.try_recv() {
-            if !history_superseded || !matches!(event, ApiEvent::History { .. }) {
-                emit(ConnectionOutput::Event(event));
+            if matches!(event, ApiEvent::History { .. }) {
+                initial_history_seen = true;
+                if history_superseded {
+                    continue;
+                }
             }
+            emit(ConnectionOutput::Event(event));
         }
         let queued = {
             let mut i = inbox.lock().unwrap();
@@ -385,32 +401,61 @@ fn session_loop(
         }
         match stream.next_timeout(Duration::from_millis(50)) {
             Some(event) => {
-                // Attachment hydration also streams runtime identity, status,
-                // titles and other metadata. Those do not replace transcript
-                // content and must not cause the pending history to be lost.
-                history_superseded |= matches!(
-                    &event,
-                    ApiEvent::History { .. }
-                        | ApiEvent::TextDelta { .. }
-                        | ApiEvent::TextReplace { .. }
-                        | ApiEvent::TextDone { .. }
-                        | ApiEvent::ReasoningDelta { .. }
-                        | ApiEvent::ToolStart { .. }
-                        | ApiEvent::ToolInputDelta { .. }
-                        | ApiEvent::ToolCall { .. }
-                        | ApiEvent::ToolExec { .. }
-                        | ApiEvent::ToolDone { .. }
-                        | ApiEvent::SoftInterruptInjected { .. }
-                        | ApiEvent::SoftInterruptsCancelled { .. }
-                        | ApiEvent::TurnDone { .. }
-                        | ApiEvent::TurnStopped { .. }
-                );
+                // A streamed History is newer than the initial snapshot.
+                history_superseded |= matches!(&event, ApiEvent::History { .. });
+                if is_turn_content(&event) && !std::mem::replace(&mut first_content_seen, true) {
+                    // A turn this client started was seen from its start.
+                    // Otherwise content that beat the initial snapshot may be
+                    // duplicated by it, and a turn joined mid-delta is cut off.
+                    let foreign = !history_superseded;
+                    resync_at_turn_end = foreign
+                        && (!initial_history_seen
+                            || joined_busy
+                                && matches!(
+                                    &event,
+                                    ApiEvent::TextDelta { .. }
+                                        | ApiEvent::ReasoningDelta { .. }
+                                        | ApiEvent::ToolInputDelta { .. }
+                                ));
+                }
+                let turn_ended = matches!(&event, ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. });
+                if turn_ended {
+                    joined_busy = false;
+                }
                 emit(ConnectionOutput::Event(event));
+                if turn_ended && std::mem::take(&mut resync_at_turn_end) {
+                    let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
+                    std::thread::spawn(move || {
+                        if let Some(event) = execute(&client, &sid, Request::GetHistory { id: 0 }) {
+                            let _ = results.send(event);
+                        }
+                    });
+                }
             }
             None if client.is_closed() => return false,
             None => {}
         }
     }
+}
+
+/// Session statuses that mean a turn is in flight. The bridge reports
+/// `processing` on attach replies and `running` on status events.
+pub fn session_is_busy(status: &str) -> bool {
+    matches!(status, "running" | "processing")
+}
+
+fn is_turn_content(event: &ApiEvent) -> bool {
+    matches!(
+        event,
+        ApiEvent::TextDelta { .. }
+            | ApiEvent::TextReplace { .. }
+            | ApiEvent::ReasoningDelta { .. }
+            | ApiEvent::ToolStart { .. }
+            | ApiEvent::ToolInputDelta { .. }
+            | ApiEvent::ToolCall { .. }
+            | ApiEvent::ToolExec { .. }
+            | ApiEvent::ToolDone { .. }
+    )
 }
 
 /// Run one request. Returns an event for the reducer: the reply worth
