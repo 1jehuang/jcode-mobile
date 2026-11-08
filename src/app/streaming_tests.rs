@@ -204,3 +204,167 @@ fn upward_input_hands_off_positive_stream_shift_and_new_chunks_do_not_follow(cx:
         assert_eq!(app.transcript_scroll.offset(), released);
     });
 }
+
+#[gpui::test]
+fn phone_widths_and_keyboard_resize_keep_windowed_stream_tail_materialized(cx: &mut TestAppContext) {
+    cx.update(init);
+    let now = Instant::now();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = fixture(window, cx, now);
+        event(&mut app, ApiEvent::History {
+            session_id: "stream-fixture".into(), images: vec![],
+            messages: (0..80).map(|n| serde_json::from_value(serde_json::json!({
+                "role": "assistant",
+                "content": format!("History entry {n}.\n\n{}", "Windowed history paragraph.\n\n".repeat(4)),
+            })).unwrap()).collect(),
+        });
+        app
+    });
+    for (step, width) in [320., 390., 430.].into_iter().enumerate() {
+        let start = now + Duration::from_secs(step as u64 * 2);
+        view.update(cx, |app, cx| {
+            app.device = Some((width, 844.));
+            app.stream_test_now = Some(start);
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(width), px(844.)));
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        view.update(cx, |app, cx| {
+            app.stream_test_now = Some(start + Duration::from_millis(16));
+            event(app, text("Phone-sized streamed paragraph with wrapping words.\n\n"));
+            cx.notify();
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        view.read_with(cx, |app, _| {
+            assert!(app.stream_motion.shift() > px(0.), "fixture must resize during active motion at {width}");
+            assert!(app.rendered_transcript_rows < 25, "history must remain windowed");
+            assert_eq!(-app.transcript_scroll.offset().y, app.transcript_scroll.max_offset().y);
+            assert_eq!(app.transcript_scroll.max_offset().x, px(0.));
+        });
+        assert!(cx.debug_bounds("entry-81").is_some(), "new live tail may not be culled at {width}");
+        // A keyboard changes the real viewport while the reveal/motion clocks
+        // remain deterministic. Native layout must publish the NEW maximum.
+        view.update(cx, |app, cx| {
+            app.device = Some((width, 544.));
+            app.stream_test_now = Some(start + Duration::from_millis(32));
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(width), px(544.)));
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        let activity = cx.debug_bounds("transcript-activity").unwrap();
+        let composer = cx.debug_bounds("chat-composer").unwrap();
+        view.read_with(cx, |app, _| {
+            assert_eq!(-app.transcript_scroll.offset().y, app.transcript_scroll.max_offset().y);
+            assert!(activity.bottom() <= app.transcript_scroll.bounds().bottom());
+            assert!(activity.bottom() <= composer.top(), "keyboard must not hide the activity row");
+            assert_eq!(app.transcript_scroll.max_offset().x, px(0.));
+        });
+        view.update(cx, |app, cx| {
+            app.stream_test_now = Some(start + Duration::from_millis(500));
+            cx.notify();
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        let tail = cx.debug_bounds("entry-81").unwrap();
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.stream_motion.shift(), px(0.));
+            assert!(tail.bottom() <= app.transcript_scroll.bounds().bottom());
+            assert!(tail.right() <= px(width), "stream tail must remain inside phone width");
+        });
+    }
+}
+
+#[gpui::test]
+fn actual_tab_switch_and_reset_do_not_replay_or_leak_live_prefixes(cx: &mut TestAppContext) {
+    cx.update(init);
+    let now = Instant::now();
+    let first = "First tab unfinished output";
+    let second = "Second tab unfinished output";
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = fixture(window, cx, now);
+        event(&mut app, text(first));
+        app
+    });
+    cx.simulate_resize(size(px(390.), px(844.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    view.update(cx, |app, cx| {
+        app.park_active(cx);
+        app.active_tab = 1;
+        app.tab_order.push(1);
+        app.session.phase = ConnectionPhase::Connected;
+        event(app, text(second));
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    let second_bounds = cx.debug_bounds("entry-1").unwrap();
+    assert!(second_bounds.size.height > px(20.));
+    view.update(cx, |app, _| {
+        let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now, false);
+        assert_eq!(frame.rows[&1].text_len, second.len(), "same entry ID in another tab must restore fully");
+        assert!(!frame.animating);
+        assert_eq!(app.stream_motion.shift(), px(0.));
+    });
+    view.update(cx, |app, cx| app.focus_tab(0, cx));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    assert!(cx.debug_bounds("entry-1").unwrap().size.height > px(20.));
+    view.update(cx, |app, _| {
+        assert_eq!(app.session.transcript[0].text, first);
+        let restored = app.stream_presentation.prepare(app.active_tab, &app.session, now, false);
+        assert_eq!(restored.rows[&1].text_len, first.len());
+        assert!(!restored.animating);
+    });
+    view.update(cx, |app, cx| {
+        app.session.apply_intent(LocalIntent::Reset);
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    assert!(cx.debug_bounds("entry-1").is_none());
+    assert!(cx.debug_bounds("transcript-activity").is_none());
+    view.update(cx, |app, _| {
+        let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now, false);
+        assert!(frame.rows.is_empty());
+        assert!(!frame.animating);
+        assert_eq!(app.stream_motion.shift(), px(0.));
+        assert_eq!(app.transcript_scroll.max_offset().y, px(0.));
+    });
+}
+
+#[gpui::test]
+fn replacement_and_cancellation_flush_the_actual_row_without_hidden_tail(cx: &mut TestAppContext) {
+    cx.update(init);
+    let now = Instant::now();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = fixture(window, cx, now);
+        event(&mut app, text("Original complete paragraph.\n\nOld unfinished suffix"));
+        app
+    });
+    cx.simulate_resize(size(px(390.), px(844.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    let replaced = "Replacement with Unicode 界🦀 and an unfinished ending";
+    view.update(cx, |app, cx| {
+        app.stream_test_now = Some(now + Duration::from_millis(16));
+        event(app, ApiEvent::TextReplace { session_id: "stream-fixture".into(), text: replaced.into(), message_id: None });
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    view.update(cx, |app, _| {
+        let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now + Duration::from_millis(16), false);
+        assert_eq!(app.session.transcript[0].text, replaced);
+        assert_eq!(frame.rows[&1].text_len, 0, "replacement cannot reuse the old prefix boundary");
+    });
+    view.update(cx, |app, cx| {
+        event(app, ApiEvent::SessionStatus { session_id: "stream-fixture".into(), status: "cancelled".into(), pending_soft_interrupts: None });
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    assert!(cx.debug_bounds("transcript-activity").is_none());
+    let row = cx.debug_bounds("entry-1").unwrap();
+    assert!(row.size.height > px(20.), "cancellation must paint full replacement, not its held prefix");
+    view.update(cx, |app, _| {
+        let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now + Duration::from_millis(16), false);
+        assert!(frame.rows.is_empty());
+        assert!(!frame.animating);
+        assert_eq!(app.session.transcript[0].text, replaced);
+        assert!(!app.session.transcript[0].is_streaming);
+        assert!(row.bottom() <= app.transcript_scroll.bounds().bottom());
+    });
+}
