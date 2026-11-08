@@ -2100,16 +2100,20 @@
     {
       "controls": {
         "debug_selector:literal:voice-control": 1,
+        "debug_selector:literal:voice-overscroll-mic": 1,
+        "debug_selector:literal:voice-overscroll-semicircle": 1,
         "id:literal:voice-control": 1
       },
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Voice phase instructions and reduced-motion animation bounds are pure-model assertions, not rendered control hit-target or real microphone coverage.",
+          "note": "Pure-model tests cover phase instructions and bounded pull-sized semicircle geometry. The offline rendered fixture checks growth, microphone presence, idle absence and stable transcript bounds. These do not verify GPU pixels or real microphone capture.",
           "tests": [
             "src/voice_visual.rs::tests::preparing_never_claims_recording",
             "src/voice_visual.rs::tests::locked_explains_explicit_stop",
-            "src/voice_visual.rs::tests::animation_is_bounded_and_reduce_motion_is_static"
+            "src/voice_visual.rs::tests::semicircle_tracks_pull_and_is_bounded",
+            "src/voice_visual.rs::tests::pending_work_remains_visible_after_release",
+            "src/app/voice_controls_tests.rs::pulling_voice_overlay_grows_without_reflowing_transcript"
           ]
         },
         {

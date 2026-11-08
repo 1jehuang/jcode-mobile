@@ -324,7 +324,7 @@ impl MobileApp {
             })
             .child(div().relative().top(px(if voice_visible { 0. } else if dictate { -pull } else { pull })).flex_1().min_h_0().flex().flex_col().child(body))
             .when(voice_visible, |d| d.child(
-                div().w_full().h(px(crate::voice_visual::HEIGHT)).flex_none()
+                div().absolute().left_0().right_0().bottom_0().h(px(crate::voice_visual::HEIGHT))
                     .child(crate::voice_visual::render(voice_pull, voice_phase, elapsed, crate::system::reduce_motion(), t))
             ))
             .into_any_element()

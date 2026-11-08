@@ -1,9 +1,9 @@
-//! Compact voice status. No gesture ruler, moving puck, or transcript displacement.
-//! Activity is symbolic, not a live transcript or measured audio waveform.
+//! Bottom-edge overscroll feedback. The semicircle grows with visible pull distance.
+//! Capture state is exposed to accessibility without a status bar moving the transcript.
 use crate::theme::{Theme, with_alpha};
 use gpui::{AnyElement, div, prelude::*, px};
 
-pub const HEIGHT: f32 = 44.0;
+pub const HEIGHT: f32 = 96.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -38,35 +38,51 @@ impl Phase {
     }
 }
 
-// Three staggered text-like strokes quietly indicate work without simulating speech.
-fn stroke_alpha(index: usize, elapsed: f32, reduce_motion: bool) -> f32 {
-    if reduce_motion || !elapsed.is_finite() {
-        return 0.6;
-    }
-    0.3 + 0.5 * (elapsed.max(0.) * 3. - index as f32 * 0.8).sin().max(0.)
+fn radius(pull: f32, phase: Phase) -> f32 {
+    let pull = if pull.is_finite() { pull.max(0.) } else { 0. };
+    // Keep processing visible after the released gesture has sprung back.
+    let rest = if matches!(phase, Phase::Preparing | Phase::Transcribing | Phase::Error) {
+        32.
+    } else if phase == Phase::Locked {
+        crate::voice_gesture::LOCK
+    } else {
+        0.
+    };
+    pull.max(rest).min(HEIGHT)
 }
 
-pub fn render(_pull: f32, phase: Phase, elapsed: f32, reduce_motion: bool, t: &Theme) -> AnyElement {
-    let ink = if phase == Phase::Error { t.error } else { t.text_secondary };
-    let animated = matches!(phase, Phase::Preparing | Phase::Recording | Phase::Locked | Phase::Transcribing);
-    let mut activity = div().w(px(22.)).flex_none().flex().flex_col().gap(px(3.));
-    for (i, width) in [18., 13., 16.].into_iter().enumerate() {
-        activity = activity.child(
-            div().w(px(width)).h(px(2.)).rounded_full()
-                .bg(with_alpha(ink, stroke_alpha(i, elapsed, reduce_motion || !animated))),
-        );
-    }
+pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &Theme) -> AnyElement {
+    let radius = radius(pull, phase);
+    let ink = match phase {
+        Phase::Error => t.error,
+        Phase::Recording | Phase::Locked => t.ok,
+        _ => t.accent,
+    };
+    // A drawn microphone rather than a font glyph keeps the icon consistent on iOS/Linux.
+    let microphone = div()
+        .debug_selector(|| "voice-overscroll-mic".into())
+        .relative().w(px(20.)).h(px(26.)).flex_none()
+        .child(div().absolute().left(px(6.)).top_0().w(px(8.)).h(px(15.))
+            .rounded_full().bg(ink))
+        .child(div().absolute().left(px(2.)).top(px(8.)).w(px(16.)).h(px(13.))
+            .border_2().border_t_0().border_color(ink).rounded_b(px(8.)))
+        .child(div().absolute().left(px(9.)).top(px(20.)).w(px(2.)).h(px(5.)).bg(ink))
+        .child(div().absolute().left(px(5.)).bottom_0().w(px(10.)).h(px(2.)).rounded_full().bg(ink));
     div()
         .id("voice-control")
         .debug_selector(|| "voice-control".into())
         .role(gpui::Role::Status)
         .aria_label(format!("{}. {}", phase.label(), phase.instruction()))
         .w_full().h(px(HEIGHT)).flex_none()
-        .flex().items_center().justify_center().gap(px(8.))
-        .bg(t.surface)
-        .text_size(px(12.)).text_color(ink)
-        .child(activity)
-        .child(phase.label())
+        .flex().items_end().justify_center()
+        .child(div()
+            .debug_selector(|| "voice-overscroll-semicircle".into())
+            .relative().w(px(radius * 2.)).h(px(radius)).flex_none()
+            .rounded_t(px(radius)).overflow_hidden()
+            .bg(t.surface)
+            .border_1().border_b_0().border_color(with_alpha(ink, 0.35))
+            .flex().items_center().justify_center()
+            .child(microphone.opacity((radius / crate::voice_gesture::START).clamp(0., 1.))))
         .into_any_element()
 }
 
@@ -84,14 +100,24 @@ mod tests {
         assert!(Phase::Recording.instruction().contains("Release to send"));
     }
     #[test]
-    fn animation_is_bounded_and_reduce_motion_is_static() {
-        for i in 0..3 {
-            for time in [-1., 0., 0.5, 100., f32::NAN, f32::INFINITY] {
-                assert!((0.3..=0.8).contains(&stroke_alpha(i, time, false)));
-                assert_eq!(stroke_alpha(i, time, true), 0.6);
+    fn semicircle_tracks_pull_and_is_bounded() {
+        for phase in [Phase::Pulling, Phase::Recording] {
+            assert_eq!(radius(0., phase), 0.);
+            assert_eq!(radius(16., phase), 16.);
+            assert_eq!(radius(32., phase), 32.);
+            assert_eq!(radius(64., phase), 64.);
+            assert_eq!(radius(160., phase), HEIGHT);
+            for pull in [-1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                assert_eq!(radius(pull, phase), 0.);
             }
         }
-        assert_ne!(stroke_alpha(0, 0., false), stroke_alpha(0, 0.5, false));
-        assert_eq!(HEIGHT, 44.);
+    }
+    #[test]
+    fn pending_work_remains_visible_after_release() {
+        for phase in [Phase::Preparing, Phase::Transcribing, Phase::Error] {
+            assert_eq!(radius(0., phase), 32.);
+            assert_eq!(radius(64., phase), 64.);
+        }
+        assert_eq!(radius(0., Phase::Locked), crate::voice_gesture::LOCK);
     }
 }

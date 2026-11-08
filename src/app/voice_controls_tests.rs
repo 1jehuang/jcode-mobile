@@ -28,6 +28,59 @@ fn seed_startup(app: &mut MobileApp, locked: bool) {
     app.voice.locked = locked;
 }
 
+#[gpui::test]
+fn pulling_voice_overlay_grows_without_reflowing_transcript(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
+    // Gesture bounds are recorded a frame after layout, including after resize.
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+    let transcript = view.read_with(cx, |app, _| {
+        assert!(app.offline, "this regression must never start native capture");
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
+        app.feel.g.transcript.expect("chat transcript must be laid out")
+    });
+    assert!(cx.debug_bounds("voice-overscroll-semicircle").is_none());
+    assert!(cx.debug_bounds("voice-overscroll-mic").is_none());
+
+    let mut previous_height = px(0.);
+    for delta in [-20., -10.] {
+        view.update(cx, |app, cx| {
+            // Feed the recognizer directly, bypassing offline input eligibility.
+            assert!(app.feel.voice_gesture.feed(delta, false).is_empty());
+            assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling);
+            assert!(app.feel.voice_gesture.pull < crate::voice_gesture::START);
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let semicircle = cx.debug_bounds("voice-overscroll-semicircle")
+            .expect("pulling needs a visible semicircle");
+        assert!(cx.debug_bounds("voice-overscroll-mic").is_some());
+        assert!(semicircle.size.height > previous_height,
+            "additional pull must grow the semicircle");
+        assert!(semicircle.size.height <= px(96.));
+        // GPUI rounds each edge to device pixels independently.
+        assert!((f32::from(semicircle.size.width - semicircle.size.height * 2.)).abs() <= 1.);
+        previous_height = semicircle.size.height;
+        // Let the recorded bounds catch up, so a reflow cannot hide for a frame.
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.feel.g.transcript, Some(transcript),
+                "the absolute voice overlay must not resize or move the transcript");
+            assert!(!app.voice.starting && !app.voice.busy);
+            assert!(app.voice.recording.is_none());
+        });
+    }
+}
+
 #[cfg(any(target_os = "ios", target_os = "linux"))]
 #[gpui::test]
 fn supported_preview_accepts_only_deliberate_bottom_overscroll(cx: &mut TestAppContext) {
