@@ -486,6 +486,9 @@ fn explicitly_phased_held_voice_does_not_idle_timeout(cx: &mut TestAppContext) {
         assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Started), cx));
         assert!(app.feel.voice_phased);
         assert!(!app.feel.voice_pan_ended);
+        assert!(app.feel_voice_wheel(&wheel(-320., TouchPhase::Moved), cx));
+        assert!(app.feel.voice_gesture.pull >= crate::voice_gesture::LOCK);
+        assert!(!app.voice.locked && !app.voice.stop_requested);
         app.feel.voice_wheel_at = Some(Instant::now() - Duration::from_secs(2));
     });
     // Render invokes feel_wrap's actual wheel fallback, not a synthetic timer.
@@ -496,6 +499,25 @@ fn explicitly_phased_held_voice_does_not_idle_timeout(cx: &mut TestAppContext) {
         assert!(app.voice.starting && app.voice.busy);
         assert!(app.voice.status().unwrap().contains("Preparing microphone"));
         assert!(app.session.transcript.is_empty());
+        assert!(app.feel.voice_gesture.held());
+        assert!(!app.voice.locked && !app.voice.stop_requested,
+            "a stationary deep trackpad hold must not finish or lock");
+    });
+    view.update(cx, |app, cx| {
+        // The same finger gesture can reverse after a speaking pause.
+        assert!(app.feel_voice_wheel(&wheel(400., TouchPhase::Moved), cx));
+        assert!(app.voice.stop_requested && !app.voice.locked);
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
+        assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Ended), cx));
+        assert!(app.feel.voice_wheel_at.is_none());
+        app.cancel_voice_animated(cx);
+        seed_startup(app, false);
+        assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Started), cx));
+        assert!(app.feel_voice_wheel(&wheel(-320., TouchPhase::Moved), cx));
+        assert!(!app.voice.locked);
+        assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Ended), cx));
+        assert!(app.voice.locked && !app.voice.stop_requested);
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Locked);
     });
 }
 
