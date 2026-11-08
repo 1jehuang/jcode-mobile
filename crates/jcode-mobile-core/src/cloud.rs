@@ -36,6 +36,15 @@ fn clear_warm_target() {
     *warm_target().lock().unwrap() = None;
 }
 
+/// Forget `dead` only if it is still the cached master. Another tab may have
+/// already replaced it with a fresh one that must not be thrown away.
+fn forget_master(dead: &crate::cloud_ssh::PreparedSsh) {
+    let mut cache = warm_target().lock().unwrap();
+    if cache.as_ref().is_some_and(|entry| entry.ssh.same(dead)) {
+        *cache = None;
+    }
+}
+
 /// Drop the in-memory SSH master so a benchmark sees an app-launch start.
 #[doc(hidden)]
 pub fn reset_in_memory_cache_for_benchmark() {
@@ -283,7 +292,7 @@ pub fn connect(
             }
             // A dead master must go back through the authenticated control
             // plane. Its validated pins, never TOFU, authorize the next host.
-            Err(_) => clear_warm_target(),
+            Err(_) => forget_master(&ssh),
         }
     }
     // Concurrent new tabs must not all register new keys and hit the cloud's
@@ -307,7 +316,7 @@ pub fn connect(
             Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
                 return Err(error);
             }
-            Err(_) => clear_warm_target(),
+            Err(_) => forget_master(&ssh),
         }
     }
     check_cancelled()?;
@@ -329,7 +338,7 @@ pub fn connect(
                         check_cancelled()?;
                         return Ok(client);
                     }
-                    Err(_) => clear_warm_target(),
+                    Err(_) => forget_master(&ssh),
                 }
             }
             Err(error) if error.kind == jcode_sdk::ErrorKind::HostKeyMismatch => {
@@ -446,7 +455,7 @@ pub fn prewarm(account: &Account) {
             if ssh.revalidate() {
                 return;
             }
-            clear_warm_target();
+            forget_master(&ssh);
         }
         // A real connect in progress already does this work.
         let Ok(_opening) = COLD_CONNECT.try_lock() else { return };

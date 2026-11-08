@@ -125,6 +125,10 @@ impl PreparedSsh {
         self.open_client_timeout(OPEN_TIMEOUT)
     }
 
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub(crate) fn is_closed(&self) -> bool {
         self.0.ssh.is_closed()
     }
