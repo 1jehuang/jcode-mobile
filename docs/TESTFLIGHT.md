@@ -49,3 +49,15 @@ The reported bouncing thinking/transcript rendering was observed by the user on 
 - Source: `5fa86ca` (same application code as 1794117691, docs-only delta).
 - Signed IPA SHA-256: `e77b020c772756ea369cb9bceb1906095f403770a6857a9c77e95d6cc0702c6e`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794124180/`.
 - Uploaded at about 23:52 Pacific, upload state `COMPLETE`.
+
+## Build 1794130164, uploaded November 8, 2026 (Pacific)
+
+- Includes shared Nari realtime dictation, actual microphone waveform, continuous pull/reverse completion, release-only deep-pull locking, and microphone/connection status above the composer input.
+- Build-start source: `9567d38`. Concurrent documentation-only commit `bb1d93e` followed compilation. Existing unrelated tracked edits in `src/app/git_info.rs` and `src/app/modal_ownership_coverage.rs` were preserved. This was not a clean-tree build. Later concurrent agent changes are not claimed included.
+- Signed iOS compilation passed, receipt `20261108-012924162-1301464`. Distribution signing and packaging were repeated successfully after a server reload interrupted packaging. ZIP CRC passed and app, bridge and both extensions carry build `1794130164`.
+- Signed IPA SHA-256: `1c0409086923d9a7bd0907435c3b75fac10186c7fb8f2909126fdabac06f5f90`. Unstripped binary SHA-256: `db64d5e762ce6882d9b09028d217e3937772d9604ba8acc531f72dc114503c77`.
+- IPA, unstripped binary, archive-time working patch and provenance manifest archived under `~/.appstoreconnect/builds/1794130164/`. The patch is an archive-time snapshot, not an atomic build-start snapshot. Voice source fingerprints remained unchanged through packaging.
+- Latest focused validation: **91 voice tests passed**, receipt `20261108-012624004-1276822`; interaction coverage ledger passed, receipt `20261108-012629246-1277624`. Prior workspace validation: **447 passed, 14 ignored, one known unrelated overlay fixture excluded**, receipt `20261108-011940134-1242911`. The unfiltered workspace was not green.
+- Uploaded at **01:34:36 Pacific** (`2026-11-08T09:34:36Z`), upload state `COMPLETE`. Apple build ID: `82d19f0d-99ec-4317-9bd0-0ce74140b5f7`.
+- Verified Apple processing `VALID`, internal `IN_BETA_TESTING`, automatic notifications enabled. External state remains `READY_FOR_BETA_SUBMISSION`, not external approval.
+- Published en-US TestFlight notes explaining gestures and status placement, requesting physical-iPhone validation, and explicitly disclosing that **iPhone Nari credentials still require device provisioning**. No personal desktop key is embedded and automatic phone credential provisioning is not implemented. Physical iOS voice runtime remains untested.
