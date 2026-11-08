@@ -3,6 +3,8 @@ use crate::cloud;
 use serde::Deserialize;
 
 const INVALID: &str = "Git inspection failed or returned an invalid response";
+/// Returned when the directory exists but is not inside a Git work tree.
+pub const NOT_A_REPOSITORY: &str = "This directory is not inside a Git repository";
 const MAX_OUTPUT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -85,7 +87,11 @@ def clean(s):
     s = re.sub(r'([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s]*@', r'\1[redacted]@', s)
     return ''.join(c if c in '\n\t' or ord(c) >= 32 and ord(c) != 127 else '?' for c in s)
 try:
-    root = git(['rev-parse', '--show-toplevel'])
+    root = git(['rev-parse', '--show-toplevel'], True)
+    if root is None:
+        if not os.path.isdir(sys.argv[1]): raise RuntimeError()
+        print('JCODE_GIT_NOT_REPO')
+        raise SystemExit(0)
     branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD'], True) or '(detached HEAD)'
     status = git(['status', '--porcelain=v1', '--untracked-files=normal', '--ignore-submodules=all'])
     head = git(['rev-parse', '--verify', 'HEAD'], True)
@@ -104,6 +110,9 @@ fn parse(bytes: &[u8]) -> Result<GitSnapshot, String> {
     let invalid = || INVALID.to_string();
     if bytes.len() > MAX_OUTPUT {
         return Err(invalid());
+    }
+    if bytes.trim_ascii() == b"JCODE_GIT_NOT_REPO" {
+        return Err(NOT_A_REPOSITORY.to_string());
     }
     let json = bytes.strip_prefix(b"JCODE_GIT_V1\n").ok_or_else(invalid)?;
     let snapshot: GitSnapshot = serde_json::from_slice(json).map_err(|_| invalid())?;
@@ -136,6 +145,11 @@ mod tests {
         let snapshot = parse(b"JCODE_GIT_V1\n{\"root\":\"/x\",\"branch\":\"main\",\"status\":\"\",\"recent_commits\":\"abc subject\"}").unwrap();
         assert!(snapshot.diff_stat.is_empty());
         assert_eq!((snapshot.ahead, snapshot.behind), (0, 0));
+    }
+
+    #[test]
+    fn non_repository_is_reported_distinctly() {
+        assert_eq!(parse(b"JCODE_GIT_NOT_REPO\n").unwrap_err(), NOT_A_REPOSITORY);
     }
 
     #[test]
@@ -269,6 +283,15 @@ mod tests {
             .unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let plain = std::env::temp_dir().join(format!("jcode-git-plain-{}", uuid::Uuid::new_v4()));
+        let _plain_cleanup = Cleanup(plain.clone());
+        std::fs::create_dir_all(&plain).unwrap();
+        let output = Command::new("sh")
+            .args(["-c", &inspection_command(plain.to_str().unwrap()).unwrap()])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(parse(&output.stdout).unwrap_err(), NOT_A_REPOSITORY);
         git(&[
             "-c",
             "user.name=Test",

@@ -566,6 +566,11 @@ impl MobileApp {
         self.git_info.loading = false;
         match result {
             Ok(snapshot) => self.git_info.snapshot = Some(snapshot),
+            Err(e) if e == jcode_mobile_core::git_info::NOT_A_REPOSITORY => {
+                self.git_info.error = Some(format!(
+                    "{e}. Open a session in a project folder to see its Git status."
+                ))
+            }
             Err(_) => self.git_info.error = Some("Could not read Git information. Check the connection and that this directory is in a Git repository, then refresh.".into()),
         }
         cx.notify();
