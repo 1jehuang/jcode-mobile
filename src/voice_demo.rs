@@ -102,12 +102,11 @@ impl VoiceDemo {
         } else if locking && local < 6.3 {
             self.gesture.release();
         } else if locking {
-            // This is the existing composer's explicit stop action in the real UI.
-            self.gesture.reset();
+            // The mic itself stops capture in the real UI without resetting travel.
+            self.gesture.dismiss();
         } else {
             self.gesture.release();
         }
-        self.gesture.tick(dt);
         let sending = local >= if locking { 6.3 } else { 5.55 };
         self.phase = if sending && local < 8.1 {
             Phase::Transcribing
@@ -122,6 +121,12 @@ impl VoiceDemo {
                 State::Idle | State::Pulling => Phase::Pulling,
             }
         };
+        let rest = if self.gesture.held() { 0. }
+            else if self.phase == Phase::Locked { crate::voice_gesture::LOCK_REST }
+            else if self.phase == Phase::Transcribing { voice_visual::PROCESSING_REST }
+            else { 0. };
+        self.gesture.rest_at(rest);
+        self.gesture.tick(dt);
     }
 }
 

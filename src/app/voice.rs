@@ -81,6 +81,7 @@ impl MobileApp {
         if self.voice.generation != generation || self.active_tab != tab {
             return;
         }
+        self.feel_voice_motion_changed();
         self.voice.busy = false;
         self.voice.starting = false;
         self.voice.locked = false;
@@ -144,8 +145,19 @@ impl MobileApp {
         self.feel.voice_pan_ended = true;
     }
 
+    /// User cancellation clears capture immediately while the mic returns gently.
+    /// Navigation continues to use cancel_voice, which discards the whole surface.
+    pub(super) fn cancel_voice_animated(&mut self) {
+        let mut gesture = std::mem::take(&mut self.feel.voice_gesture);
+        self.cancel_voice();
+        gesture.dismiss();
+        self.feel.voice_gesture = gesture;
+        self.feel_voice_motion_changed();
+    }
+
     /// A release during permission/startup is remembered and handled exactly once.
     pub(super) fn finish_overscroll_voice(&mut self, cx: &mut Context<Self>) {
+        self.feel_voice_motion_changed();
         self.voice.locked = false;
         if self.voice.starting {
             self.voice.stop_requested = true;
@@ -167,7 +179,7 @@ impl MobileApp {
             return;
         }
         if self.voice.recording.is_some() {
-            self.feel.voice_gesture.reset();
+            self.feel.voice_gesture.dismiss();
             self.feel.voice_wheel_at = None;
             self.transcribe_voice(cx);
         } else {
@@ -184,6 +196,7 @@ impl MobileApp {
         let Some(recording) = self.voice.recording.take() else {
             return;
         };
+        self.feel_voice_motion_changed();
         self.voice.busy = true;
         self.voice.starting = false;
         self.voice.locked = false;
@@ -215,6 +228,7 @@ impl MobileApp {
         if self.voice.generation != generation || self.active_tab != tab {
             return;
         }
+        self.feel_voice_motion_changed();
         self.voice.busy = false;
         self.voice.starting = false;
         match result {
@@ -235,7 +249,7 @@ impl MobileApp {
                 if self.feel.voice_wheel_at.is_some() {
                     self.feel.voice_gesture.abort();
                 } else {
-                    self.feel.voice_gesture.reset();
+                    self.feel.voice_gesture.dismiss();
                 }
             }
         }
@@ -273,7 +287,7 @@ impl MobileApp {
                     && this.active_tab == tab
                     && this.voice.recording.is_some()
                 {
-                    this.feel.voice_gesture.reset();
+                    this.feel.voice_gesture.dismiss();
                     this.transcribe_voice(cx);
                 }
             });

@@ -3,7 +3,8 @@
 use crate::theme::Theme;
 use gpui::{AnyElement, div, prelude::*, px};
 
-pub const HEIGHT: f32 = 96.0;
+pub const HEIGHT: f32 = crate::voice_gesture::MAX_PULL;
+pub const PROCESSING_REST: f32 = 44.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -38,17 +39,15 @@ impl Phase {
     }
 }
 
-pub fn reveal_height(pull: f32, phase: Phase) -> f32 {
-    let pull = if pull.is_finite() { pull.max(0.) } else { 0. };
-    // Keep processing visible after the released gesture has sprung back.
-    let rest = if matches!(phase, Phase::Preparing | Phase::Transcribing | Phase::Error) {
-        32.
-    } else if phase == Phase::Locked {
-        crate::voice_gesture::LOCK
-    } else {
-        0.
-    };
-    pull.max(rest).min(HEIGHT)
+pub fn reveal_height(pull: f32, _phase: Phase) -> f32 {
+    // Presentation never adds a floor or clips lock travel. The recognizer owns
+    // held travel and the spring, including the compact processing rest.
+    if pull.is_finite() { pull.clamp(0., HEIGHT) } else { 0. }
+}
+
+fn mic_opacity(height: f32) -> f32 {
+    let progress = (height / crate::voice_gesture::START).clamp(0., 1.);
+    progress * progress * (3. - 2. * progress)
 }
 
 pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &Theme) -> AnyElement {
@@ -75,7 +74,7 @@ pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &
         .aria_label(format!("{}. {}", phase.label(), phase.instruction()))
         .w_full().h(px(height)).flex_none().overflow_hidden()
         .flex().items_center().justify_center()
-        .child(microphone.opacity((height / crate::voice_gesture::START).clamp(0., 1.)))
+        .child(microphone.opacity(mic_opacity(height)))
         .into_any_element()
 }
 
@@ -106,11 +105,23 @@ mod tests {
         }
     }
     #[test]
-    fn pending_work_remains_visible_after_release() {
-        for phase in [Phase::Preparing, Phase::Transcribing, Phase::Error] {
-            assert_eq!(reveal_height(0., phase), 32.);
-            assert_eq!(reveal_height(64., phase), 64.);
+    fn async_phase_changes_never_move_the_reveal() {
+        for phase in [Phase::Pulling, Phase::Preparing, Phase::Recording, Phase::Locked, Phase::Transcribing, Phase::Error] {
+            for pull in [0., 8., 16., 32., 44., 64., 96., 120., HEIGHT] {
+                assert_eq!(reveal_height(pull, phase), pull);
+            }
         }
-        assert_eq!(reveal_height(0., Phase::Locked), crate::voice_gesture::LOCK);
+    }
+    #[test]
+    fn opacity_eases_in_without_changing_icon_geometry() {
+        assert_eq!(mic_opacity(0.), 0.);
+        assert_eq!(mic_opacity(crate::voice_gesture::START / 2.), 0.5);
+        assert_eq!(mic_opacity(crate::voice_gesture::START), 1.);
+        let mut previous = 0.;
+        for height in 0..=160 {
+            let opacity = mic_opacity(height as f32);
+            assert!((previous..=1.).contains(&opacity));
+            previous = opacity;
+        }
     }
 }

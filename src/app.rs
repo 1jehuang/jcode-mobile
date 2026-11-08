@@ -1997,7 +1997,7 @@ impl MobileApp {
                             .a11y_button("Discard voice recording")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 haptics::play(Haptic::Light);
-                                this.cancel_voice();
+                                this.cancel_voice_animated();
                                 cx.notify();
                             }))
                     } else if processing && !has_text {
@@ -2406,6 +2406,7 @@ impl Render for MobileApp {
         if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }
         self.system_tick(window, cx);
         self.sync_spinner_tick(cx);
+        self.feel_prepare_voice(window, cx);
         if std::mem::take(&mut self.blur_on_render) {
             window.blur(cx);
             window.dismiss_virtual_keyboard();

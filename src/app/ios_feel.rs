@@ -28,6 +28,10 @@ use crate::theme::Theme;
 mod voice_controls_tests;
 
 #[cfg(test)]
+#[path = "voice_motion_tests.rs"]
+mod voice_motion_tests;
+
+#[cfg(test)]
 #[path = "overlay_coverage.rs"]
 mod overlay_coverage;
 
@@ -61,6 +65,8 @@ pub(super) struct Feel {
     blur_rename: bool,
     toast: Option<(String, Instant)>,
     last: Option<Instant>,
+    voice_frame_at: Option<Instant>,
+    voice_rest: f32,
 }
 
 fn f(p: Pixels) -> f32 {
@@ -89,10 +95,16 @@ impl MobileApp {
                     haptics::play(Haptic::Light);
                     self.finish_overscroll_voice(cx);
                 }
-                VoiceAction::Cancel => self.cancel_voice(),
+                VoiceAction::Cancel => self.cancel_voice_animated(),
             }
         }
         cx.notify();
+    }
+
+    fn voice_distance_to_bottom(&self) -> f32 {
+        let logical = f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y);
+        let painted = if self.follow { f(self.stream_motion.shift()) } else { 0. };
+        (logical + painted).max(0.)
     }
 
     fn voice_wheel_eligible(&self, event: &ScrollWheelEvent) -> bool {
@@ -104,8 +116,8 @@ impl MobileApp {
             && !self.feel.voice_pan_ended
             && self.feel.g.refreshing.is_none()
             && self.feel.g.transcript.is_some_and(|b| b.contains(&event.position))
-            && f(self.transcript_scroll.max_offset().y + self.transcript_scroll.offset().y) <= 0.5
             && delta.y < px(0.) && delta.y.abs() >= delta.x.abs()
+            && self.voice_distance_to_bottom() < -f(delta.y) + 0.5
     }
 
     /// Capture only the deliberate overscroll, not ordinary scrolling or the
@@ -119,7 +131,7 @@ impl MobileApp {
         if event.touch_phase == TouchPhase::Cancelled {
             self.feel.voice_pan_ended = true;
             if tracking {
-                self.cancel_voice();
+                self.cancel_voice_animated();
                 cx.notify();
             }
             return tracking;
@@ -127,13 +139,28 @@ impl MobileApp {
         let ended = event.touch_phase == TouchPhase::Ended;
         if ended { self.feel.voice_pan_ended = true; }
         let delta = event.delta.pixel_delta(px(20.));
+        let now = Instant::now();
+        let dt = self.feel.voice_wheel_at.map_or(0., |at| now.duration_since(at).as_secs_f32());
+        let mut dy = f(delta.y);
         if !tracking {
             if !self.voice_wheel_eligible(event) { return false; }
+            let remaining = self.voice_distance_to_bottom();
+            if remaining > 0. {
+                // The same event reaches the latest text and uncovers the mic.
+                // Only the excess is voice travel, never the ordinary scroll.
+                let offset = self.transcript_scroll.offset();
+                self.transcript_scroll.set_offset(gpui::point(offset.x, -self.transcript_scroll.max_offset().y));
+                dy = (dy + remaining).min(0.);
+            }
+            self.stream_motion.reset();
+            self.follow = true;
             self.feel.g.cancel();
-            self.feel.voice_gesture.reset();
+            // Keep a settling displacement when the finger grabs it again.
+            self.feel.voice_gesture.dismiss();
         }
-        self.feel.voice_wheel_at = if ended { None } else { Some(Instant::now()) };
-        let actions = self.feel.voice_gesture.feed(f(delta.y), ended);
+        if !tracking || ended { self.feel.voice_frame_at = Some(now); }
+        self.feel.voice_wheel_at = if ended { None } else { Some(now) };
+        let actions = self.feel.voice_gesture.feed_timed(dy, ended, dt);
         self.apply_voice_gesture(actions, cx);
         true
     }
@@ -334,7 +361,8 @@ impl MobileApp {
                 .aria_label(format!("{}. Tap microphone to stop recording and send", phase.label()))
                 .w(px(44.)).h_full().cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.feel.voice_gesture.reset();
+                    this.feel.voice_gesture.dismiss();
+                    this.feel.voice_frame_at = Some(Instant::now());
                     this.feel.voice_wheel_at = None;
                     this.feel.voice_pan_ended = true;
                     this.finish_overscroll_voice(cx);
@@ -372,6 +400,52 @@ impl MobileApp {
         cx.notify();
     }
 
+    pub(super) fn feel_voice_motion_changed(&mut self) {
+        self.feel.voice_frame_at = Some(Instant::now());
+    }
+
+    /// A single continuous displacement owns the reveal. Async capture changes
+    /// retarget its spring, never impose a different minimum in the renderer.
+    fn step_voice_motion(&mut self, dt: f32, reduce_motion: bool) -> bool {
+        let rest = if self.feel.voice_gesture.held() {
+            0.
+        } else if self.voice.auto_send && self.voice.locked && (self.voice.starting || self.voice.recording.is_some()) {
+            crate::voice_gesture::LOCK_REST
+        } else if self.voice.auto_send && self.voice.busy {
+            crate::voice_visual::PROCESSING_REST
+        } else { 0. };
+        let retargeted = self.feel.voice_rest != rest;
+        self.feel.voice_rest = rest;
+        self.feel.voice_gesture.rest_at(rest);
+        if reduce_motion {
+            self.feel.voice_gesture.snap_to_target();
+            false
+        } else { self.feel.voice_gesture.tick(if retargeted { 0. } else { dt }) }
+    }
+
+    /// Run before render_chat, so the last settling step is painted too. Advancing
+    /// after building body would leave the displayed chat one frame behind state.
+    pub(super) fn feel_prepare_voice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let dt = self.feel.voice_frame_at.map_or(0., |at| now.duration_since(at).as_secs_f32());
+        self.feel.voice_frame_at = Some(now);
+        if (self.feel.voice_gesture.active() || self.voice.auto_send) && !self.scene().menus {
+            self.cancel_voice();
+        }
+        let wheel_timer = !self.feel.voice_phased && self.feel.voice_wheel_at.is_some();
+        if wheel_timer && self.feel.voice_wheel_at.is_some_and(|at| now.duration_since(at).as_secs_f32() > 0.18) {
+            self.feel.voice_wheel_at = None;
+            let actions = self.feel.voice_gesture.release();
+            self.apply_voice_gesture(actions, cx);
+        }
+        // Held input redraws on input events. Capture callbacks redraw on state
+        // changes. A settled mic must not rebuild the entire transcript at 120 Hz.
+        if self.step_voice_motion(dt, crate::system::reduce_motion())
+            || (wheel_timer && self.feel.voice_wheel_at.is_some()) {
+            window.request_animation_frame();
+        }
+    }
+
     /// Per-frame: advance gestures, run finished actions, and wrap `body`
     /// with the edge-swipe stack and overlays. Call with the screen body.
     pub(super) fn feel_wrap(&mut self, body: AnyElement, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -395,22 +469,6 @@ impl MobileApp {
         let now = Instant::now();
         let dt = self.feel.last.map_or(0., |l| now.duration_since(l).as_secs_f32().min(0.05));
         self.feel.last = Some(now);
-        // Opening another route discards a held/locked recording. Changes to
-        // microphone busy state itself do not cancel the held gesture.
-        if (self.feel.voice_gesture.active() || self.voice.auto_send) && !self.scene().menus {
-            self.cancel_voice();
-        }
-        if !self.feel.voice_phased && self.feel.voice_wheel_at.is_some_and(|at| now.duration_since(at).as_secs_f32() > 0.18) {
-            self.feel.voice_wheel_at = None;
-            let actions = self.feel.voice_gesture.release();
-            self.apply_voice_gesture(actions, cx);
-        }
-        if crate::system::reduce_motion() {
-            self.feel.voice_gesture.snap_to_target();
-        } else {
-            anim |= self.feel.voice_gesture.tick(dt);
-        }
-        anim |= self.voice.busy || self.voice.recording.is_some() || self.feel.voice_wheel_at.is_some();
         let menu_target = match &self.feel.menu {
             Some(m) if !m.closing => 1.,
             _ => 0.,
@@ -886,6 +944,7 @@ impl MobileApp {
                             if this.can_retry_entry(entry) && let Some(text) = this.retry_text(entry) {
                                 this.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
                                 this.send(|id| Request::Message { id, content: text });
+                                this.stream_motion.reset();
                                 this.follow = true;
                                 this.feel_sent();
                             }
