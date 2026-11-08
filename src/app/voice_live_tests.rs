@@ -54,7 +54,7 @@ fn microphone_and_connection_status_stay_above_the_input(cx: &mut TestAppContext
             let input = cx.debug_bounds("composer-input").unwrap();
             let voice = cx.debug_bounds("voice-status").expect("microphone status");
             let connection = cx
-                .debug_bounds("connection-status")
+                .debug_bounds("composer-connection-status")
                 .expect("connection status");
             assert!(
                 voice.bottom() <= input.origin.y,

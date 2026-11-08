@@ -173,7 +173,7 @@
     {
       "controls": {
         "debug_selector:dynamic:if": 4,
-        "debug_selector:literal:connection-status": 1,
+        "debug_selector:literal:composer-connection-status": 1,
         "debug_selector:literal:voice-status": 1,
         "id:literal:chat-composer": 1,
         "id:literal:chat-metadata": 1,

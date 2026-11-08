@@ -2151,7 +2151,7 @@ impl MobileApp {
                 } else {
                     "Connecting… You can keep typing."
                 }, t.text_muted, 10.5,
-            ).debug_selector(|| "connection-status".into()).px(px(8.))))
+            ).debug_selector(|| "composer-connection-status".into()).px(px(8.))))
             .child(
                 div()
                     .flex()
