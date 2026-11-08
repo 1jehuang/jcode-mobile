@@ -96,15 +96,10 @@ impl VoiceGesture {
                 self.state = State::Recording;
                 actions.push(Action::Start);
             }
-            if self.state == State::Recording {
-                if self.pull >= LOCK {
-                    self.state = State::Locked;
-                    actions.push(Action::Lock);
-                } else if self.pull <= STOP {
-                    self.state = State::Finished;
-                    self.target = 0.0;
-                    actions.push(Action::Finish);
-                }
+            if self.state == State::Recording && self.pull <= STOP {
+                self.state = State::Finished;
+                self.target = 0.0;
+                actions.push(Action::Finish);
             }
         }
         if ended {
@@ -113,13 +108,23 @@ impl VoiceGesture {
         actions
     }
 
-    /// Sticky lock survives release. Repeated release emits no duplicate actions
+    /// Lock only on release at LOCK or deeper. Already-locked capture survives
+    /// future grabs. Repeated release emits no duplicate actions
     /// and does not overwrite a caller's subsequent rest target.
     pub fn release(&mut self) -> Vec<Action> {
         if !self.held && self.state != State::Finished {
             return Vec::new();
         }
-        let finish = self.state == State::Recording;
+        let action = if self.state == State::Recording {
+            if self.pull >= LOCK {
+                self.state = State::Locked;
+                Some(Action::Lock)
+            } else {
+                Some(Action::Finish)
+            }
+        } else {
+            None
+        };
         self.held = false;
         self.raw = 0.0;
         if self.state == State::Locked {
@@ -128,11 +133,7 @@ impl VoiceGesture {
             self.state = State::Idle;
             self.target = 0.0;
         }
-        if finish {
-            vec![Action::Finish]
-        } else {
-            Vec::new()
-        }
+        action.into_iter().collect()
     }
 
     /// Cancel capture, never transcribe/send. Unlike dismiss this reports the
@@ -241,7 +242,8 @@ mod tests {
         assert!(g.feed(-39.99, false).is_empty());
         assert_eq!(g.feed(-0.01, false), vec![Action::Start]);
         assert_close(g.pull, START);
-        assert_eq!(g.feed(-200.0, false), vec![Action::Lock]);
+        assert!(g.feed(-200.0, false).is_empty());
+        assert_eq!(g.state, State::Recording);
         assert_close(g.pull, LOCK);
         assert!(g.held());
         assert!(!g.tick(1.0));
@@ -249,9 +251,12 @@ mod tests {
     }
 
     #[test]
-    fn lock_stays_sticky_but_tracks_hand_until_release() {
+    fn released_lock_stays_sticky_and_tracks_future_grabs() {
         let mut g = VoiceGesture::default();
-        assert_eq!(g.feed(-240.0, false), vec![Action::Start, Action::Lock]);
+        assert_eq!(g.feed(-240.0, false), vec![Action::Start]);
+        assert_eq!(g.state, State::Recording);
+        assert_eq!(g.release(), vec![Action::Lock]);
+        assert!(g.feed(0.0, false).is_empty());
         for delta in [-100.0, 200.0, 500.0, -20.0] {
             let expected = rubber((g.raw - delta).clamp(0.0, MAX_RAW));
             assert!(g.feed(delta, false).is_empty());
@@ -268,6 +273,76 @@ mod tests {
         g.rest_at(50.0);
         assert!(g.release().is_empty());
         assert_eq!(g.target, 50.0);
+    }
+
+    #[test]
+    fn deep_crossing_then_reverse_stop_finishes_once_while_held() {
+        let mut g = VoiceGesture::default();
+        assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
+        assert!(g.pull > LOCK);
+        assert_eq!(g.state, State::Recording);
+        assert_eq!(g.feed(1000.0, false), vec![Action::Finish]);
+        assert_eq!(g.state, State::Finished);
+        assert!(g.held());
+        assert!(g.feed(-1000.0, false).is_empty());
+        assert!(g.release().is_empty());
+        assert!(g.release().is_empty());
+        assert_eq!(g.state, State::Idle);
+    }
+
+    #[test]
+    fn deep_crossing_then_release_below_lock_finishes() {
+        let mut g = VoiceGesture::default();
+        assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
+        assert!(g.feed(900.0, false).is_empty());
+        assert!((STOP..LOCK).contains(&g.pull));
+        assert_eq!(g.state, State::Recording);
+        assert_eq!(g.release(), vec![Action::Finish]);
+        assert_eq!(g.state, State::Idle);
+        assert!(g.release().is_empty());
+    }
+
+    #[test]
+    fn release_lock_boundary_and_shallow_release() {
+        for (pull, expected) in [
+            (LOCK, Action::Lock),
+            (LOCK - 0.001, Action::Finish),
+            (START, Action::Finish),
+        ] {
+            let mut g = VoiceGesture::default();
+            assert_eq!(g.feed(-inverse(pull), false), vec![Action::Start]);
+            assert_eq!(g.state, State::Recording);
+            let before = g.pull;
+            assert_eq!(g.release(), vec![expected]);
+            assert_eq!(g.pull, before);
+            assert_eq!(
+                g.state,
+                if expected == Action::Lock {
+                    State::Locked
+                } else {
+                    State::Idle
+                }
+            );
+            assert_eq!(
+                g.target,
+                if expected == Action::Lock {
+                    LOCK_REST
+                } else {
+                    0.0
+                }
+            );
+            assert!(g.release().is_empty());
+        }
+    }
+
+    #[test]
+    fn small_pull_release_never_records() {
+        let mut g = VoiceGesture::default();
+        assert!(g.feed(-10.0, false).is_empty());
+        assert_eq!(g.state, State::Pulling);
+        assert!(g.release().is_empty());
+        assert_eq!(g.state, State::Idle);
+        assert_eq!(g.target, 0.0);
     }
 
     #[test]
