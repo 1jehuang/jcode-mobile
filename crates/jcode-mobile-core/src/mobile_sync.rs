@@ -1,8 +1,46 @@
 //! Account-scoped synced transcript browsing and explicit local-to-cloud continuation.
 use crate::cloud::{Account, CLIENT_NAME};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+use std::time::Instant;
+
+#[cfg(test)]
+#[path = "mobile_sync_http_tests.rs"]
+mod http_tests;
 
 pub const SYNC_UNAVAILABLE: &str = "Synced sessions are not available on this server yet";
+
+fn agent() -> &'static ureq::Agent {
+    // The agent stores no account headers or transcript results. Its transport
+    // pool is origin-scoped, while every request sets its own bearer credential.
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .http_status_as_error(false)
+            .user_agent(CLIENT_NAME)
+            .build()
+            .into()
+    })
+}
+
+struct RequestTiming {
+    operation: &'static str,
+    started: Instant,
+    outcome: &'static str,
+}
+
+impl Drop for RequestTiming {
+    fn drop(&mut self) {
+        // Fixed operation labels only. Never include keys, URLs, IDs or bodies.
+        eprintln!(
+            "[CLOUD_TIMING] stage=mobile_sync_request operation={} outcome={} duration_ms={:.3}",
+            self.operation,
+            self.outcome,
+            self.started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SyncedSession {
@@ -76,16 +114,17 @@ fn transfer_body<'a>(session: &'a SyncedSession, text: &'a str) -> Result<Transf
 
 fn request(
     account: &Account,
+    operation: &'static str,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let mut timing = RequestTiming {
+        operation,
+        started: Instant::now(),
+        outcome: "error",
+    };
     let url = format!("{}{path}", account.api_base.trim_end_matches('/'));
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .http_status_as_error(false)
-        .user_agent(CLIENT_NAME)
-        .build()
-        .into();
+    let agent = agent();
     let auth = format!("Bearer {}", account.api_key);
     let mut response = match body {
         Some(body) => agent
@@ -111,17 +150,18 @@ fn request(
             .unwrap_or("Mobile sync request failed")
             .into());
     }
+    timing.outcome = "success";
     Ok(value)
 }
 
 pub fn list(account: &Account) -> Result<Vec<SyncedSession>, String> {
-    let value = request(account, "/mobile/sessions?limit=500", None)?;
+    let value = request(account, "list", "/mobile/sessions?limit=500", None)?;
     serde_json::from_value(value["sessions"].clone()).map_err(|e| e.to_string())
 }
 
 pub fn transfer(account: &Account, session: &SyncedSession, text: &str) -> Result<Command, String> {
     let body = serde_json::to_value(transfer_body(session, text)?).map_err(|e| e.to_string())?;
-    let value = request(account, "/mobile/commands", Some(body))?;
+    let value = request(account, "transfer", "/mobile/commands", Some(body))?;
     serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())
 }
 
@@ -129,12 +169,12 @@ pub fn command(account: &Account, id: &str) -> Result<Command, String> {
     if id.len() != 36 || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
         return Err("Invalid command id".into());
     }
-    let value = request(account, &format!("/mobile/commands/{id}"), None)?;
+    let value = request(account, "command", &format!("/mobile/commands/{id}"), None)?;
     serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())
 }
 
 pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
-    let value = request(account, "/mobile/commands", None)?;
+    let value = request(account, "commands", "/mobile/commands", None)?;
     serde_json::from_value(value["commands"].clone()).map_err(|e| e.to_string())
 }
 
