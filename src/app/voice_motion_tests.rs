@@ -2,7 +2,7 @@
 //! No test starts capture, dispatches audio actions, or contacts a server.
 use super::*;
 use crate::app::init;
-use crate::voice_gesture::{LOCK_REST, State as VoiceGestureState};
+use crate::voice_gesture::{Action as VoiceAction, LOCK_REST, State as VoiceGestureState};
 use gpui::TestAppContext;
 use gpui::{Modifiers, ScrollDelta, point};
 use crate::app::{Role, TranscriptEntry};
@@ -235,11 +235,12 @@ fn reduced_motion_tracks_held_finger_then_snaps_released_rest(cx: &mut TestAppCo
         app.voice.starting = true;
         app.voice.busy = true;
         app.voice.auto_send = true;
-        app.voice.locked = true;
+        app.voice.locked = false;
         let locked_pull = app.feel.voice_gesture.pull;
         assert!(!app.step_voice_motion(1. / 60., true));
         close(app.feel.voice_gesture.pull, locked_pull);
-        app.feel.voice_gesture.release();
+        assert_eq!(app.feel.voice_gesture.release(), vec![VoiceAction::Lock]);
+        app.voice.locked = true;
         assert!(!app.step_voice_motion(1. / 60., true));
         close(app.feel.voice_gesture.pull, LOCK_REST);
         assert!(!app.step_voice_motion(1. / 60., true));
@@ -255,16 +256,16 @@ fn held_lock_renders_beyond_old_cap_then_settles_with_mic_inside_reveal(cx: &mut
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let baseline_size = cx.debug_bounds("chat-composer").unwrap().size;
     view.update(cx, |app, cx| {
-        app.feel.voice_gesture.feed(-400., false);
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Locked);
+        assert_eq!(app.feel.voice_gesture.feed(-400., false), vec![VoiceAction::Start]);
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Recording);
         assert!(app.feel.voice_gesture.pull > 100.);
         let first = app.feel.voice_gesture.pull;
-        app.feel.voice_gesture.feed(-80., false);
-        assert!(app.feel.voice_gesture.pull > first, "locking does not freeze finger travel");
+        assert!(app.feel.voice_gesture.feed(-80., false).is_empty());
+        assert!(app.feel.voice_gesture.pull > first, "deep pull does not freeze finger travel");
         app.voice.starting = true;
         app.voice.busy = true;
         app.voice.auto_send = true;
-        app.voice.locked = true;
+        app.voice.locked = false;
         assert!(!app.step_voice_motion(1. / 60., false));
         cx.notify();
     });
@@ -275,7 +276,10 @@ fn held_lock_renders_beyond_old_cap_then_settles_with_mic_inside_reveal(cx: &mut
     assert_eq!(cx.debug_bounds("chat-composer").unwrap().size, baseline_size);
     view.update(cx, |app, cx| {
         let before = app.feel.voice_gesture.pull;
-        app.feel.voice_gesture.release();
+        assert!(!app.voice.locked);
+        assert_eq!(app.feel.voice_gesture.release(), vec![VoiceAction::Lock]);
+        app.voice.locked = true;
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Locked);
         close(app.feel.voice_gesture.pull, before);
         settle(app, LOCK_REST);
         cx.notify();
