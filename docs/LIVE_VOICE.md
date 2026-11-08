@@ -26,6 +26,12 @@ The current subscription endpoint accepts WAV uploads, not a bidirectional strea
 - Nine offline GPUI regressions cover real composer updates, overlap handling, stale callbacks, cancellation selection restoration, manual edits, authoritative replacement, voice-only sending, failure retention and rendered waveform bounds.
 - Capture and pure rendering tests cover PCM amplitude, measured silence, fixed cadence, WAV repair, bounded histories and waveform geometry.
 
+## Native Wayland trackpad lifecycle
+
+The desktop launcher's local GPUI backend must include commit `a535f3f` or later. Previously the Wayland backend emitted only scroll movement and ignored compositor axis-stop events. The app's legacy wheel fallback consequently treated a 180 ms stationary speaking pause as a release, prematurely finishing or locking capture.
+
+The backend now emits `Started` for the first finger-scroll delta and a zero-delta `Ended` only after all active native axes stop. Intermediate pauses remain held. Mouse wheels retain their legacy unphased behavior. Six backend regressions cover pauses, repeated stops, diagonal axes, shared final-delta/stop frames and source changes. The app's existing phased-hold regression also checks a two-second deep hold followed by reversal, and locking only on explicit release.
+
 ## Desktop simulator acceptance, November 8, 2026
 
 The actual native Linux simulator was exercised in an isolated X11 display with mouse-driven emulated touch, actual `parec` PCM capture, and speech routed through a dedicated PipeWire monitor without using the physical microphone or speakers. Recorded WAV uploads contained nonzero measured audio. A localhost transcription fixture returned known text to validate the transport-to-editor path, not speech recognition accuracy.
