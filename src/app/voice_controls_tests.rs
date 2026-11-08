@@ -29,7 +29,7 @@ fn seed_startup(app: &mut MobileApp, locked: bool) {
 }
 
 #[gpui::test]
-fn pulling_voice_overlay_grows_without_reflowing_transcript(cx: &mut TestAppContext) {
+fn pulling_voice_mic_reveals_below_input_without_reflow(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     cx.simulate_resize(gpui::size(px(390.), px(844.)));
@@ -48,6 +48,7 @@ fn pulling_voice_overlay_grows_without_reflowing_transcript(cx: &mut TestAppCont
     assert!(cx.debug_bounds("voice-overscroll-semicircle").is_none());
     assert!(cx.debug_bounds("voice-overscroll-mic").is_none());
 
+    let composer = cx.debug_bounds("chat-composer").expect("input line");
     let mut previous_height = px(0.);
     for delta in [-20., -10.] {
         view.update(cx, |app, cx| {
@@ -58,27 +59,40 @@ fn pulling_voice_overlay_grows_without_reflowing_transcript(cx: &mut TestAppCont
             cx.notify();
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let semicircle = cx.debug_bounds("voice-overscroll-semicircle")
-            .expect("pulling needs a visible semicircle");
-        assert!(cx.debug_bounds("voice-overscroll-mic").is_some());
-        assert!(semicircle.size.height > previous_height,
-            "additional pull must grow the semicircle");
-        assert!(semicircle.size.height <= px(96.));
-        // GPUI rounds each edge to device pixels independently.
-        assert!((f32::from(semicircle.size.width - semicircle.size.height * 2.)).abs() <= 1.);
-        previous_height = semicircle.size.height;
+        assert!(cx.debug_bounds("voice-overscroll-semicircle").is_none());
+        let reveal = cx.debug_bounds("voice-control").expect("overscroll reveal");
+        let mic = cx.debug_bounds("voice-overscroll-mic").expect("bare mic");
+        let moved_composer = cx.debug_bounds("chat-composer").unwrap();
+        assert!(reveal.size.height > previous_height, "pull must uncover more space");
+        assert!(reveal.size.height <= px(crate::voice_visual::HEIGHT));
+        assert_eq!(mic.size, gpui::size(px(20.), px(26.)));
+        assert!(reveal.top() >= moved_composer.bottom() - px(1.),
+            "mic reveal belongs below the whole input line, not inside the transcript");
+        assert!((f32::from(moved_composer.bottom() - (composer.bottom() - reveal.size.height))).abs() <= 1.);
+        assert_eq!(moved_composer.size, composer.size);
+        previous_height = reveal.size.height;
         // Let the recorded bounds catch up, so a reflow cannot hide for a frame.
         cx.update(|window, cx| {
             window.refresh();
             window.draw(cx).clear(cx);
         });
         view.read_with(cx, |app, _| {
-            assert_eq!(app.feel.g.transcript, Some(transcript),
-                "the absolute voice overlay must not resize or move the transcript");
+            let moved = app.feel.g.transcript.unwrap();
+            assert_eq!(moved.size, transcript.size, "overscroll must not reflow the transcript");
+            assert!((f32::from(moved.top() - (transcript.top() - previous_height))).abs() <= 1.,
+                "transcript and input line must travel upward together");
             assert!(!app.voice.starting && !app.voice.busy);
             assert!(app.voice.recording.is_none());
         });
     }
+    view.update(cx, |app, cx| {
+        assert!(app.feel.voice_gesture.release().is_empty());
+        app.feel.voice_gesture.snap_to_target();
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("voice-overscroll-mic").is_none());
+    assert_eq!(cx.debug_bounds("chat-composer"), Some(composer));
 }
 
 #[cfg(any(target_os = "ios", target_os = "linux"))]

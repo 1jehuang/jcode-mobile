@@ -1740,7 +1740,7 @@ impl MobileApp {
                 .into_any_element()
         };
         let body = self.feel_transcript(body, t);
-        div()
+        let content = div()
             .flex()
             .flex_col()
             .size_full()
@@ -1750,7 +1750,8 @@ impl MobileApp {
             })
             .child(body)
             .child(self.render_composer(t, window, cx))
-            .into_any_element()
+            .into_any_element();
+        self.feel_voice_surface(content, t)
     }
 
     /// Provisioning/connecting line shown on an empty session.

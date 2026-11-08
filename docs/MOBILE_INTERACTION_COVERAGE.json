@@ -1049,6 +1049,28 @@
       "renderer": true
     },
     {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Offline rendered fixture verifies that transcript and composer translate together without resizing, the bare mic is revealed below the input line, and release restores the composer. No real audio, native keyboard animation or device GPU pixels are covered.",
+          "tests": [
+            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Physical iOS keyboard, safe-area changes and touch/momentum combinations during a held or locked microphone reveal require device validation.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_voice_surface",
+      "renderer": true
+    },
+    {
       "controls": {
         "debug_selector:literal:tab-hold-feedback": 1,
         "id:literal:tab-hold-feedback": 1
@@ -2101,19 +2123,18 @@
       "controls": {
         "debug_selector:literal:voice-control": 1,
         "debug_selector:literal:voice-overscroll-mic": 1,
-        "debug_selector:literal:voice-overscroll-semicircle": 1,
         "id:literal:voice-control": 1
       },
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Pure-model tests cover phase instructions and bounded pull-sized semicircle geometry. The offline rendered fixture checks growth, microphone presence, idle absence and stable transcript bounds. These do not verify GPU pixels or real microphone capture.",
+          "note": "Pure-model tests cover phase instructions and bounded mic reveal height. The offline rendered fixture checks mic placement below the input, shared transcript/composer travel without resizing, idle absence and restoration on release. These do not verify GPU pixels or real microphone capture.",
           "tests": [
             "src/voice_visual.rs::tests::preparing_never_claims_recording",
             "src/voice_visual.rs::tests::locked_explains_explicit_stop",
-            "src/voice_visual.rs::tests::semicircle_tracks_pull_and_is_bounded",
+            "src/voice_visual.rs::tests::mic_reveal_tracks_pull_and_is_bounded",
             "src/voice_visual.rs::tests::pending_work_remains_visible_after_release",
-            "src/app/voice_controls_tests.rs::pulling_voice_overlay_grows_without_reflowing_transcript"
+            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow"
           ]
         },
         {
@@ -2132,8 +2153,8 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 180,
-    "event_site_count": 115,
-    "owner_count": 72
+    "control_site_count": 184,
+    "event_site_count": 116,
+    "owner_count": 73
   }
 }

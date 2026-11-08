@@ -327,7 +327,10 @@ mod tests {
                 cx.update(|window, cx| window.draw(cx).clear(cx));
                 let bounds = cx.debug_bounds("voice-control").expect("voice status");
                 assert_eq!(bounds.size.width, px(width));
-                assert_eq!(bounds.size.height, px(voice_visual::HEIGHT));
+                let expected = view.read_with(cx, |demo, _| {
+                    voice_visual::reveal_height(demo.gesture.pull, demo.phase)
+                });
+                assert!((f32::from(bounds.size.height) - expected).abs() <= 1.);
                 assert!(bounds.origin.x >= px(0.));
                 assert!(bounds.origin.y >= px(0.));
                 assert!(bounds.bottom() <= px(844.));

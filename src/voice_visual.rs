@@ -1,6 +1,6 @@
-//! Bottom-edge overscroll feedback. The semicircle grows with visible pull distance.
-//! Capture state is exposed to accessibility without a status bar moving the transcript.
-use crate::theme::{Theme, with_alpha};
+//! Bare microphone revealed beyond the transcript and composer by overscrolling.
+//! Capture state remains available to accessibility without extra visual chrome.
+use crate::theme::Theme;
 use gpui::{AnyElement, div, prelude::*, px};
 
 pub const HEIGHT: f32 = 96.0;
@@ -38,7 +38,7 @@ impl Phase {
     }
 }
 
-fn radius(pull: f32, phase: Phase) -> f32 {
+pub fn reveal_height(pull: f32, phase: Phase) -> f32 {
     let pull = if pull.is_finite() { pull.max(0.) } else { 0. };
     // Keep processing visible after the released gesture has sprung back.
     let rest = if matches!(phase, Phase::Preparing | Phase::Transcribing | Phase::Error) {
@@ -52,7 +52,7 @@ fn radius(pull: f32, phase: Phase) -> f32 {
 }
 
 pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &Theme) -> AnyElement {
-    let radius = radius(pull, phase);
+    let height = reveal_height(pull, phase);
     let ink = match phase {
         Phase::Error => t.error,
         Phase::Recording | Phase::Locked => t.ok,
@@ -73,16 +73,9 @@ pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &
         .debug_selector(|| "voice-control".into())
         .role(gpui::Role::Status)
         .aria_label(format!("{}. {}", phase.label(), phase.instruction()))
-        .w_full().h(px(HEIGHT)).flex_none()
-        .flex().items_end().justify_center()
-        .child(div()
-            .debug_selector(|| "voice-overscroll-semicircle".into())
-            .relative().w(px(radius * 2.)).h(px(radius)).flex_none()
-            .rounded_t(px(radius)).overflow_hidden()
-            .bg(t.surface)
-            .border_1().border_b_0().border_color(with_alpha(ink, 0.35))
-            .flex().items_center().justify_center()
-            .child(microphone.opacity((radius / crate::voice_gesture::START).clamp(0., 1.))))
+        .w_full().h(px(height)).flex_none().overflow_hidden()
+        .flex().items_center().justify_center()
+        .child(microphone.opacity((height / crate::voice_gesture::START).clamp(0., 1.)))
         .into_any_element()
 }
 
@@ -100,24 +93,24 @@ mod tests {
         assert!(Phase::Recording.instruction().contains("Release to send"));
     }
     #[test]
-    fn semicircle_tracks_pull_and_is_bounded() {
+    fn mic_reveal_tracks_pull_and_is_bounded() {
         for phase in [Phase::Pulling, Phase::Recording] {
-            assert_eq!(radius(0., phase), 0.);
-            assert_eq!(radius(16., phase), 16.);
-            assert_eq!(radius(32., phase), 32.);
-            assert_eq!(radius(64., phase), 64.);
-            assert_eq!(radius(160., phase), HEIGHT);
+            assert_eq!(reveal_height(0., phase), 0.);
+            assert_eq!(reveal_height(16., phase), 16.);
+            assert_eq!(reveal_height(32., phase), 32.);
+            assert_eq!(reveal_height(64., phase), 64.);
+            assert_eq!(reveal_height(160., phase), HEIGHT);
             for pull in [-1., f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-                assert_eq!(radius(pull, phase), 0.);
+                assert_eq!(reveal_height(pull, phase), 0.);
             }
         }
     }
     #[test]
     fn pending_work_remains_visible_after_release() {
         for phase in [Phase::Preparing, Phase::Transcribing, Phase::Error] {
-            assert_eq!(radius(0., phase), 32.);
-            assert_eq!(radius(64., phase), 64.);
+            assert_eq!(reveal_height(0., phase), 32.);
+            assert_eq!(reveal_height(64., phase), 64.);
         }
-        assert_eq!(radius(0., Phase::Locked), crate::voice_gesture::LOCK);
+        assert_eq!(reveal_height(0., Phase::Locked), crate::voice_gesture::LOCK);
     }
 }

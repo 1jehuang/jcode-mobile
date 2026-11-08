@@ -255,21 +255,7 @@ impl MobileApp {
         let show = pull > 0.5 || refreshing;
         let progress = (pull / crate::gestures::PULL_TRIGGER).clamp(0., 1.);
         let finished = refreshing && self.session.phase == ConnectionPhase::Connected;
-        let voice_pull = self.feel.voice_gesture.pull;
-        let voice_visible = self.feel.voice_gesture.active() || voice_pull > 0.5
-            || (self.voice.auto_send && (self.voice.busy || self.voice.recording.is_some()));
-        let voice_phase = if self.voice.has_error() {
-            crate::voice_visual::Phase::Error
-        } else if self.voice.starting {
-            crate::voice_visual::Phase::Preparing
-        } else if self.voice.busy {
-            crate::voice_visual::Phase::Transcribing
-        } else if self.voice.locked {
-            crate::voice_visual::Phase::Locked
-        } else if self.voice.recording.is_some() {
-            crate::voice_visual::Phase::Recording
-        } else { crate::voice_visual::Phase::Pulling };
-        let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
+        let voice_visible = self.feel.voice_gesture.active() || self.feel.voice_gesture.pull > 0.5;
         div()
             .relative()
             .flex_1()
@@ -323,9 +309,29 @@ impl MobileApp {
                 )
             })
             .child(div().relative().top(px(if voice_visible { 0. } else if dictate { -pull } else { pull })).flex_1().min_h_0().flex().flex_col().child(body))
-            .when(voice_visible, |d| d.child(
-                div().absolute().left_0().right_0().bottom_0().h(px(crate::voice_visual::HEIGHT))
-                    .child(crate::voice_visual::render(voice_pull, voice_phase, elapsed, crate::system::reduce_motion(), t))
+            .into_any_element()
+    }
+
+    /// Reveal the mic beyond the entire chat surface, including the input line.
+    /// Translate instead of resizing so scroll layout and anchoring stay stable.
+    pub(super) fn feel_voice_surface(&self, content: AnyElement, t: &Theme) -> AnyElement {
+        use crate::voice_visual::{self, Phase};
+        let pull = self.feel.voice_gesture.pull;
+        let visible = self.feel.voice_gesture.active() || pull > 0.5
+            || (self.voice.auto_send && (self.voice.busy || self.voice.recording.is_some()));
+        let phase = if self.voice.has_error() { Phase::Error }
+            else if self.voice.locked { Phase::Locked }
+            else if self.voice.starting { Phase::Preparing }
+            else if self.voice.busy { Phase::Transcribing }
+            else if self.voice.recording.is_some() { Phase::Recording }
+            else { Phase::Pulling };
+        let height = if visible { voice_visual::reveal_height(pull, phase) } else { 0. };
+        let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
+        div().relative().size_full().overflow_hidden()
+            .child(div().relative().top(px(-height)).size_full().child(content))
+            .when(visible, |d| d.child(
+                div().absolute().left_0().right_0().bottom_0().h(px(height))
+                    .child(voice_visual::render(pull, phase, elapsed, crate::system::reduce_motion(), t))
             ))
             .into_any_element()
     }
