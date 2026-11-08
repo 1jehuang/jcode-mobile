@@ -3,6 +3,7 @@
 
 mod app;
 mod scroll_follow;
+mod stream_reveal;
 mod perf;
 mod donut;
 mod donut_field;

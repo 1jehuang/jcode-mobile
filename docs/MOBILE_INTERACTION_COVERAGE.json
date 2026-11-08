@@ -1057,10 +1057,16 @@
         },
         {
           "kind": "state_model_mocked",
-          "note": "Offline rendered fixture verifies that transcript and composer translate together without resizing, the bare mic is revealed below the input line, and release restores the composer. No real audio, native keyboard animation or device GPU pixels are covered.",
+          "note": "Offline fixtures verify same-painted-frame spring motion, final-frame removal, finger-owned lock travel beyond the old cap, continuous processing/completion/cancel targets, reduced-motion behavior and same-event scroll-bottom handoff. Composer sizes stay fixed. Native audio, GPU frame pacing and physical keyboard gestures are not measured.",
           "tests": [
             "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow",
-            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat",
+            "src/app/voice_motion_tests.rs::voice_motion_is_painted_in_same_frame_and_last_frame_disappears",
+            "src/app/voice_motion_tests.rs::held_voice_startup_and_flag_changes_never_move_finger",
+            "src/app/voice_motion_tests.rs::released_voice_processing_completion_and_cancel_are_continuous",
+            "src/app/voice_motion_tests.rs::reduced_motion_tracks_held_finger_then_snaps_released_rest",
+            "src/app/voice_motion_tests.rs::held_lock_renders_beyond_old_cap_then_settles_with_mic_inside_reveal",
+            "src/app/voice_motion_tests.rs::voice_bottom_handoff_uses_only_same_event_residual_travel"
           ]
         },
         {
@@ -2135,14 +2141,21 @@
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Pure-model tests cover phase instructions and bounded mic reveal height. The offline rendered fixture checks mic placement below the input, shared transcript/composer travel without resizing, idle absence and restoration on release. These do not verify GPU pixels or real microphone capture.",
+          "note": "Pure tests assert phase-independent reveal geometry and bounded smoothstep opacity. Offline rendered fixtures check unclipped held lock, same-frame travel, lifecycle continuity and reduced motion without resizing the composer. GPU pixels, physical frame pacing and real microphone capture remain unverified.",
           "tests": [
             "src/voice_visual.rs::tests::preparing_never_claims_recording",
             "src/voice_visual.rs::tests::locked_explains_explicit_stop",
             "src/voice_visual.rs::tests::mic_reveal_tracks_pull_and_is_bounded",
-            "src/voice_visual.rs::tests::pending_work_remains_visible_after_release",
+            "src/voice_visual.rs::tests::async_phase_changes_never_move_the_reveal",
+            "src/voice_visual.rs::tests::opacity_eases_in_without_changing_icon_geometry",
             "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow",
-            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat",
+            "src/app/voice_motion_tests.rs::voice_motion_is_painted_in_same_frame_and_last_frame_disappears",
+            "src/app/voice_motion_tests.rs::held_voice_startup_and_flag_changes_never_move_finger",
+            "src/app/voice_motion_tests.rs::released_voice_processing_completion_and_cancel_are_continuous",
+            "src/app/voice_motion_tests.rs::reduced_motion_tracks_held_finger_then_snaps_released_rest",
+            "src/app/voice_motion_tests.rs::held_lock_renders_beyond_old_cap_then_settles_with_mic_inside_reveal",
+            "src/app/voice_motion_tests.rs::voice_bottom_handoff_uses_only_same_event_residual_travel"
           ]
         },
         {
@@ -2171,9 +2184,9 @@
           "kind": "state_model_mocked",
           "note": "Pinch progress/commit/spring-back and grid geometry are unit tested. Two-finger recognition is tested in the gpui fork.",
           "tests": [
-            "src/app/session_map.rs::pinch_out_commits_to_map_and_pinch_in_returns",
-            "src/app/session_map.rs::small_pinch_springs_back",
-            "src/app/session_map.rs::grid_cells_fill_two_columns"
+            "src/app/session_map.rs::tests::pinch_out_commits_to_map_and_pinch_in_returns",
+            "src/app/session_map.rs::tests::small_pinch_springs_back",
+            "src/app/session_map.rs::tests::grid_cells_fill_two_columns"
           ]
         },
         {
@@ -2189,6 +2202,44 @@
       },
       "handler": false,
       "owner": "src/app/session_map.rs::impl:MobileApp::render_session_map",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Actual protocol-event GPUI frames assert ordered reasoning geometry. Disjoint highlight tests verify byte counts and styles. Physical iOS alpha/frame pacing is not measured.",
+          "tests": [
+            "src/app/streaming_tests.rs::actual_events_paint_reasoning_text_tools_and_resumed_reasoning_in_order",
+            "src/markdown.rs::tests::fades_merge_with_emphasis_without_overlapping_or_duplicating_bytes"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::render_reasoning_streaming",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Fixed-clock actual GPUI frames assert held/released text height and completion. Pure tests assert old inline text stays opaque, fade ranges are UTF-8 safe, and shaping runs do not overlap. No physical display capture.",
+          "tests": [
+            "src/app/streaming_tests.rs::fixed_clock_holds_partial_text_then_releases_a_whole_block",
+            "src/markdown.rs::tests::streaming_fade_preserves_old_blocks_and_old_inline_prefix",
+            "src/markdown.rs::tests::fade_ranges_are_utf8_safe_and_clamped",
+            "src/markdown.rs::tests::fades_merge_with_emphasis_without_overlapping_or_duplicating_bytes"
+          ]
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/markdown.rs::render_streaming",
       "renderer": true
     }
   ],

@@ -43,7 +43,7 @@ impl MobileApp {
                         .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") });
                     let heights = self.transcript_heights.clone();
                     rows.push(row.relative()
-                        .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, t, cx))
+                        .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, None, t, cx))
                         .child(gpui::canvas(move |bounds, _, _| heights.record(key, bounds.size.height), |_, _, _, _| {}).absolute().inset_0())
                         .into_any_element());
                 }

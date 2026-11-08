@@ -76,9 +76,17 @@ pub(super) fn key(
     expanded: &std::collections::HashSet<String>,
     width: f32,
 ) -> Key {
+    key_visible(tab, entry, prompt, expanded, width, &entry.text, &entry.reasoning)
+}
+
+pub(super) fn key_visible(
+    tab: u64, entry: &TranscriptEntry, prompt: usize,
+    expanded: &std::collections::HashSet<String>, width: f32,
+    text: &str, reasoning: &str,
+) -> Key {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    entry.text.hash(&mut hash);
-    entry.reasoning.hash(&mut hash);
+    text.hash(&mut hash);
+    reasoning.hash(&mut hash);
     std::mem::discriminant(&entry.role).hash(&mut hash);
     (if prompt == 0 { 1 } else { prompt.ilog10() + 1 }).hash(&mut hash);
     if entry.role == Role::Assistant {
@@ -191,6 +199,24 @@ mod tests {
             is_streaming: false,
             is_queued: false,
         }
+    }
+
+    #[test]
+    fn pending_raw_text_preserves_measurements_until_visible_prefix_changes() {
+        let heights = Heights::default();
+        let mut entry = entry();
+        entry.is_streaming = true;
+        entry.text = "Visible paragraph.\n\nPending".into();
+        let expanded = Default::default();
+        let visible = "Visible paragraph.\n\n";
+        let original = key_visible(1, &entry, 0, &expanded, 362., visible, "");
+        heights.record(original, px(123.));
+        entry.text.push_str(" more arriving tokens");
+        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., visible, "")), Some(px(123.)));
+        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., &entry.text, "")), None,
+            "idle release must invalidate cached geometry even with no new raw event");
+        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., "Changed paragraph.\n\n", "")), None,
+            "same-length visible replacements must invalidate measurements");
     }
 
     #[test]

@@ -34,6 +34,10 @@ mod voice;
 mod cloud_machine;
 mod git_info;
 mod transcript_layout;
+mod stream_presentation;
+mod stream_motion;
+#[cfg(test)]
+mod streaming_tests;
 #[cfg(test)]
 mod performance_tests;
 #[cfg(test)]
@@ -151,6 +155,13 @@ pub struct MobileApp {
     scroll_perf_started: Option<std::time::Instant>,
     expanded_tools: std::collections::HashSet<String>,
     follow: bool,
+    stream_presentation: stream_presentation::Presentation,
+    stream_motion: stream_motion::StreamMotion,
+    stream_identity: Option<(u64, Option<String>)>,
+    #[cfg(test)]
+    animate_stream_in_tests: bool,
+    #[cfg(test)]
+    stream_test_now: Option<std::time::Instant>,
     /// Long-press on a tab: generation of the pending hold timer.
     tab_hold: Option<u64>,
     /// The hold already fired, so the release must not also count as a tap.
@@ -337,6 +348,13 @@ impl MobileApp {
             scroll_perf_started: None,
             expanded_tools: Default::default(),
             follow: true,
+            stream_presentation: Default::default(),
+            stream_motion: Default::default(),
+            stream_identity: None,
+            #[cfg(test)]
+            animate_stream_in_tests: false,
+            #[cfg(test)]
+            stream_test_now: None,
             tab_hold: None,
             hold_fired: false,
             tab_menu: None,
@@ -594,6 +612,7 @@ impl MobileApp {
             let _ = tx.unbounded_send(o);
         });
         self.connection = Some(conn);
+        self.stream_motion.reset();
         self.follow = true;
         self.pump(self.active_tab, rx, cx);
     }
@@ -840,7 +859,7 @@ impl MobileApp {
                         crate::notify::keep_alive(busy);
                         this.sync_live_activity();
                         this.flush_pending_send(cx);
-                        // Follow mode glides to the new end in render_chat.
+                        // Presentation releases visible blocks in render_chat; raw data is already current.
                         cx.notify();
                     })
                     .is_ok();
@@ -889,8 +908,9 @@ impl MobileApp {
         }
         self.feel_sent();
         self.composer.update(cx, |t, cx| t.set_text("", cx));
+        self.stream_motion.reset();
         self.follow = true;
-        // render_chat glides to the end.
+        // A new outgoing prompt explicitly resumes native tail following.
         cx.notify();
     }
 
@@ -1562,7 +1582,24 @@ impl MobileApp {
 
     fn render_chat_inner(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.build");
-        // Follow is a layout-time tail anchor, not a second scroll animation.
+        let identity = (self.active_tab, self.session.session_id.clone());
+        if self.stream_identity.as_ref() != Some(&identity) {
+            self.stream_motion.reset();
+            self.stream_identity = Some(identity);
+        }
+        #[cfg(test)]
+        let now = self.stream_test_now.unwrap_or_else(std::time::Instant::now);
+        #[cfg(not(test))]
+        let now = std::time::Instant::now();
+        #[cfg(test)]
+        let instant = crate::system::reduce_motion() || !self.animate_stream_in_tests;
+        #[cfg(not(test))]
+        let instant = crate::system::reduce_motion();
+        #[cfg(test)]
+        self.stream_motion.set_now_for_test(now);
+        let presentation = self.stream_presentation.prepare(self.active_tab, &self.session, now, instant);
+        if presentation.animating { window.request_animation_frame(); }
+        // Native layout remains authoritative. Motion affects painting only.
         // Render only knows the previous layout's maximum. Easing toward that
         // stale maximum made each streamed chunk (and thinking-row transition)
         // drift behind, then catch up on later orb/animation frames. GPUI applies
@@ -1586,7 +1623,14 @@ impl MobileApp {
         let mut geometry = Vec::with_capacity(entries.len());
         for e in entries {
             if e.role == Role::User { prompt_n += 1; }
-            let key = transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width());
+            let visible = presentation.rows.get(&e.id);
+            let text = visible.map_or(e.text.as_str(), |row| &e.text[..row.text_len]);
+            let reasoning = visible.map_or(e.reasoning.as_str(), |row| &e.reasoning[..row.reasoning_len]);
+            let key = if visible.is_some() {
+                transcript_layout::key_visible(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width(), text, reasoning)
+            } else {
+                transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width())
+            };
             geometry.push((key, self.transcript_heights.get(key), px(0.)));
         }
         let mut suffix = px(0.);
@@ -1604,7 +1648,7 @@ impl MobileApp {
             }
             let skip = height.is_some_and(|height| {
                 if self.follow {
-                    transcript_layout::before_tail(after, window.viewport_size().height)
+                    transcript_layout::before_tail(after, window.viewport_size().height + (window.viewport_size().height * 0.6).max(px(240.)))
                 } else {
                     transcript_layout::offscreen(top, height, off, viewport)
                 }
@@ -1618,7 +1662,7 @@ impl MobileApp {
                     .debug_selector({ let id = e.id; move || format!("entry-{id}") });
                 #[cfg(test)]
                 { self.rendered_transcript_rows += 1; }
-                let el = self.render_entry(e, prompt_n, &self.expanded_tools, t, cx);
+                let el = self.render_entry(e, prompt_n, &self.expanded_tools, presentation.rows.get(&e.id), t, cx);
                 let heights = self.transcript_heights.clone();
                 rows.push(row.relative()
                     .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
@@ -1629,9 +1673,11 @@ impl MobileApp {
         }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
-            rows.push(orb_row(&self.activity_orb, a, t.text_muted)
-                .id("transcript-activity").debug_selector(|| "transcript-activity".into())
-                .into_any_element());
+            rows.push(stream_motion::steady_activity(
+                orb_row(&self.activity_orb, a, t.text_muted)
+                    .id("transcript-activity").debug_selector(|| "transcript-activity".into()),
+                self.stream_motion.clone(), self.follow,
+            ).into_any_element());
         }
         if let Some(err) = self.session.error_banner.clone() {
             rows.push(
@@ -1699,13 +1745,14 @@ impl MobileApp {
                             // release immediately, regardless of listener order
                             // or how far the streaming animation trails the end.
                             if delta.y.abs() >= delta.x.abs() {
+                                if this.follow && delta.y > px(0.) { this.stream_motion.release(&this.transcript_scroll); }
                                 this.follow = crate::scroll_follow::follow_after_scroll(
                                     this.follow, f32::from(delta.y), f32::from(max - off),
                                 );
                             }
                             cx.notify();
                         }))
-                        .child(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows.finish()))
+                        .child(stream_motion::stream_motion(div().w_full().min_w_0().flex().flex_col().gap(px(14.)).px(px(14.)).py(px(12.)).children(rows.finish()), self.transcript_scroll.clone(), self.stream_motion.clone(), self.follow, instant))
                         .child({
                             let scroll_started = self.scroll_perf_started.take();
                             gpui::canvas(|_, _, _| (), move |_, _, _, _| {
@@ -1735,6 +1782,7 @@ impl MobileApp {
                             .active(|s| s.bg(t.surface))
                             .child("↓")
                             .on_click(cx.listener(|this, _, _, cx| {
+                                this.stream_motion.reset();
                                 this.follow = true;
                                 // The next layout anchors to the current tail.
                                 cx.notify()
@@ -1804,7 +1852,7 @@ impl MobileApp {
         Some(if last.text.is_empty() { "working" } else { "responding" })
     }
 
-    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.entry_build");
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
@@ -1848,14 +1896,23 @@ impl MobileApp {
             Role::System => label(e.text.clone(), t.text_muted, 12.).into_any_element(),
             Role::Assistant => {
                 let mut col = div().w_full().min_w_0().flex().flex_col().gap(px(6.));
-                if !e.reasoning.is_empty() {
-                    col = col.child(crate::markdown::render_reasoning(&e.reasoning, t));
+                let reasoning = visible.map_or(e.reasoning.as_str(), |row| &e.reasoning[..row.reasoning_len]);
+                let text = visible.map_or(e.text.as_str(), |row| &e.text[..row.text_len]);
+                if !reasoning.is_empty() {
+                    col = col.child(match visible {
+                        Some(row) => crate::markdown::render_reasoning_streaming(reasoning, t, row.reasoning_fade),
+                        None => crate::markdown::render_reasoning(reasoning, t),
+                    });
                 }
                 for call in &e.tool_calls {
                     col = col.child(self.tool_line(call, expanded_tools, t, cx));
                 }
-                if !e.text.is_empty() {
-                    col = col.child(div().pt(px(4.)).child(crate::markdown::render(&e.text, t)));
+                if !text.is_empty() {
+                    let body = match visible {
+                        Some(row) => crate::markdown::render_streaming(text, t, row.text_fade),
+                        None => crate::markdown::render(text, t),
+                    };
+                    col = col.child(div().pt(px(4.)).child(body));
                 }
                 col.into_any_element()
             }
