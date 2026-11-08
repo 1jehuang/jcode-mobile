@@ -90,6 +90,20 @@ pub(crate) fn remember(account: &Account, ssh: &CloudSsh, target: &CloudTarget) 
     let _ = store::save(&state);
 }
 
+/// Update the saved target after a pinned direct login succeeded at a new
+/// control-plane-provided address (public IPs change across stop/start).
+pub(crate) fn remember_target(account: &Account, target: &CloudTarget) {
+    if let Some(mut state) = store::load().filter(|s| s.account == account_id(account) && s.authorized) {
+        state.target = Some(SavedTarget {
+            address: target.address,
+            port: target.port,
+            user: target.user.clone(),
+            host_keys: target.host_keys.clone(),
+        });
+        let _ = store::save(&state);
+    }
+}
+
 /// Forget the cached address (e.g. host key mismatch). Keeps the device key.
 pub(crate) fn forget_target(account: &Account) {
     if let Some(mut state) = store::load().filter(|s| s.account == account_id(account)) {

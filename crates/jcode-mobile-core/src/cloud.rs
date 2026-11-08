@@ -336,7 +336,16 @@ pub fn connect(
     cloud.poll_interval = Duration::from_millis(250);
     let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)?;
     progress("Checking your Jcode Cloud machine…");
-    let target = cloud.wait_for_host(account, key.public_openssh(), progress, cancelled)?;
+    let target = match wait_for_host_or_direct(&cloud, account, &key, progress, cancelled)? {
+        HostWait::Ready(target) => target,
+        HostWait::Direct(ssh) => {
+            let ssh = cache_master(account, ssh);
+            progress("Opening your Jcode session…");
+            let client = ssh.open_client()?;
+            check_cancelled()?;
+            return Ok(client);
+        }
+    };
     check_cancelled()?;
     progress("Connecting to your Jcode Cloud machine…");
     let master = crate::cloud_ssh::CloudSsh::connect(target.clone(), key)?;
@@ -351,6 +360,61 @@ pub fn connect(
     let client = ssh.open_client()?;
     check_cancelled()?;
     Ok(client)
+}
+
+enum HostWait {
+    Ready(jcode_sdk::cloud::CloudTarget),
+    Direct(crate::cloud_ssh::CloudSsh),
+}
+
+/// Like `CloudClient::wait_for_host`, but on a wake the control plane shares
+/// the pinned target before console readiness. If this device's key is
+/// already authorized there, SSH in as soon as sshd answers (about 6s after
+/// boot) instead of waiting ~30s for the console-scraped ready signal.
+fn wait_for_host_or_direct(
+    cloud: &CloudClient,
+    account: &Account,
+    key: &crate::cloud_ssh::CloudSshKey,
+    progress: &dyn Fn(&str),
+    cancelled: &dyn Fn() -> bool,
+) -> jcode_sdk::Result<HostWait> {
+    const DEADLINE: Duration = Duration::from_secs(15 * 60);
+    let deadline = Instant::now() + DEADLINE;
+    let direct = crate::cloud_direct::load_or_create(account).filter(|s| s.target().is_some());
+    let mut last = String::new();
+    loop {
+        let reply = cloud.request_host_connect(account, key.public_openssh())?;
+        if reply.ready {
+            return jcode_sdk::cloud::CloudTarget::from_reply(&reply).map(HostWait::Ready);
+        }
+        let message = reply.message.clone().unwrap_or_else(|| format!("Jcode Cloud machine is {}…", reply.state));
+        if message != last {
+            progress(&message);
+            last = message;
+        }
+        if let Some(state) = &direct
+            && reply.address.is_some()
+            && let Ok(target) = jcode_sdk::cloud::CloudTarget::from_reply(&reply)
+            && let Some(device_key) = state.key()
+            && let Ok(ssh) = crate::cloud_ssh::CloudSsh::connect_timeout(target.clone(), device_key, Duration::from_millis(1200))
+        {
+            crate::cloud_direct::remember_target(account, &target);
+            return Ok(HostWait::Direct(ssh));
+        }
+        if Instant::now() >= deadline {
+            return Err(jcode_sdk::Error::new(
+                jcode_sdk::ErrorKind::StartupTimeout,
+                "Jcode Cloud did not become ready in time. Retry to keep waiting.",
+            ));
+        }
+        let until = Instant::now() + cloud.poll_interval;
+        while Instant::now() < until {
+            if cancelled() {
+                return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 fn cache_master(account: &Account, master: crate::cloud_ssh::CloudSsh) -> crate::cloud_ssh::PreparedSsh {

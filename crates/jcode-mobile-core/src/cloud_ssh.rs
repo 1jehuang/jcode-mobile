@@ -219,6 +219,14 @@ enum Outgoing {
     Close,
 }
 
+/// Startup stage timings on stderr when `JCODE_STARTUP_TRACE` is set.
+fn trace(stage: &str, since: Instant) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("JCODE_STARTUP_TRACE").is_some()) {
+        eprintln!("startup_trace {stage} +{:?}", since.elapsed());
+    }
+}
+
 fn failed(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::ConnectFailed, message.into())
 }
@@ -303,6 +311,7 @@ impl CloudSsh {
             };
             runtime.block_on(async move {
                 let mismatch = Arc::new(AtomicBool::new(false));
+                let t0 = Instant::now();
                 let authenticated = tokio::time::timeout(auth_timeout, async {
                     let config = Arc::new(russh::client::Config {
                         // API hello and commands are small, latency-sensitive
@@ -316,6 +325,7 @@ impl CloudSsh {
                         (target.address, target.port),
                         PinnedHost { keys, mismatch: mismatch.clone() },
                     ).await.map_err(|e| failed(format!("SSH connect failed: {e}")))?;
+                    trace("ssh handshake", t0);
                     let auth = session.authenticate_publickey(
                         &target.user,
                         russh::keys::PrivateKeyWithHashAlg::new(key.private, None),
@@ -323,6 +333,7 @@ impl CloudSsh {
                     if !auth.success() {
                         return Err(failed("The host rejected the SSH key"));
                     }
+                    trace("ssh authenticated", t0);
                     Ok(session)
                 }).await;
                 let session = match authenticated {
@@ -389,6 +400,7 @@ impl CloudSsh {
                             Some(Command::Open { deadline, reply }) => {
                                 let session = session.clone();
                                 tokio::spawn(async move {
+                                    let t_open = Instant::now();
                                     let result = tokio::time::timeout_at(
                                         tokio::time::Instant::from_std(deadline),
                                         async {
@@ -403,6 +415,7 @@ impl CloudSsh {
                                                 "SSH peer did not respond while opening an API channel",
                                             ))?
                                                 .map_err(|e| failed(format!("SSH channel open failed: {e}")))?;
+                                            trace("channel opened", t_open);
                                             channel.exec(true, REMOTE_COMMAND).await
                                                 .map_err(|e| failed(format!("SSH API exec failed: {e}")))?;
                                             Ok(channel)
@@ -536,6 +549,7 @@ impl CloudSsh {
         std::thread::Builder::new()
             .name("jcode-cloud-api-hello".into())
             .spawn(move || {
+                let t_hello = Instant::now();
                 let result = JcodeClient::connect_with(
                     Box::new(transport),
                     ConnectOptions {
@@ -546,6 +560,7 @@ impl CloudSsh {
                         request_timeout: Some(REQUEST_TIMEOUT),
                     },
                 );
+                trace("api hello", t_hello);
                 let _ = ready.send(result);
             })
             .map_err(|e| failed(e.to_string()))?;
