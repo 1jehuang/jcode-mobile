@@ -154,6 +154,7 @@ impl MobileApp {
                 }
                 notify::clear_badge();
                 if let Some(account) = self.account.clone() {
+                    cloud::prewarm(&account);
                     cx.background_spawn(async move {
                         if let Err(e) = cloud::reset_badge(&account) {
                             log::debug!("push: badge reset failed: {e}");

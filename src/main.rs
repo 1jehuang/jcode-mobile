@@ -72,6 +72,13 @@ fn main() {
     jcode_mobile_core::crash::install_hook(crash_path.clone());
     std::thread::spawn(move || {
         let account = jcode_mobile_core::cloud::AccountStore::default_location().load();
+        // Open SSH and a ready API channel while the UI loads, so the first
+        // connect skips every network round trip when the machine is awake.
+        if let Some(account) = &account
+            && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
+        {
+            jcode_mobile_core::cloud::prewarm(account);
+        }
         if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref()) {
             log::warn!("jcode-mobile: crash upload failed: {e}");
         }

@@ -148,7 +148,7 @@ impl PreparedSsh {
         Ok(client)
     }
 
-    fn refill(&self) {
+    pub(crate) fn refill(&self) {
         {
             let mut state = self.0.state.lock().unwrap();
             if state.filling || state.spare.is_some() || self.0.ssh.is_closed() {

@@ -417,6 +417,32 @@ fn wait_for_host_or_direct(
     }
 }
 
+/// Speculatively prepare a launch: SSH straight to the remembered machine and
+/// pre-open one API channel (with hello done), so the next `connect` takes
+/// it without any network round trip. Never contacts the control plane and
+/// never wakes a sleeping machine. Safe to call often (app start, foreground).
+pub fn prewarm(account: &Account) {
+    let account = account.clone();
+    let _ = std::thread::Builder::new().name("jcode-cloud-prewarm".into()).spawn(move || {
+        let cached = {
+            let cache = warm_target().lock().unwrap();
+            cache.as_ref().and_then(|entry| entry.for_account(&account, Instant::now()))
+        };
+        if let Some(ssh) = cached.filter(|s| !s.is_closed()) {
+            ssh.refill();
+            return;
+        }
+        // A real connect in progress already does this work.
+        let Ok(_opening) = COLD_CONNECT.try_lock() else { return };
+        if let Some(state) = crate::cloud_direct::load_or_create(&account)
+            && let (Some(target), Some(key)) = (state.target(), state.key())
+            && let Ok(ssh) = crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT)
+        {
+            cache_master(&account, ssh).refill();
+        }
+    });
+}
+
 fn cache_master(account: &Account, master: crate::cloud_ssh::CloudSsh) -> crate::cloud_ssh::PreparedSsh {
     let ssh = crate::cloud_ssh::PreparedSsh::new(master);
     let expires = Instant::now() + TARGET_TTL;
