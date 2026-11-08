@@ -81,7 +81,14 @@ It requires `parec` and a PulseAudio-compatible server (PipeWire PulseAudio work
 Pull upward past the newest message while holding your finger down, then release
 to transcribe and send. Release while still deeply pulled to lock hands-free, then tap
 **the microphone** to stop and send, or **Cancel dictation** in the input line to discard.
-Moving back down before releasing finishes the recording, even after a deep pull. See `docs/VOICE_GESTURES.md` for details.
+Moving back down before releasing finishes the recording, even after a deep pull. Recognition uses the shared `jcode-voice` Nari realtime WebSocket integration, streaming microphone PCM while capture is active. It does not upload batch previews or use a Groq fallback, a cloud voice proxy, or Jcode cloud credits. See `docs/VOICE_GESTURES.md` for details.
+
+Configure a per-user `NARI_API_KEY` through the inherited environment or the shared
+`nari.env` configuration read by the `jcode-voice` credential loader. A stored Jcode
+cloud account is not a Nari credential. The desktop preview reads only credentials
+available to its own process and user. This does not configure an iPhone: iOS needs
+a key in its own app environment or accessible configuration location. Never copy
+keys into documentation, screenshots, shell history, or bug reports.
 
 ## Existing preview environment options
 

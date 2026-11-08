@@ -11,9 +11,9 @@ After locking, tap the microphone to stop and transcribe, or use the cancel cont
 
 The entire chat and composer translate together without adding cards or resizing from gesture status. A bare mic and 24 actual amplitude bars are revealed below the composer. Held displacement follows the finger, and released displacement settles with a critically damped spring. Reduce Motion snaps released travel without changing capture semantics.
 
-Recognized previews appear in the input while recording. The current subscription speech API accepts incremental WAV uploads rather than a bidirectional stream. Stopping performs the authoritative full-recording transcription. Overscroll sends only the spoken result, never an unrelated typed draft. Disconnected results stay in the draft for review. Cancel and navigation restore owned provisional text without overwriting user edits. See `LIVE_VOICE.md` for details.
+Recognized text appears in the input while recording through the shared `jcode-voice` Nari realtime WebSocket integration. Microphone PCM is streamed during capture, and stopping finalizes that stream rather than uploading the full recording to a batch API. There is no Groq fallback or managed-cloud voice proxy, and dictation does not consume Jcode cloud credits. Overscroll sends only the spoken result, never an unrelated typed draft. Disconnected results stay in the draft for review. Cancel and navigation restore owned provisional text without overwriting user edits. See `LIVE_VOICE.md` for details.
 
-HTTP 401/403 on a speech preview stops capture and shows an actionable account error instead of silently retrying. Native audio failures, empty results and stale callbacks never send messages. A finish during permission/startup is remembered and applied when startup completes.
+Nari authentication or stream failures stop dictation and show an actionable error instead of falling back to another provider. Native audio failures, empty results and stale callbacks never send messages. A finish during permission/startup is remembered and applied when startup completes.
 
 ## Linux desktop simulator
 
@@ -21,7 +21,7 @@ The same recognizer runs in the native desktop phone preview with mouse-to-touch
 
 Capture requires `parec` and a PulseAudio-compatible service such as PipeWire PulseAudio. Linux records mono PCM16 at 16 kHz and meters real 50 ms windows. Audio is bounded to five minutes and 10 MiB. `PULSE_SOURCE` can direct only a test simulator process to a virtual source without changing the system default microphone.
 
-The account must have speech transcription access. A signed-in cloud account alone is not proof that voice access is enabled. Relaunch after rebuilding to load source changes.
+Nari requires a per-user `NARI_API_KEY`. Mobile and desktop share the `jcode-voice` credential loader, which reads that environment variable or the shared `nari.env` configuration. A Jcode cloud sign-in does not provision Nari credentials. The Linux preview can use configuration available to its own user and process, but iOS must be configured in its own app environment or accessible configuration location. Do not assume a desktop credential is automatically installed on an iPhone. Relaunch after rebuilding to load source changes.
 
 ## Visual-only preview
 
