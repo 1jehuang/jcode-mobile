@@ -155,6 +155,24 @@ impl State {
     }
 }
 
+/// Dev hook (JCODE_MOBILE_MAP): believable titles and transcripts for screenshots.
+pub(super) fn fill_demo(s: &mut SessionState, i: usize) {
+    const DEMO: [(&str, &str, &str); 6] = [
+        ("Fix login redirect", "the oauth callback loops back to /login", "Found it: the state cookie is SameSite=Strict, so the redirect drops it. Switching to Lax."),
+        ("Pinch session map", "make the map look like desktop strips", "Strips now fit the screen height and each has its own + tile."),
+        ("Flaky CI on main", "why does streaming_tests fail sometimes", "It races with the other test binaries. Passes alone; adding a serial guard."),
+        ("Release notes 1.8", "draft notes for the testflight build", "Drafted five bullets covering voice, the session map and offline drafts."),
+        ("Bench edit loop", "run the edit-loop bench again", "Median check went from 2.9s to 1.4s after the cache fix."),
+        ("Refactor theme", "move colors into one palette", "Moved 41 colors into Palette and removed the duplicates."),
+    ];
+    let (title, user, reply) = DEMO[i % DEMO.len()];
+    s.session_title = Some(title.into());
+    let entry = |id, role, text: &str| jcode_mobile_core::session::TranscriptEntry {
+        id, role, text: text.into(), reasoning: String::new(), tool_calls: vec![], is_streaming: false, is_queued: false,
+    };
+    s.transcript = vec![entry(1, Role::User, user), entry(2, Role::Assistant, reply)];
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -246,6 +264,15 @@ impl MobileApp {
         if !self.map.visible() || self.screen != Screen::Chat {
             return None;
         }
+        if !cfg!(test) && std::env::var_os("JCODE_MOBILE_MAP").is_some() {
+            let ids = self.tab_order.clone();
+            for (i, id) in ids.into_iter().enumerate() {
+                let s = if id == self.active_tab { Some(&mut self.session) } else { self.parked.iter_mut().find(|p| p.id == id).map(|p| &mut p.session) };
+                if let Some(s) = s.filter(|s| s.transcript.is_empty()) {
+                    fill_demo(s, i);
+                }
+            }
+        }
         let p = self.map.progress.clamp(0., 1.);
         let over = (self.map.progress - 1.).max(0.);
         let screen = self.map_screen();
@@ -280,9 +307,9 @@ impl MobileApp {
             }));
         // Strip tracks and labels behind the panels.
         for row in 0..STRIPS {
-            let (_, ax, top) = l.adds[row];
+            let (_, _, top) = l.adds[row];
             let (x, y) = at(PAD - 8., top - 8.);
-            let (x2, _) = at(ax + ADD_W + 8., top);
+            let (x2, _) = at(l.size.0 - PAD + 8., top);
             layer = layer
                 .child(div().absolute().left(px(x)).top(px(y)).w(px((x2 - x).max(0.))).h(px(ph + 16. * k))
                     .rounded(px(14.)).bg(t.raised).opacity(p * 0.6))
@@ -319,11 +346,12 @@ impl MobileApp {
                     .on_click(cx.listener(move |this, _, _, cx| this.zoom_into(id, cx)))
                     .child(div().flex().items_center().gap(px(4.))
                         .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
-                        .child(label(title, t.text_strong, 10.).min_w_0().truncate()))
+                        .child(label(title, t.text_strong, 10.).w(px((w - 24.).max(0.))).truncate()))
                     .child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().justify_end().gap(px(3.))
                         .children(lines.into_iter().map(|(user, text)| {
                             label(text, if user { t.text_strong } else { t.text_secondary }, 7.5)
-                                .line_clamp(3)
+                                .w(px((w - 14.).max(0.)))
+                                .line_clamp(if user { 2 } else { 4 })
                                 .when(user, |d| d.px(px(3.)).py(px(2.)).rounded(px(3.)).bg(t.surface_elevated))
                         }))),
             );
@@ -346,7 +374,9 @@ impl MobileApp {
                     .on_click(cx.listener(move |this, _, _, cx| this.add_on_strip(row, cx))),
             );
         }
-        Some(layer.child(self.render_map_inset(&l, screen, p, t)).into_any_element())
+        // The overview only helps when part of the map is off screen.
+        let overflows = l.size.0 > screen.0 + 1. || l.size.1 > screen.1 + 1.;
+        Some(layer.when(overflows, |d| d.child(self.render_map_inset(&l, screen, p, t))).into_any_element())
     }
 
     /// Corner overview: the whole canvas in miniature with a lens for what
