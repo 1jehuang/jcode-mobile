@@ -14,6 +14,7 @@ struct Live {
 struct LiveState {
     snapshot: Option<Vec<u8>>,
     levels: std::collections::VecDeque<f32>,
+    error: Option<String>,
 }
 impl Live {
     fn snapshot(&self) -> Option<Vec<u8>> {
@@ -39,6 +40,162 @@ impl Live {
         if let Ok(mut state) = self.state.lock() {
             state.snapshot = bytes;
         }
+    }
+    fn complete(&self, result: &Result<Vec<u8>, String>) {
+        if let Err(error) = result {
+            if let Ok(mut state) = self.state.lock() {
+                state.error = Some(error.clone());
+            }
+        }
+    }
+}
+
+/// The sender lives only on the capture worker. A slow consumer must fail closed:
+/// dropping audio would change the words heard by the transcription service.
+#[derive(Default)]
+struct PcmStream {
+    sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
+    pending: Vec<u8>,
+}
+impl PcmStream {
+    fn new(sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>) -> Self {
+        Self {
+            sender,
+            pending: Vec::new(),
+        }
+    }
+    fn push(&mut self, mut pcm: &[u8]) -> Result<(), String> {
+        if self.sender.is_none() {
+            return Ok(());
+        }
+        while !pcm.is_empty() {
+            let count = (1600 - self.pending.len()).min(pcm.len());
+            self.pending.extend_from_slice(&pcm[..count]);
+            pcm = &pcm[count..];
+            if self.pending.len() == 1600 {
+                self.send_pending()?;
+            }
+        }
+        Ok(())
+    }
+    fn send_pending(&mut self) -> Result<(), String> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let samples = self
+            .pending
+            .chunks_exact(2)
+            .map(|s| i16::from_le_bytes([s[0], s[1]]))
+            .collect();
+        self.sender.as_ref().ok_or("PCM stream is closed")?.try_send(samples)
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) =>
+                    "Live transcription cannot keep up with microphone audio. Recording stopped to avoid losing speech.".to_owned(),
+                tokio::sync::mpsc::error::TrySendError::Closed(_) =>
+                    "Live transcription audio stream closed unexpectedly".to_owned(),
+            })?;
+        self.pending.clear();
+        Ok(())
+    }
+    fn finish(&mut self) -> Result<(), String> {
+        if self.pending.len() % 2 != 0 {
+            return Err("Microphone returned an incomplete PCM sample".into());
+        }
+        self.send_pending()?;
+        self.sender.take();
+        Ok(())
+    }
+}
+
+/// Incremental file reader for AVAudioRecorder's growing WAV. Chunk lengths may
+/// remain placeholders until stop, so only the data offset and actual file size
+/// are used. Header scans and each read allocation are bounded.
+#[cfg(any(target_os = "ios", test))]
+#[derive(Default)]
+struct WavPcmTail {
+    offset: Option<u64>,
+}
+#[cfg(any(target_os = "ios", test))]
+impl WavPcmTail {
+    fn poll(&mut self, path: &std::path::Path, stream: &mut PcmStream) -> Result<(), String> {
+        use std::io::{Read, Seek, SeekFrom};
+        if stream.sender.is_none() {
+            return Ok(());
+        }
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| format!("Cannot read live microphone audio: {e}"))?;
+        let size = file.metadata().map_err(|e| e.to_string())?.len();
+        if size > 10 * 1024 * 1024 {
+            return Err("Recorded audio exceeds the 10 MiB limit".into());
+        }
+        if self.offset.is_none() {
+            self.offset = Self::data_offset(&mut file, size)?;
+        }
+        let Some(mut offset) = self.offset else {
+            return Ok(());
+        };
+        if size < offset {
+            return Err("Microphone audio file shrank during recording".into());
+        }
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 1600];
+        while offset < size {
+            let count = (size - offset).min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..count])
+                .map_err(|e| e.to_string())?;
+            stream.push(&buffer[..count])?;
+            offset += count as u64;
+            self.offset = Some(offset);
+        }
+        Ok(())
+    }
+
+    fn data_offset(file: &mut std::fs::File, size: u64) -> Result<Option<u64>, String> {
+        use std::io::{Read, Seek, SeekFrom};
+        if size < 12 {
+            return Ok(None);
+        }
+        let mut header = [0u8; 12];
+        file.read_exact(&mut header).map_err(|e| e.to_string())?;
+        if &header[..4] != b"RIFF" || &header[8..] != b"WAVE" {
+            return Err("Microphone did not produce WAV audio".into());
+        }
+        let mut offset = 12u64;
+        let mut valid_format = false;
+        while offset + 8 <= size && offset <= 65536 {
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| e.to_string())?;
+            let mut chunk = [0u8; 8];
+            file.read_exact(&mut chunk).map_err(|e| e.to_string())?;
+            let len = u32::from_le_bytes(chunk[4..].try_into().unwrap()) as u64;
+            if &chunk[..4] == b"data" {
+                if !valid_format {
+                    return Err("Microphone WAV format is not mono PCM16 at 16 kHz".into());
+                }
+                return Ok(Some(offset + 8));
+            }
+            if &chunk[..4] == b"fmt " {
+                if len < 16 {
+                    return Err("Microphone WAV format header is invalid".into());
+                }
+                if offset + 24 > size {
+                    return Ok(None);
+                }
+                let mut format = [0u8; 16];
+                file.read_exact(&mut format).map_err(|e| e.to_string())?;
+                valid_format = u16::from_le_bytes(format[..2].try_into().unwrap()) == 1
+                    && u16::from_le_bytes(format[2..4].try_into().unwrap()) == 1
+                    && u32::from_le_bytes(format[4..8].try_into().unwrap()) == 16000
+                    && u16::from_le_bytes(format[12..14].try_into().unwrap()) == 2
+                    && u16::from_le_bytes(format[14..].try_into().unwrap()) == 16;
+            }
+            offset += 8 + len + len % 2;
+        }
+        if offset > 65536 {
+            return Err("Microphone WAV header exceeds the 64 KiB limit".into());
+        }
+        Ok(None)
     }
 }
 
@@ -128,6 +285,31 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// Nonblocking capture/stream failure polling. Errors are retained until drop.
+    pub fn error(&self) -> Option<String> {
+        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        {
+            self.worker
+                .as_ref()?
+                .live
+                .state
+                .try_lock()
+                .ok()?
+                .error
+                .clone()
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        {
+            None
+        }
+    }
+
+    /// Stream mono 16 kHz signed PCM16 in 50ms chunks through a bounded channel.
+    /// Call off the UI thread, just like `start`. Overflow stops capture with an
+    /// error rather than silently dropping speech. Drop cancels without flushing.
+    pub fn start_stream(pcm: tokio::sync::mpsc::Sender<Vec<i16>>) -> Result<Self, String> {
+        Self::start_inner(Some(pcm))
+    }
     /// Nonblocking demand/poll API. The first call requests a worker-built WAV;
     /// poll until Some, then request the next snapshot at the desired cadence.
     pub fn snapshot(&self) -> Option<Vec<u8>> {
@@ -158,14 +340,19 @@ impl Recording {
     }
     /// Call off the UI thread: permission approval can take up to two minutes.
     pub fn start() -> Result<Self, String> {
+        Self::start_inner(None)
+    }
+
+    fn start_inner(pcm: Option<tokio::sync::mpsc::Sender<Vec<i16>>>) -> Result<Self, String> {
         #[cfg(any(target_os = "ios", target_os = "linux"))]
         {
             Ok(Self {
-                worker: Some(imp::start()?),
+                worker: Some(imp::start(pcm)?),
             })
         }
         #[cfg(not(any(target_os = "ios", target_os = "linux")))]
         {
+            let _ = pcm;
             Err("Microphone recording is supported only on iOS and Linux, not on this desktop preview platform.".into())
         }
     }
@@ -251,7 +438,9 @@ mod imp {
         }
     }
 
-    pub(super) fn start() -> Result<Worker, String> {
+    pub(super) fn start(
+        pcm: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
+    ) -> Result<Worker, String> {
         RESERVED
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| {
@@ -267,7 +456,9 @@ mod imp {
             .name("voice-capture".into())
             .spawn(move || {
                 let _reservation = reservation;
-                objc2::rc::autoreleasepool(|_| {
+                let mut stream = super::PcmStream::new(pcm);
+                let result = objc2::rc::autoreleasepool(|_| {
+                    let mut tail = super::WavPcmTail::default();
                     let interrupted = Arc::new(AtomicBool::new(false));
                     let _observers = match unsafe { Observers::new(notifications_command, interrupted.clone()) } {
                         Ok(observers) => observers,
@@ -304,6 +495,7 @@ mod imp {
                                 worker_live.level(10.0f32.powf(db / 20.0));
                             }
                         }
+                        tail.poll(&capture.path.0, &mut stream)?;
                         if worker_live.requested.swap(false, Ordering::AcqRel) {
                             let snapshot = File::open(&capture.path.0).ok().and_then(|file| {
                                 let mut bytes = Vec::new();
@@ -320,6 +512,7 @@ mod imp {
                     if !keep {
                         return Ok(Vec::new());
                     }
+                    tail.poll(&capture.path.0, &mut stream)?;
                     let file = File::open(&capture.path.0)
                         .map_err(|e| format!("Cannot open recorded audio: {e}"))?;
                     if file.metadata().map_err(|e| e.to_string())?.len() > MAX_BYTES {
@@ -335,8 +528,11 @@ mod imp {
                     if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
                         return Err("Recording did not produce a valid WAV file".into());
                     }
+                    stream.finish()?;
                     Ok(bytes)
-                })
+                });
+                worker_live.complete(&result);
+                result
             })
             .map_err(|e| format!("Cannot start recording worker: {e}"))?;
         match ready_rx.recv() {
@@ -599,7 +795,9 @@ mod imp {
         }
     }
 
-    pub(super) fn start() -> Result<Worker, String> {
+    pub(super) fn start(
+        pcm: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
+    ) -> Result<Worker, String> {
         let mut command = Command::new("parec");
         command.args([
             "--record",
@@ -608,19 +806,31 @@ mod imp {
             "--rate=16000",
             "--channels=1",
         ]);
-        start_command(command, MAX_DURATION, MAX_PCM)
+        start_command_stream(command, MAX_DURATION, MAX_PCM, pcm)
     }
 
+    #[cfg(test)]
     fn start_command(
+        process: Command,
+        duration: Duration,
+        max_pcm: usize,
+    ) -> Result<Worker, String> {
+        start_command_stream(process, duration, max_pcm, None)
+    }
+
+    fn start_command_stream(
         mut process: Command,
         duration: Duration,
         max_pcm: usize,
+        sender: Option<tokio::sync::mpsc::Sender<Vec<i16>>>,
     ) -> Result<Worker, String> {
         let live = Arc::new(super::Live::default());
         let worker_live = live.clone();
         let (command, commands) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join = thread::Builder::new().name("voice-capture".into()).spawn(move || {
+            let mut stream = super::PcmStream::new(sender);
+            let result = (|| {
             let child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
             let mut child = match child {
                 Ok(child) => CaptureChild(child),
@@ -672,12 +882,18 @@ mod imp {
                     Ok(count) => {
                         pcm.extend_from_slice(&buffer[..count]);
                         meter.push(&buffer[..count], &worker_live);
+                        stream.push(&buffer[..count])?;
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(format!("Cannot read microphone audio: {e}")),
                 }
             }
-            wav(pcm)
+            let bytes = wav(pcm)?;
+            stream.finish()?;
+            Ok(bytes)
+            })();
+            worker_live.complete(&result);
+            result
         }).map_err(|e| format!("Cannot start recording worker: {e}"))?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Worker {
@@ -727,6 +943,156 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn pcm_stream_frames_are_exact_across_odd_reads_and_flush_closes_sender() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            let samples: Vec<i16> = (0..1703).map(|n| n - 851).collect();
+            let pcm: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            for chunk in pcm.chunks(73) {
+                stream.push(chunk).unwrap();
+            }
+            assert_eq!(receiver.try_recv().unwrap(), samples[..800]);
+            assert_eq!(receiver.try_recv().unwrap(), samples[800..1600]);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+            stream.finish().unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), samples[1600..]);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+
+        #[test]
+        fn pcm_stream_overflow_and_disconnection_fail_instead_of_dropping_speech() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            stream.push(&[0; 1600]).unwrap();
+            let started = Instant::now();
+            assert!(stream.push(&[1; 1600]).unwrap_err().contains("keep up"));
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(receiver.try_recv().unwrap(), vec![0; 800]);
+            drop(receiver);
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            drop(receiver);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            assert!(stream.push(&[0; 1600]).unwrap_err().contains("closed"));
+        }
+
+        #[test]
+        fn pcm_stream_cancel_discards_partial_and_rejects_incomplete_final_sample() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            stream.push(&[0, 64, 3]).unwrap();
+            assert!(stream.finish().unwrap_err().contains("incomplete"));
+            drop(stream);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+
+        #[test]
+        fn linux_stream_publishes_real_frames_and_final_partial_without_retaining_sender() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+            let mut process = Command::new("sh");
+            process.args(["-c", "i=0; while [ $i -lt 803 ]; do printf '\\000\\100'; i=$((i+1)); done; exec sleep 30"]);
+            let worker =
+                start_command_stream(process, MAX_DURATION, MAX_PCM, Some(sender)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(samples) = receiver.try_recv() {
+                    assert_eq!(samples, vec![16384; 800]);
+                    break;
+                }
+                assert!(Instant::now() < deadline, "stream was not published");
+                thread::sleep(Duration::from_millis(5));
+            }
+            // Let the final 3 samples reach the capture pipe reader.
+            thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                worker.live.state.lock().unwrap().levels.back().copied(),
+                Some(0.5)
+            );
+            assert_eq!(worker.finish(true).unwrap().len(), 44 + 1606);
+            assert_eq!(receiver.try_recv().unwrap(), vec![16384; 3]);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+
+        #[test]
+        fn linux_stream_overflow_stops_capture_and_publishes_error_before_closing() {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let mut process = Command::new("sh");
+            process.args(["-c", "exec yes"]);
+            let worker =
+                start_command_stream(process, MAX_DURATION, MAX_PCM, Some(sender)).unwrap();
+            let live = worker.live.clone();
+            assert!(worker.join.join().unwrap().unwrap_err().contains("keep up"));
+            assert!(
+                live.state
+                    .lock()
+                    .unwrap()
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("keep up")
+            );
+            assert_eq!(receiver.try_recv().unwrap().len(), 800);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+
+        #[test]
+        fn wav_tail_reads_only_new_pcm_and_handles_native_placeholder_headers() {
+            use std::io::Write;
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            struct Temp(std::path::PathBuf);
+            impl Drop for Temp {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(&self.0);
+                }
+            }
+            let path = Temp(std::env::temp_dir().join(format!(
+                "jcode-pcm-tail-{}-{}.wav",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            )));
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path.0)
+                .unwrap();
+            let original = wav(vec![0, 64, 0, 192]).unwrap();
+            let mut native = original[..36].to_vec();
+            native.extend_from_slice(b"JUNK\x02\0\0\0\0\0");
+            native.extend_from_slice(&original[36..]);
+            native[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+            native[50..54].copy_from_slice(&u32::MAX.to_le_bytes());
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            let mut tail = super::super::WavPcmTail::default();
+            file.write_all(&native[..20]).unwrap();
+            tail.poll(&path.0, &mut stream).unwrap();
+            assert!(tail.offset.is_none());
+            file.write_all(&native[20..57]).unwrap();
+            tail.poll(&path.0, &mut stream).unwrap();
+            assert_eq!(tail.offset, Some(57));
+            tail.poll(&path.0, &mut stream).unwrap();
+            file.write_all(&native[57..]).unwrap();
+            tail.poll(&path.0, &mut stream).unwrap();
+            stream.finish().unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), vec![16384, -16384]);
+            assert!(receiver.try_recv().is_err());
+        }
+
         #[test]
         fn live_snapshot_is_valid_and_capture_remains_cancellable() {
             let mut process = Command::new("sh");
