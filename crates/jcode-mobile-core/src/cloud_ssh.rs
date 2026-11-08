@@ -58,6 +58,28 @@ impl CloudSshKey {
     pub fn public_openssh(&self) -> &str {
         &self.public_openssh
     }
+
+    /// Serialize the private key for secure on-device storage only.
+    pub(crate) fn private_openssh(&self) -> Option<String> {
+        self.private
+            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .ok()
+            .map(|s| s.to_string())
+    }
+
+    pub(crate) fn from_private_openssh(pem: &str, comment: &str) -> Option<Self> {
+        let private = russh::keys::PrivateKey::from_openssh(pem).ok()?;
+        if private.algorithm() != russh::keys::Algorithm::Ed25519 {
+            return None;
+        }
+        let mut public_openssh = private.public_key().to_openssh().ok()?;
+        let comment: String = comment.chars().filter(|c| c.is_ascii_graphic()).take(64).collect();
+        if !comment.is_empty() {
+            public_openssh.push(' ');
+            public_openssh.push_str(&comment);
+        }
+        Some(Self { private: Arc::new(private), public_openssh })
+    }
 }
 
 impl std::fmt::Debug for CloudSshKey {
@@ -258,6 +280,11 @@ impl CloudSsh {
     /// TCP connect, pinned host handshake and public-key authentication, with
     /// one 15-second deadline. No API channel is opened until `open_client`.
     pub fn connect(target: CloudTarget, key: CloudSshKey) -> Result<Self> {
+        Self::connect_timeout(target, key, AUTH_TIMEOUT)
+    }
+
+    /// Same as [`Self::connect`] with a caller-chosen authentication budget.
+    pub fn connect_timeout(target: CloudTarget, key: CloudSshKey, auth_timeout: Duration) -> Result<Self> {
         let keys = pins(&target)?;
         let (commands, mut requests) = tokio::sync::mpsc::unbounded_channel();
         let (ready, connected) = mpsc::channel();
@@ -276,7 +303,7 @@ impl CloudSsh {
             };
             runtime.block_on(async move {
                 let mismatch = Arc::new(AtomicBool::new(false));
-                let authenticated = tokio::time::timeout(AUTH_TIMEOUT, async {
+                let authenticated = tokio::time::timeout(auth_timeout, async {
                     let config = Arc::new(russh::client::Config {
                         // API hello and commands are small, latency-sensitive
                         // frames. Do not wait for Nagle/delayed-ACK batching.
@@ -411,7 +438,7 @@ impl CloudSsh {
                 // their incoming senders so every SDK reader sees EOF.
             });
         }).map_err(|e| failed(e.to_string()))?;
-        match connected.recv_timeout(AUTH_TIMEOUT) {
+        match connected.recv_timeout(auth_timeout + Duration::from_millis(250)) {
             Ok(Ok(())) => Ok(Self(Arc::new(Master { commands, closed }))),
             Ok(Err(e)) => Err(e),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(Error::new(
@@ -431,6 +458,24 @@ impl CloudSsh {
     /// Execute only the built-in read-only inspection, never caller-supplied shell.
     pub(crate) fn inspect_machine(&self) -> std::result::Result<Vec<u8>, String> {
         self.inspect_bounded(crate::cloud_machine::INSPECTION_COMMAND.to_string())
+    }
+
+    /// Idempotently authorize this device's persistent public key. Only a
+    /// validated `ssh-ed25519 <base64>` line is interpolated.
+    pub(crate) fn authorize_device_key(&self, public_openssh: &str) -> std::result::Result<(), String> {
+        let mut parts = public_openssh.split(' ');
+        let (Some("ssh-ed25519"), Some(blob)) = (parts.next(), parts.next()) else {
+            return Err("invalid device key".into());
+        };
+        if blob.is_empty() || blob.len() > 128 || !blob.chars().all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)) {
+            return Err("invalid device key".into());
+        }
+        let line = format!("ssh-ed25519 {blob} jcode-device");
+        let command = format!(
+            "umask 077; mkdir -p \"$HOME/.ssh\" && touch \"$HOME/.ssh/authorized_keys\" && \
+             (grep -qF '{blob}' \"$HOME/.ssh/authorized_keys\" || echo '{line}' >> \"$HOME/.ssh/authorized_keys\")"
+        );
+        self.inspect_bounded(command).map(|_| ())
     }
 
     pub(crate) fn inspect_git(&self, working_dir: &str) -> std::result::Result<Vec<u8>, String> {

@@ -36,6 +36,12 @@ fn clear_warm_target() {
     *warm_target().lock().unwrap() = None;
 }
 
+/// Drop the in-memory SSH master so a benchmark sees an app-launch start.
+#[doc(hidden)]
+pub fn reset_in_memory_cache_for_benchmark() {
+    clear_warm_target();
+}
+
 pub use jcode_sdk::cloud::{
     Account, CloudClient, DEFAULT_API_BASE, DeviceLogin, PushDevice, PushEnvironment, push_token_hex,
 };
@@ -109,6 +115,7 @@ impl AccountStore {
     }
     pub fn clear(&self) {
         clear_warm_target();
+        crate::cloud_direct::clear();
         #[cfg(target_os = "ios")]
         keychain::clear();
         self.clear_file();
@@ -298,6 +305,33 @@ pub fn connect(
         }
     }
     check_cancelled()?;
+    // Fast path: the machine is usually still awake. SSH straight to the last
+    // control-plane-validated address with this device's authorized key and
+    // the same pinned host keys. Any failure falls through to the control plane.
+    if let Some(state) = crate::cloud_direct::load_or_create(account)
+        && let (Some(target), Some(key)) = (state.target(), state.key())
+    {
+        progress("Connecting to your Jcode Cloud machine…");
+        match crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT) {
+            Ok(ssh) => {
+                let ssh = cache_master(account, ssh);
+                progress("Opening your Jcode session…");
+                match ssh.open_client() {
+                    Ok(client) => {
+                        check_cancelled()?;
+                        return Ok(client);
+                    }
+                    Err(_) => clear_warm_target(),
+                }
+            }
+            Err(error) if error.kind == jcode_sdk::ErrorKind::HostKeyMismatch => {
+                // Address was reassigned. Never trust it again without the control plane.
+                crate::cloud_direct::forget_target(account);
+            }
+            Err(_) => {}
+        }
+        check_cancelled()?;
+    }
     let mut cloud = client_for(account);
     cloud.poll_interval = Duration::from_millis(250);
     let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)?;
@@ -305,8 +339,22 @@ pub fn connect(
     let target = cloud.wait_for_host(account, key.public_openssh(), progress, cancelled)?;
     check_cancelled()?;
     progress("Connecting to your Jcode Cloud machine…");
-    let ssh = crate::cloud_ssh::PreparedSsh::new(crate::cloud_ssh::CloudSsh::connect(target, key)?);
+    let master = crate::cloud_ssh::CloudSsh::connect(target.clone(), key)?;
     check_cancelled()?;
+    // Authorize this device for direct reconnects, off the critical path.
+    {
+        let (account, master, target) = (account.clone(), master.clone(), target);
+        std::thread::spawn(move || crate::cloud_direct::remember(&account, &master, &target));
+    }
+    let ssh = cache_master(account, master);
+    progress("Opening your Jcode session…");
+    let client = ssh.open_client()?;
+    check_cancelled()?;
+    Ok(client)
+}
+
+fn cache_master(account: &Account, master: crate::cloud_ssh::CloudSsh) -> crate::cloud_ssh::PreparedSsh {
+    let ssh = crate::cloud_ssh::PreparedSsh::new(master);
     let expires = Instant::now() + TARGET_TTL;
     // Cache authentication before API startup, which may need longer on a
     // waking host. A failed API hello must not throw away successful SSH.
@@ -324,10 +372,7 @@ pub fn connect(
             *cache = None;
         }
     });
-    progress("Opening your Jcode session…");
-    let client = ssh.open_client()?;
-    check_cancelled()?;
-    Ok(client)
+    ssh
 }
 
 /// Register this phone's APNs token with the account.
