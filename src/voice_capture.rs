@@ -759,7 +759,7 @@ mod imp {
     use std::{
         io::Read,
         os::fd::AsRawFd,
-        process::{Child, Command, Stdio},
+        process::{Child, ChildStdout, Command, Stdio},
         sync::{Arc, atomic::Ordering, mpsc},
         thread,
         time::{Duration, Instant},
@@ -788,11 +788,91 @@ mod imp {
 
     // Every path, including read errors and unwinding, kills and reaps the child.
     struct CaptureChild(Child);
+    impl CaptureChild {
+        fn stop(&mut self) -> Result<(), String> {
+            if let Err(error) = self.0.kill() {
+                if self
+                    .0
+                    .try_wait()
+                    .map_err(|e| format!("Cannot inspect parec: {e}"))?
+                    .is_none()
+                {
+                    return Err(format!("Cannot stop microphone capture: {error}"));
+                }
+            }
+            self.0
+                .wait()
+                .map_err(|e| format!("Cannot reap microphone capture: {e}"))?;
+            Ok(())
+        }
+    }
     impl Drop for CaptureChild {
         fn drop(&mut self) {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    fn stop_and_drain(
+        child: &mut CaptureChild,
+        stdout: &mut ChildStdout,
+        pcm: &mut Vec<u8>,
+        max_pcm: usize,
+        meter: &mut super::PcmMeter,
+        stream: &mut super::PcmStream,
+        live: &super::Live,
+    ) -> Result<(), String> {
+        // Stop the producer before draining so continuous input cannot extend
+        // finalization indefinitely. Reaping, like existing cleanup, is worker-only.
+        child.stop()?;
+        loop {
+            #[repr(C)]
+            struct PollFd {
+                fd: std::ffi::c_int,
+                events: i16,
+                revents: i16,
+            }
+            unsafe extern "C" {
+                fn poll(fds: *mut PollFd, nfds: usize, timeout: std::ffi::c_int)
+                -> std::ffi::c_int;
+            }
+            let mut fd = PollFd {
+                fd: stdout.as_raw_fd(),
+                events: 1,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd. A zero timeout never waits for input. As
+            // the pipe's sole reader, the following read cannot lose readiness.
+            let ready = unsafe { poll(&mut fd, 1, 0) };
+            if ready == 0 {
+                break;
+            }
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("Cannot poll final microphone audio: {error}"));
+            }
+            let remaining = max_pcm.saturating_sub(pcm.len());
+            let mut buffer = [0u8; 4096];
+            // Read one extra byte at the limit to distinguish EOF from overflow.
+            let limit = remaining.saturating_add(1).min(buffer.len());
+            match stdout.read(&mut buffer[..limit]) {
+                Ok(0) => break,
+                Ok(count) => {
+                    if count > remaining {
+                        return Err("Recorded audio exceeds the 10 MiB limit".into());
+                    }
+                    pcm.extend_from_slice(&buffer[..count]);
+                    meter.push(&buffer[..count], live);
+                    stream.push(&buffer[..count])?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(format!("Cannot read final microphone audio: {error}")),
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn start(
@@ -888,6 +968,7 @@ mod imp {
                     Err(e) => return Err(format!("Cannot read microphone audio: {e}")),
                 }
             }
+            stop_and_drain(&mut child, &mut stdout, &mut pcm, max_pcm, &mut meter, &mut stream, &worker_live)?;
             let bytes = wav(pcm)?;
             stream.finish()?;
             Ok(bytes)
@@ -943,6 +1024,99 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn child_with_unread_pcm(samples: usize) -> (CaptureChild, ChildStdout) {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            struct ReadyPath(std::path::PathBuf);
+            impl Drop for ReadyPath {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(self.0.join("ready"));
+                    let _ = std::fs::remove_dir(&self.0);
+                }
+            }
+            let ready = ReadyPath(std::env::temp_dir().join(format!(
+                "jcode-buffered-pcm-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            )));
+            std::fs::create_dir(&ready.0).unwrap();
+            let child = Command::new("sh")
+                .args(["-c", "i=0; while [ \"$i\" -lt \"$2\" ]; do printf '\\000\\100'; i=$((i+1)); done; : > \"$1\"; exec sleep 30", "buffered-pcm"])
+                .arg(ready.0.join("ready"))
+                .arg(samples.to_string())
+                .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+                .spawn().unwrap();
+            let mut child = CaptureChild(child);
+            let stdout = child.0.stdout.take().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            // The child signals only after all writes have completed. The test
+            // deliberately never reads stdout before calling production drain.
+            while !ready.0.join("ready").exists() {
+                assert!(Instant::now() < deadline, "child did not buffer PCM");
+                thread::sleep(Duration::from_millis(5));
+            }
+            (child, stdout)
+        }
+
+        #[test]
+        fn successful_stop_drains_buffered_tail_before_final_partial_flush() {
+            let (mut child, mut stdout) = child_with_unread_pcm(803);
+            let live = super::super::Live::default();
+            let mut meter = super::super::PcmMeter::default();
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+            let mut stream = super::super::PcmStream::new(Some(sender));
+            // Two samples already captured, followed by an entirely unread tail.
+            let mut pcm = vec![0, 64, 0, 64];
+            meter.push(&pcm, &live);
+            stream.push(&pcm).unwrap();
+            let started = Instant::now();
+            stop_and_drain(
+                &mut child,
+                &mut stdout,
+                &mut pcm,
+                MAX_PCM,
+                &mut meter,
+                &mut stream,
+                &live,
+            )
+            .unwrap();
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(child.0.try_wait().unwrap().is_some());
+            assert_eq!(pcm, [0, 64].repeat(805));
+            assert_eq!(live.state.lock().unwrap().levels.back().copied(), Some(0.5));
+            assert_eq!(receiver.try_recv().unwrap(), vec![16384; 800]);
+            assert!(receiver.try_recv().is_err());
+            stream.finish().unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), vec![16384; 5]);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+            ));
+            assert_eq!(wav(pcm).unwrap().len(), 44 + 1610);
+        }
+
+        #[test]
+        fn successful_stop_rejects_buffered_tail_over_byte_limit() {
+            let (mut child, mut stdout) = child_with_unread_pcm(4);
+            let live = super::super::Live::default();
+            let mut meter = super::super::PcmMeter::default();
+            let mut stream = super::super::PcmStream::default();
+            let mut pcm = vec![0, 64];
+            let error = stop_and_drain(
+                &mut child,
+                &mut stdout,
+                &mut pcm,
+                6,
+                &mut meter,
+                &mut stream,
+                &live,
+            )
+            .unwrap_err();
+            assert!(error.contains("10 MiB"));
+            assert!(pcm.len() <= 6);
+            assert!(child.0.try_wait().unwrap().is_some());
+        }
+
         #[test]
         fn pcm_stream_frames_are_exact_across_odd_reads_and_flush_closes_sender() {
             let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
