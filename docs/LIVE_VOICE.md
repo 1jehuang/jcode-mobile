@@ -1,43 +1,39 @@
 # Live voice in the composer
 
-## Behavior
+## Nari streaming, shared with desktop
 
-While recording, measured microphone levels drive a compact 24-bar waveform beside the existing overscroll mic. The waveform stays inside the existing reveal and does not insert a card or status row. Linux meters actual PCM in 50 ms windows. iOS uses AVAudioRecorder metering on its recording worker. Native objects never move onto the UI thread.
+Mobile and the desktop simulator use the transport-only `jcode-voice` crate, the same `NariSession` protocol implementation used by Jcode Desktop. Native microphone capture supplies bounded mono 16 kHz signed PCM16 frames to its realtime WebSocket. There are no batch previews, overlap merging, full-recording transcription uploads, managed-cloud speech requests, or Groq fallback.
 
-Incremental transcription appears in the actual input editor after the original typed draft. Each preview consumes at least one second of new audio and sends at most eight seconds, including 400 ms of overlap. Word overlap is deduplicated. Only one preview is in flight, requests are spaced by at least 1.5 seconds, and previews time out after ten seconds. All-zero PCM does not trigger transcription uploads.
+Nari sends full aggregate transcript revisions, including corrections and retractions. These replace the provisional speech in the actual input editor after the original typed draft. Stopping capture flushes the final PCM tail and finalizes the existing stream. Network setup and finalization run off the UI thread. Response latency still depends on the network and recognition service.
 
-The current subscription endpoint accepts WAV uploads, not a bidirectional streaming session. These are incremental previews, not word-by-word websocket streaming. Response latency depends on the network and transcription service. A delayed request can omit intermediate words from the preview, but stopping always performs the existing authoritative full-recording transcription.
+The shared credential loader reads `NARI_API_KEY` or the user's Jcode `nari.env` configuration. The Linux simulator uses the same configuration as desktop. Nari provider usage is separate from Jcode cloud credits. Keys are not embedded in the app or included in logs. An iPhone needs its own securely provisioned credential; a desktop configuration file is not automatically available on iOS. No new iOS credential-entry or sync workflow is supplied by this migration.
+
+## Waveform and gestures
+
+Measured microphone levels drive 24 compact bars beside the existing overscroll mic, without an extra card or status row. Linux meters real PCM in 50 ms windows. iOS uses AVAudioRecorder metering on its recording worker. Native objects remain off the UI thread.
+
+Pull upward to begin recording, speak while holding, then move back down in the same gesture to finish. Passing the deep threshold does not lock while held. Only releasing while still deeply pulled locks recording. Cancel immediately discards capture and provisional speech.
 
 ## Draft and lifecycle safety
 
-- Provisional text is tracked separately from the saved original draft, selection and scroll state.
-- Cancel or navigation restores the original draft only if the editor still contains our exact provisional text. User edits are never overwritten.
-- A successful final result replaces the provisional transcript rather than appending it twice.
-- Overscroll auto-send sends only the authoritative spoken text, never the typed draft.
-- If the editor was changed manually, non-auto-send completion keeps that edited draft for review rather than overwriting it.
-- Failed or empty final transcription keeps available provisional speech as an unsent review draft.
-- Generation, tab, pending-request and capture-phase checks reject stale preview callbacks. Cancel drops capture immediately. An already-running synchronous HTTP preview may take up to its ten-second timeout to finish, but cannot update the canceled editor.
-- Audio snapshots and waveform history are bounded and ephemeral. There are no additional audio/transcript logs or persistence paths.
-
-## Validation
-
-- Full hosted workspace: 422 passed, 0 failed, 13 ignored. Run `20261108-000827637-628168`, `justrust test --workspace -- --test-threads=1`.
-- Native iOS target compilation: passed, run `20261108-000754580-621372`. The configured local Apple SDK fallback was required because the hosted Linux sysroot lacks iOS target libraries.
-- Nine offline GPUI regressions cover real composer updates, overlap handling, stale callbacks, cancellation selection restoration, manual edits, authoritative replacement, voice-only sending, failure retention and rendered waveform bounds.
-- Capture and pure rendering tests cover PCM amplitude, measured silence, fixed cadence, WAV repair, bounded histories and waveform geometry.
+- Provisional text is separate from the saved original draft, selection and scroll state.
+- Cancel or navigation restores the original only while the editor still contains our exact provisional text. Manual edits are never overwritten.
+- Final recognition replaces provisional speech rather than appending it twice.
+- Overscroll auto-send sends only the authoritative spoken text, never the typed draft. Disconnected results remain available for review.
+- Failed or empty final recognition preserves available provisional speech as an unsent review draft.
+- Generation, tab and capture-phase checks reject stale revisions. Cancellation also interrupts a pending network finalization.
+- The PCM queue and latest-revision mailbox are bounded. Queue overflow fails closed rather than silently dropping speech.
+- A retained sender gates stream EOF until capture stops successfully. Capture errors and cancellation raise the cancellation flag before releasing that guard, preventing an accidental successful commit.
+- Audio and waveform history are ephemeral. This adds no audio/transcript logging or persistence.
 
 ## Native Wayland trackpad lifecycle
 
-The desktop launcher's local GPUI backend must include commit `a535f3f` or later. Previously the Wayland backend emitted only scroll movement and ignored compositor axis-stop events. The app's legacy wheel fallback consequently treated a 180 ms stationary speaking pause as a release, prematurely finishing or locking capture.
+The desktop launcher's local GPUI backend must include commit `a535f3f` or later. Previously it emitted only scroll movement and ignored compositor axis-stop events, so a stationary speaking pause could be mistaken for release.
 
-The backend now emits `Started` for the first finger-scroll delta and a zero-delta `Ended` only after all active native axes stop. Intermediate pauses remain held. Mouse wheels retain their legacy unphased behavior. Six backend regressions cover pauses, repeated stops, diagonal axes, shared final-delta/stop frames and source changes. The app's existing phased-hold regression also checks a two-second deep hold followed by reversal, and locking only on explicit release.
+The backend now emits `Started` for the first finger delta and zero-delta `Ended` only after all active native axes stop. Pauses remain held. Mouse wheels retain legacy unphased behavior. Backend and application regressions cover pauses, diagonal stops, deep reversal and release-only locking.
 
-## Desktop simulator acceptance, November 8, 2026
+## Validation boundaries
 
-The actual native Linux simulator was exercised in an isolated X11 display with mouse-driven emulated touch, actual `parec` PCM capture, and speech routed through a dedicated PipeWire monitor without using the physical microphone or speakers. Recorded WAV uploads contained nonzero measured audio. A localhost transcription fixture returned known text to validate the transport-to-editor path, not speech recognition accuracy.
+Offline tests cover draft ownership, aggregate corrections and retractions, cancellation, stale results, authoritative final replacement, waveform bounds, bounded PCM, final tail draining and commit ordering. Native simulator acceptance uses an isolated display and dedicated PipeWire monitor with synthetic speech, without touching the physical microphone or speakers. Current migration results are recorded after execution below.
 
-Passed: live text in the real composer; measured waveform activity; a deep upward pull followed by downward reversal without lifting stops capture and finishes once; releasing while still deeply pulled keeps recording; Cancel stops capture and restores the pre-gesture draft; HTTP 403 stops capture automatically and displays an actionable error. Screenshots and fixture evidence are in the local scratch `voice-simulator` directory.
-
-The real account's speech endpoint returned HTTP 403 and its account capability reported voice transcription disabled. Real subscription-service recognition remains unverified until voice access is enabled. No physical iOS gesture or GPU frame-pacing claim is made.
-
-No physical microphone-to-service acceptance recording or device GPU frame-pacing measurement was performed. This source change alone is not a TestFlight release.
+No physical iOS gesture or device GPU frame-pacing claim is made. Source changes are not a TestFlight release.

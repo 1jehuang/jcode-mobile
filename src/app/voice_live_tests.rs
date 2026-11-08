@@ -22,6 +22,23 @@ fn revision(app: &mut MobileApp, text: &str, cx: &mut Context<MobileApp>) {
 }
 
 #[gpui::test]
+fn cancelling_pending_finalization_signals_the_network_worker(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        seed(app, "Original draft", cx);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.voice.cancel = Some(cancel.clone());
+        app.voice.busy = true;
+        app.cancel_voice(cx);
+        assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(app.voice.cancel.is_none());
+        assert!(!app.voice.busy);
+        assert_eq!(app.composer.read(cx).text(), "Original draft");
+    });
+}
+
+#[gpui::test]
 fn aggregate_revisions_replace_correct_and_retract_speech(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);

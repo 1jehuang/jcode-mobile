@@ -21,6 +21,7 @@ pub(super) struct VoiceState {
     pub began: Option<std::time::Instant>,
     pub(super) stop_requested: bool,
     generation: u64,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     error: Option<String>,
     live: LiveDictation,
 }
@@ -110,10 +111,11 @@ impl MobileApp {
             .as_deref()
             .is_some_and(|shown| self.composer.read(cx).text() == shown)
         {
-            let text = jcode_mobile_core::voice::append(
-                &self.voice.live.base,
-                &self.voice.live.transcript,
-            );
+            let text = if self.voice.live.transcript.is_empty() {
+                self.voice.live.base.clone()
+            } else {
+                jcode_mobile_core::voice::append(&self.voice.live.base, &self.voice.live.transcript)
+            };
             self.composer
                 .update(cx, |input, cx| input.set_text(text.clone(), cx));
             self.voice.live.shown = Some(text);
@@ -219,6 +221,7 @@ impl MobileApp {
         self.voice.stop_requested = false;
         self.voice.began = None;
         let auto_send = std::mem::take(&mut self.voice.auto_send);
+        self.voice.cancel = None;
         let partial = self.voice.live.transcript.clone();
         let had_preview = !partial.is_empty();
         let had_live_draft = self.voice.live.original.is_some();
@@ -286,6 +289,9 @@ impl MobileApp {
     }
 
     pub(super) fn cancel_voice(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.voice.cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.restore_voice_draft(cx);
         self.voice.live = LiveDictation::default();
         self.voice.generation = self.voice.generation.wrapping_add(1);
@@ -386,6 +392,7 @@ impl MobileApp {
         self.voice.starting = false;
         match result {
             Ok(recording) => {
+                self.voice.cancel = Some(recording.cancel_handle());
                 self.voice.recording = Some(recording);
                 if self.voice.stop_requested {
                     self.transcribe_voice(cx);

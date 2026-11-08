@@ -87,6 +87,9 @@ impl Recording {
             .map(|c| c.levels())
             .unwrap_or_default()
     }
+    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
     pub fn poll_transcript(&self) -> Option<String> {
         self.events.lock().ok()?.transcript.take()
     }
@@ -161,6 +164,23 @@ mod tests {
         drop(recording);
         assert!(rx.blocking_recv().is_none());
         assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn retained_cancel_handle_interrupts_background_finalization() {
+        let (mut recording, mut rx) = fake();
+        let cancel = recording.cancel_handle();
+        let worker_cancel = cancel.clone();
+        recording.worker = Some(std::thread::spawn(move || {
+            assert!(rx.blocking_recv().is_none());
+            while !worker_cancel.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            Err("Voice recording cancelled".into())
+        }));
+        let finish = std::thread::spawn(move || recording.stop());
+        cancel.store(true, Ordering::Release);
+        assert!(finish.join().unwrap().is_err());
     }
 
     #[test]
