@@ -57,6 +57,26 @@ fn pcm_level(pcm: &[u8]) -> f32 {
         .sqrt() as f32
 }
 
+#[derive(Default)]
+struct PcmMeter {
+    // At 16 kHz, 800 complete samples represent exactly 50ms. Preserve partial
+    // windows across pipe reads so cadence never depends on subprocess buffering.
+    window: Vec<u8>,
+}
+impl PcmMeter {
+    fn push(&mut self, mut pcm: &[u8], live: &Live) {
+        while !pcm.is_empty() {
+            let count = (1600 - self.window.len()).min(pcm.len());
+            self.window.extend_from_slice(&pcm[..count]);
+            pcm = &pcm[count..];
+            if self.window.len() == 1600 {
+                live.level(pcm_level(&self.window));
+                self.window.clear();
+            }
+        }
+    }
+}
+
 // AVAudioRecorder's in-progress file can have placeholder chunk sizes. Walk chunks,
 // not fixed offsets: native WAV files may include JUNK/FLLR before their data.
 fn current_wav(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
@@ -613,6 +633,7 @@ mod imp {
             if ready_tx.send(Ok(())).is_err() { return Ok(Vec::new()); }
             let started = Instant::now();
             let mut pcm = Vec::new();
+            let mut meter = super::PcmMeter::default();
             loop {
                 match commands.try_recv() {
                     Ok(false) | Err(mpsc::TryRecvError::Disconnected) => return Ok(Vec::new()),
@@ -649,9 +670,8 @@ mod imp {
                         return Err(format!("Microphone capture ended unexpectedly ({status:?}). Check the PulseAudio/PipeWire service and microphone permissions."));
                     }
                     Ok(count) => {
-                        let previous = pcm.len();
                         pcm.extend_from_slice(&buffer[..count]);
-                        worker_live.level(super::pcm_level(&pcm[previous / 2 * 2..]));
+                        meter.push(&buffer[..count], &worker_live);
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(format!("Cannot read microphone audio: {e}")),
@@ -726,7 +746,7 @@ mod imp {
                 u32::from_le_bytes(snapshot[4..8].try_into().unwrap()) as usize,
                 snapshot.len() - 8
             );
-            assert_eq!(worker.live.state.lock().unwrap().levels.back(), Some(&0.5));
+            assert!(worker.live.state.lock().unwrap().levels.is_empty());
             assert!(!worker.live.requested.load(Ordering::Acquire));
             assert!(worker.finish(false).unwrap().is_empty());
         }
@@ -744,6 +764,39 @@ mod imp {
             assert!(live.snapshot().is_none());
             assert_eq!(super::super::pcm_level(&[0, 0]), 0.0);
             assert_eq!(super::super::pcm_level(&[0, 128]), 1.0);
+        }
+
+        #[test]
+        fn pcm_meter_preserves_50ms_windows_and_real_silence_across_odd_reads() {
+            let live = super::super::Live::default();
+            let mut meter = super::super::PcmMeter::default();
+            let mut audio = [0u8, 64].repeat(800);
+            audio.extend_from_slice(&[0; 1600]);
+            // Deliberately split PCM samples and windows across arbitrary pipe reads.
+            for part in audio.chunks(73) {
+                meter.push(part, &live);
+            }
+            assert_eq!(
+                live.state
+                    .lock()
+                    .unwrap()
+                    .levels
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![0.5, 0.0]
+            );
+            assert!(meter.window.is_empty());
+            meter.push(&[0; 1599], &live);
+            assert_eq!(live.state.lock().unwrap().levels.len(), 2);
+            meter.push(&[0], &live);
+            assert_eq!(live.state.lock().unwrap().levels.len(), 3);
+            for _ in 0..30 {
+                meter.push(&[0; 1600], &live);
+            }
+            let state = live.state.lock().unwrap();
+            assert_eq!(state.levels.len(), 24);
+            assert!(state.levels.iter().all(|x| *x == 0.0));
         }
 
         #[test]
