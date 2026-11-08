@@ -1312,7 +1312,17 @@ mod imp {
                 snapshot.len() - 8
             );
             assert!(worker.live.state.lock().unwrap().levels.is_empty());
-            assert!(!worker.live.requested.load(Ordering::Acquire));
+            // A poll can enqueue another request between the worker consuming
+            // the previous request and publishing its snapshot. Let the worker
+            // acknowledge that request instead of assuming synchronous delivery.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while worker.live.requested.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "snapshot request was not acknowledged"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
             assert!(worker.finish(false).unwrap().is_empty());
         }
 
