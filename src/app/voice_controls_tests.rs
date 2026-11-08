@@ -128,6 +128,99 @@ fn supported_preview_accepts_only_deliberate_bottom_overscroll(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn voice_phases_reuse_controls_without_resizing_chat(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
+    view.update(cx, |app, cx| {
+        assert!(app.offline, "seed state only, never capture or network");
+        app.composer.update(cx, |input, cx| input.set_text("Keep this draft", cx));
+        cx.notify();
+    });
+    for _ in 0..3 {
+        cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+    }
+    let composer = cx.debug_bounds("chat-composer").unwrap();
+    let input = cx.debug_bounds("composer-input").unwrap();
+    let metadata = cx.debug_bounds("chat-metadata").unwrap();
+    let send = cx.debug_bounds("send").expect("existing composer send button");
+    let transcript = view.read_with(cx, |app, _| app.feel.g.transcript.unwrap());
+
+    for phase in ["pulling", "preparing", "locked preparing", "transcribing", "cancelled"] {
+        view.update(cx, |app, cx| {
+            match phase {
+                "pulling" => {
+                    assert!(app.feel.voice_gesture.feed(-20., false).is_empty());
+                    assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling);
+                }
+                "preparing" => {
+                    app.feel.voice_gesture.reset();
+                    seed_startup(app, false);
+                }
+                "locked preparing" => {
+                    app.feel.voice_gesture.reset();
+                    seed_startup(app, true);
+                    app.feel.voice_gesture.release();
+                    app.feel.voice_wheel_at = None;
+                }
+                "transcribing" => {
+                    app.feel.voice_gesture.reset();
+                    app.feel.voice_wheel_at = None;
+                    app.voice.starting = false;
+                    app.voice.busy = true;
+                    app.voice.auto_send = true;
+                    app.voice.locked = false;
+                }
+                "cancelled" => {} // Click the rendered replacement send control below.
+                _ => unreachable!(),
+            }
+            cx.notify();
+        });
+        if phase == "cancelled" {
+            let cancel = cx.debug_bounds("cancel-dictation").expect("transcription cancel button");
+            cx.simulate_click(cancel.center(), Modifiers::default());
+        }
+        // Recorded transcript bounds lag layout by a frame. Check settled sizes,
+        // not absolute y: the pull and lock reveal intentionally move the chat.
+        for _ in 0..3 {
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+        }
+        let current = cx.debug_bounds("chat-composer").unwrap();
+        assert_eq!(current.size, composer.size, "{phase}: no status rows or cards may grow composer");
+        assert_eq!(cx.debug_bounds("composer-input").unwrap().size, input.size, "{phase}");
+        assert_eq!(cx.debug_bounds("chat-metadata").unwrap().size, metadata.size, "{phase}");
+        view.read_with(cx, |app, cx| {
+            assert!(app.offline);
+            assert!(app.voice.recording.is_none(), "no real capture in {phase}");
+            assert_eq!(app.feel.g.transcript.unwrap().size, transcript.size, "{phase}: no transcript reflow or status card");
+            assert!(app.session.transcript.is_empty());
+            assert_eq!(app.composer.read(cx).text(), "Keep this draft");
+            if phase == "cancelled" {
+                assert!(!app.voice.starting && !app.voice.busy && !app.voice.auto_send && !app.voice.locked);
+                assert!(app.voice.status().is_none());
+                assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
+                assert!(app.feel.voice_wheel_at.is_none());
+            }
+        });
+        if matches!(phase, "preparing" | "locked preparing" | "transcribing") {
+            let cancel = cx.debug_bounds("cancel-dictation").expect("reuse send button for cancellation");
+            assert_eq!(cancel.size, send.size, "{phase}: cancel replaces existing round send control");
+            assert!(cancel.left() >= current.left() && cancel.right() <= current.right());
+            assert!(cancel.top() >= current.top() && cancel.bottom() <= current.bottom());
+            assert!(cx.debug_bounds("send").is_none(), "cancel must replace, not supplement, send");
+        } else {
+            assert!(cx.debug_bounds("cancel-dictation").is_none());
+            assert_eq!(cx.debug_bounds("send").unwrap().size, send.size);
+        }
+        if phase == "locked preparing" {
+            let stop = cx.debug_bounds("stop-dictation").expect("locked MIC reveal is the stop control");
+            assert!(stop.top() >= current.bottom() - px(1.), "stop belongs below composer, not in a new composer row");
+            assert!(cx.debug_bounds("voice-overscroll-mic").is_some());
+        }
+    }
+}
+
+#[gpui::test]
 fn locked_voice_has_a_rendered_stop_and_send_control(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);

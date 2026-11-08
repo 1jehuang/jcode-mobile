@@ -314,7 +314,7 @@ impl MobileApp {
 
     /// Reveal the mic beyond the entire chat surface, including the input line.
     /// Translate instead of resizing so scroll layout and anchoring stay stable.
-    pub(super) fn feel_voice_surface(&self, content: AnyElement, t: &Theme) -> AnyElement {
+    pub(super) fn feel_voice_surface(&self, content: AnyElement, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::voice_visual::{self, Phase};
         let pull = self.feel.voice_gesture.pull;
         let visible = self.feel.voice_gesture.active() || pull > 0.5
@@ -327,11 +327,26 @@ impl MobileApp {
             else { Phase::Pulling };
         let height = if visible { voice_visual::reveal_height(pull, phase) } else { 0. };
         let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
+        let indicator = voice_visual::render(pull, phase, elapsed, crate::system::reduce_motion(), t);
+        let indicator = if self.voice.auto_send && (self.voice.starting || self.voice.recording.is_some()) {
+            div().id("stop-dictation").debug_selector(|| "stop-dictation".into())
+                .role(gpui::Role::Button)
+                .aria_label(format!("{}. Tap microphone to stop recording and send", phase.label()))
+                .w(px(44.)).h_full().cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.feel.voice_gesture.reset();
+                    this.feel.voice_wheel_at = None;
+                    this.feel.voice_pan_ended = true;
+                    this.finish_overscroll_voice(cx);
+                }))
+                .child(indicator).into_any_element()
+        } else { indicator };
         div().relative().size_full().overflow_hidden()
             .child(div().relative().top(px(-height)).size_full().child(content))
             .when(visible, |d| d.child(
                 div().absolute().left_0().right_0().bottom_0().h(px(height))
-                    .child(voice_visual::render(pull, phase, elapsed, crate::system::reduce_motion(), t))
+                    .flex().justify_center()
+                    .child(indicator)
             ))
             .into_any_element()
     }

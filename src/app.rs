@@ -1751,7 +1751,7 @@ impl MobileApp {
             .child(body)
             .child(self.render_composer(t, window, cx))
             .into_any_element();
-        self.feel_voice_surface(content, t)
+        self.feel_voice_surface(content, t, cx)
     }
 
     /// Provisioning/connecting line shown on an empty session.
@@ -1987,7 +1987,16 @@ impl MobileApp {
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().id("composer-input").debug_selector(move || if preview { "preview-composer-input" } else { "composer-input" }.into()).flex_1().min_w_0().child(composer.clone()))
-                    .child(if processing && !has_text {
+                    .child(if !preview && (self.voice.busy || self.voice.starting || self.voice.recording.is_some()) {
+                        // Reuse the existing send slot. Never insert rows during a voice pull.
+                        round_button("cancel-dictation", "×", t.error, true, t)
+                            .a11y_button("Discard voice recording")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                haptics::play(Haptic::Light);
+                                this.cancel_voice();
+                                cx.notify();
+                            }))
+                    } else if processing && !has_text {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")
                             .when(ready, |d| d.on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
@@ -1997,28 +2006,9 @@ impl MobileApp {
                             .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
-            .when_some(if preview { None } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
-            .when(!preview && self.voice.auto_send && (self.voice.starting || self.voice.recording.is_some()), |d| d.child(
-                pill("stop-dictation", "Stop and send", t)
-                    .a11y_button("Stop recording and send voice message")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.feel.voice_gesture.reset();
-                        this.feel.voice_wheel_at = None;
-                        this.feel.voice_pan_ended = true;
-                        this.finish_overscroll_voice(cx);
-                    }))
-            ))
-            .when(!preview && (self.voice.busy || self.voice.recording.is_some()), |d| d.child(
-                pill("cancel-dictation", "Cancel dictation", t)
-                    .a11y_button("Discard voice recording")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.voice.busy || this.voice.recording.is_some() {
-                            haptics::play(Haptic::Light);
-                        }
-                        this.cancel_voice();
-                        cx.notify();
-                    }))
-            ))
+            .when_some(if preview || self.voice.auto_send || self.feel.voice_gesture.active() || self.feel.voice_gesture.pull > 0.5 {
+                None
+            } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
             .when(!ready, |d| d.child(label(
                 if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
                     "Not connected. Your draft stays here."

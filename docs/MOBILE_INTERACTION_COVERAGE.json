@@ -155,11 +155,10 @@
         "id:literal:chat-metadata": 1,
         "id:literal:composer-input": 1,
         "id:literal:location": 1,
-        "pill:literal:cancel-dictation": 1,
         "pill:literal:pill-account": 1,
         "pill:literal:pill-effort": 1,
         "pill:literal:pill-model": 1,
-        "pill:literal:stop-dictation": 1,
+        "round_button:literal:cancel-dictation": 1,
         "round_button:literal:send": 1,
         "round_button:literal:stop": 1
       },
@@ -189,22 +188,16 @@
         },
         {
           "kind": "hit_tested",
-          "note": "The rendered Cancel dictation button is touched repeatedly across synthetic starting/busy voice flags; cancellation clears flags/status and preserves Unicode draft, tab and transcript. No Recording or microphone is acquired.",
+          "note": "Cancel reuses the existing send slot. Rendered tests cover synthetic startup/locked/transcribing phases without resizing composer, input, metadata or transcript. Cancellation clears flags and preserves Unicode drafts. No Recording or microphone is acquired.",
           "tests": [
-            "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers"
-          ]
-        },
-        {
-          "kind": "hit_tested",
-          "note": "Stop and send is hit-tested with a synthetic locked startup. It releases gesture ownership, remembers stop during startup, and preserves the unrelated draft. No microphone or transcription service is acquired.",
-          "tests": [
-            "src/app/voice_controls_tests.rs::locked_voice_has_a_rendered_stop_and_send_control"
+            "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers",
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
           ]
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 7
+        "on_click": 6
       },
       "handler": false,
       "owner": "src/app.rs::impl:MobileApp::render_composer_for",
@@ -1049,13 +1042,24 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {
+        "debug_selector:literal:stop-dictation": 1,
+        "id:literal:stop-dictation": 1
+      },
       "coverage": [
+        {
+          "kind": "hit_tested",
+          "note": "The mic itself stops a synthetic locked startup without adding a card. The click releases gesture ownership, remembers stop during startup and preserves the draft. No native microphone or service is acquired.",
+          "tests": [
+            "src/app/voice_controls_tests.rs::locked_voice_has_a_rendered_stop_and_send_control"
+          ]
+        },
         {
           "kind": "state_model_mocked",
           "note": "Offline rendered fixture verifies that transcript and composer translate together without resizing, the bare mic is revealed below the input line, and release restores the composer. No real audio, native keyboard animation or device GPU pixels are covered.",
           "tests": [
-            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow"
+            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow",
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
           ]
         },
         {
@@ -1065,7 +1069,9 @@
         }
       ],
       "coverage_scope": "partial",
-      "events": {},
+      "events": {
+        "on_click": 1
+      },
       "handler": false,
       "owner": "src/app/ios_feel.rs::impl:MobileApp::feel_voice_surface",
       "renderer": true
@@ -2134,7 +2140,8 @@
             "src/voice_visual.rs::tests::locked_explains_explicit_stop",
             "src/voice_visual.rs::tests::mic_reveal_tracks_pull_and_is_bounded",
             "src/voice_visual.rs::tests::pending_work_remains_visible_after_release",
-            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow"
+            "src/app/voice_controls_tests.rs::pulling_voice_mic_reveals_below_input_without_reflow",
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
           ]
         },
         {
@@ -2153,7 +2160,7 @@
   "schema_version": 1,
   "scope": "Production Rust module graph under src, both target branches. Counts are static syntax sites per owner, not runtime controls. Evidence is partial and gaps/platform requirements are explicit. Named test existence is checked separately from execution success.",
   "snapshot": {
-    "control_site_count": 184,
+    "control_site_count": 185,
     "event_site_count": 116,
     "owner_count": 73
   }
