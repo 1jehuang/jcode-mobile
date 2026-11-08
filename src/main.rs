@@ -24,6 +24,7 @@ mod haptics;
 mod gestures;
 mod share;
 mod voice_capture;
+mod voice_stream;
 mod voice_gesture;
 mod voice_visual;
 mod voice_demo;

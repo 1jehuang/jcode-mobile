@@ -22,6 +22,8 @@ description = "Jcode for iPhone, written in Rust on GPUI. Runs as a phone-sized 
 [dependencies]
 gpui.workspace = true
 jcode-mobile-core.workspace = true
+jcode-voice = { path = "../jcode/crates/jcode-voice", default-features = false }
+tokio = { version = "1", features = ["rt", "sync", "time", "net"] }
 anyhow = "1"
 futures = "0.3"
 unicode-segmentation = "1"
