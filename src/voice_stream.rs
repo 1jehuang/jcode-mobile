@@ -156,7 +156,7 @@ fn cloud_voice_error(error: jcode_voice::VoiceError) -> String {
         VoiceError::NariCreditsExhausted | VoiceError::Http(402) => {
             "Cloud voice capacity is unavailable. Please try again later.".into()
         }
-        VoiceError::NariRejected | VoiceError::Http(503) => {
+        VoiceError::NariRejected | VoiceError::Http(404 | 503) => {
             "Cloud voice is not ready. Please try again later.".into()
         }
         other => other.to_string(),
@@ -180,6 +180,7 @@ mod tests {
             jcode_voice::VoiceError::NariNotConfigured,
             jcode_voice::VoiceError::NariCreditsExhausted,
             jcode_voice::VoiceError::NariRejected,
+            jcode_voice::VoiceError::Http(404),
             jcode_voice::VoiceError::Http(503),
         ] {
             let message = cloud_voice_error(error);
