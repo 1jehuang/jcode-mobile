@@ -1,6 +1,6 @@
 //! Dedicated right-edge pull tab. Git panel gesture handling. Git reads never enter the conversation.
 use super::*;
-use gpui::{Bounds, Pixels, Point};
+use gpui::{Animation, AnimationExt as _, Bounds, Pixels, Point, Transformation, percentage, svg};
 use jcode_mobile_core::git_info::{self, GitSnapshot};
 use std::{cell::Cell, rc::Rc};
 
@@ -10,22 +10,34 @@ mod tests;
 
 const TRIGGER: f32 = 48.;
 
-/// Widget palette, shared with the pinned todo card so both overlays read as
-/// one family: purple for refs, blue for local-only work, amber for hashes.
+/// Folded section length. Longer lists expand in place.
+const FOLD: usize = 5;
+
+/// The pinned todo card's palette, so both overlays read as one family:
+/// purple for refs, blue for local-only work.
 fn rgb8(r: u8, g: u8, b: u8) -> Hsla {
     gpui::Rgba { r: r as f32 / 255., g: g as f32 / 255., b: b as f32 / 255., a: 1. }.into()
 }
 fn ref_color() -> Hsla {
-    rgb8(190, 165, 235)
+    if crate::system::is_light() { rgb8(118, 82, 190) } else { rgb8(190, 165, 235) }
 }
 fn local_color() -> Hsla {
-    rgb8(110, 160, 245)
+    if crate::system::is_light() { rgb8(36, 98, 210) } else { rgb8(110, 160, 245) }
+}
+/// Opaque card fill, lifted off the transcript in both appearances.
+fn card_fill(t: &Theme) -> Hsla {
+    if crate::system::is_light() { gpui::white() } else { t.surface }
 }
 
 /// Fixed row height, scaled with Dynamic Type, so the commit graph's rail
 /// stays continuous from row to row.
 fn row_height() -> f32 {
-    f32::from(crate::system::fs(30.))
+    f32::from(crate::system::fs(28.))
+}
+
+/// Width of `chars` monospace glyphs, for right-aligned numeric columns.
+fn mono_width(chars: usize, size: f32) -> Pixels {
+    px((chars as f32 * 0.6 * f32::from(crate::system::fs(size))).ceil() + 1.)
 }
 
 /// One titled section of the widget: an uppercase caption with a count and a
@@ -44,13 +56,14 @@ fn git_section(
         .flex()
         .flex_col()
         .px(px(14.))
-        .pt(px(12.))
-        .pb(px(6.))
+        .pt(px(10.))
+        .pb(px(4.))
         .child(
             git_row()
-                .pb(px(6.))
-                .child(label(title, t.text_secondary, 11.).font_weight(gpui::FontWeight::BOLD))
-                .when_some(count, |d, n| d.child(label(n.to_string(), t.text_muted, 11.)))
+                .h(px(24.))
+                .gap(px(6.))
+                .child(label(title, t.text_muted, 10.5).font_weight(gpui::FontWeight::BOLD))
+                .when_some(count, |d, n| d.child(label(n.to_string(), t.text_muted, 10.5)))
                 .child(div().flex_1())
                 .children(summary),
         )
@@ -98,39 +111,16 @@ fn diff_totals(stats: &str) -> (u64, u64) {
     })
 }
 
-/// Green/red proportion bar for a set of line changes.
-fn diff_bar(added: u64, removed: u64, t: &Theme) -> gpui::Div {
-    div()
-        .w_full()
-        .h(px(3.))
-        .flex()
-        .gap(px(2.))
-        .rounded_full()
-        .overflow_hidden()
-        .when(added > 0, |d| d.child(div().h_full().flex_basis(px(0.)).flex_grow(added as f32).bg(t.ok)))
-        .when(removed > 0, |d| d.child(div().h_full().flex_basis(px(0.)).flex_grow(removed as f32).bg(t.error)))
-}
-
-fn plus_minus(added: &str, removed: &str, t: &Theme) -> gpui::Div {
-    let binary = added == "-";
-    div()
-        .flex_none()
-        .flex()
-        .justify_end()
-        .gap(px(5.))
-        .child(label(if binary { "bin".to_string() } else { format!("+{added}") }, if binary { t.text_muted } else { t.ok }, 11.))
-        .when(!binary && removed != "0", |d| d.child(label(format!("−{removed}"), t.error, 11.)))
-}
-
-fn more_toggle(expanded: bool, hidden: usize, noun: &str, t: &Theme) -> gpui::Div {
-    git_row()
-        .h(px(32.))
-        .pl(px(26.))
-        .child(label(
-            if expanded { "Show fewer ▴".to_string() } else { format!("{hidden} more {noun} ▾") },
-            t.text_muted,
-            11.5,
-        ))
+/// Numstat cells for one file: `+a` (or `bin`) and `−r`, blank for zero.
+fn stat_cells(stat: Option<(&str, &str)>) -> (String, String) {
+    match stat {
+        Some(("-", _)) => ("bin".into(), String::new()),
+        Some((a, r)) => (
+            if a == "0" { String::new() } else { format!("+{a}") },
+            if r == "0" { String::new() } else { format!("−{r}") },
+        ),
+        None => (String::new(), String::new()),
+    }
 }
 
 fn commit_columns(line: &str) -> (&str, &str, &str) {
@@ -357,212 +347,285 @@ pub(super) struct GitState {
 }
 
 impl MobileApp {
-    /// Preview-only fixture for `JCODE_MOBILE_DEMO=git[-expanded]`.
+    /// Preview-only fixtures for `JCODE_MOBILE_DEMO=git[-expanded|-loading|-error|-clean]`.
     pub fn seed_git_demo(&mut self, demo: &str) {
-        let expanded = demo == "git-expanded";
         self.git_info.open = true;
+        let expanded = demo == "git-expanded";
         self.git_info.show_all_files = expanded;
         self.git_info.show_all_commits = expanded;
-        self.git_info.snapshot = Some(GitSnapshot {
-            root: "/home/demo/jcode-mobile".into(),
-            branch: "main".into(),
-            status: " M src/app/git_info.rs\n M src/main.rs\nA  assets/icons/git-branch.svg\n D docs/old.md\n?? assets/icons/refresh.svg\n?? scratch/".into(),
-            recent_commits: "09567d4\tperf(connect): always-on conn_timing log\t2 hours ago\n9435fa3\tdocs(voice): record iOS TLS hotfix\t5 hours ago\nc3fb286\ttest(voice): await snapshot ack\t1 day ago\nd72341b\tFix iOS voice certificate trust\t2 days ago\n9636cfa\tRecord cloud-only voice release\t3 days ago\n1a2b3c4\tInitial git widget\t1 week ago".into(),
-            diff_stat: "120\t48\tsrc/app/git_info.rs\n6\t1\tsrc/main.rs\n3\t0\tassets/icons/git-branch.svg\n0\t40\tdocs/old.md".into(),
-            ahead: 2,
-            behind: 0,
-        });
+        match demo {
+            "git-loading" => self.git_info.loading = true,
+            "git-error" => {
+                self.git_info.error = Some("Could not read Git information. Check the connection and that this directory is in a Git repository, then refresh.".into())
+            }
+            _ => {
+                let clean = demo == "git-clean";
+                self.git_info.snapshot = Some(GitSnapshot {
+                    root: "/home/demo/jcode-mobile".into(),
+                    branch: if clean { "main".into() } else { "feat/git-widget-redesign".into() },
+                    status: if clean {
+                        String::new()
+                    } else {
+                        " M src/app/git_info.rs\nM  src/main.rs\nA  assets/icons/git-branch.svg\n D docs/old-notes.md\nR  src/app/a.rs -> src/app/git_widget.rs\n?? assets/icons/refresh.svg\n?? scratch/\n M Cargo.toml".into()
+                    },
+                    recent_commits: "09567d4\tfeat(git): timeline commit graph\t12 minutes ago\n9435fa3\tfeat(git): branch header with sync chips\t2 hours ago\nc3fb286\ttest(voice): await asynchronous snapshot acknowledgment\t1 day ago\nd72341b\tFix iOS voice certificate trust integration\t2 days ago\n9636cfa\tRecord verified cloud-only voice release\t3 days ago\n19e6367\tRebuild tool cards from history tool rows\t1 week ago\n1a2b3c4\tInitial pull tab\t2 weeks ago".into(),
+                    diff_stat: if clean {
+                        String::new()
+                    } else {
+                        "120\t48\tsrc/app/git_info.rs\n6\t1\tsrc/main.rs\n3\t0\tassets/icons/git-branch.svg\n0\t40\tdocs/old-notes.md\n2\t2\tsrc/app/git_widget.rs\n1\t1\tCargo.toml".into()
+                    },
+                    ahead: if clean { 0 } else { 2 },
+                    behind: if clean { 0 } else { 1 },
+                });
+            }
+        }
     }
 
-    fn render_git_commits(
-        &self,
-        snapshot: &GitSnapshot,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let commits: Vec<_> = snapshot.recent_commits.lines().collect();
-        let limit = if self.git_info.show_all_commits {
-            commits.len()
-        } else {
-            5
-        };
-        let mut panel = git_section("git-commits", "COMMITS", Some(commits.len()), None, t);
-        for line in commits.iter().take(limit) {
-            let (hash, subject, age) = commit_columns(line);
-            panel = panel.child(
+    /// Changed files: a status badge, the file name bright with its directory
+    /// muted, and right-aligned `+`/`−` columns sized to the widest value.
+    fn render_git_changes(&self, snapshot: &GitSnapshot, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let files: Vec<_> = snapshot.status.lines().filter_map(status_columns).collect();
+        let (added, removed) = diff_totals(&snapshot.diff_stat);
+        let totals = (!snapshot.diff_stat.is_empty()).then(|| {
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(label(format!("+{added}"), t.ok, 10.5))
+                .child(label(format!("−{removed}"), t.error, 10.5))
+                .into_any_element()
+        });
+        let mut section = git_section("git-overview", "CHANGES", Some(files.len()).filter(|n| *n > 0), totals, t);
+        if files.is_empty() {
+            return section
+                .child(
+                    git_row()
+                        .h(px(row_height()))
+                        .child(label("✓", t.ok, 12.).flex_none().w(px(18.)).text_center())
+                        .child(label("Working tree clean", t.text_secondary, 12.5)),
+                )
+                .into_any_element();
+        }
+        let rows: Vec<_> = files
+            .iter()
+            .map(|(code, path)| {
+                let lookup = path.rsplit_once(" -> ").map_or(*path, |(_, new)| new);
+                (*code, *path, stat_cells(file_stat(lookup, &snapshot.diff_stat)))
+            })
+            .collect();
+        // Shared column widths keep every row's numbers on one vertical line.
+        let plus_w = rows.iter().map(|(_, _, (a, _))| a.chars().count()).max().unwrap_or(0);
+        let minus_w = rows.iter().map(|(_, _, (_, r))| r.chars().count()).max().unwrap_or(0);
+        let limit = if self.git_info.show_all_files { rows.len() } else { FOLD };
+        for (code, path, (plus, minus)) in rows.iter().take(limit) {
+            let (badge, tint) = status_badge(code, t);
+            let (dir, name) = split_path(path);
+            let deleted = badge == "D";
+            section = section.child(
                 git_row()
-                    .child(label("●", gpui::rgb(0x8fb8ff).into(), 11.).flex_none())
-                    .child(label(hash.to_owned(), t.warning, 12.).flex_none())
+                    .h(px(row_height()))
                     .child(
-                        label(subject.to_owned(), t.text, 12.)
+                        div()
+                            .flex_none()
+                            .size(px(18.))
+                            .rounded(px(4.))
+                            .bg(with_alpha(tint, 0.14))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(label(badge, tint, 10.5).font_weight(gpui::FontWeight::BOLD)),
+                    )
+                    .child(
+                        div()
                             .flex_1()
                             .min_w_0()
-                            .truncate(),
+                            .flex()
+                            .items_baseline()
+                            .gap(px(6.))
+                            .overflow_hidden()
+                            .child(
+                                label(name.to_owned(), if deleted { t.text_muted } else { t.text }, 12.5)
+                                    .when(deleted, |d| d.line_through())
+                                    .flex_none()
+                                    .max_w_full()
+                                    .truncate(),
+                            )
+                            .when(!dir.is_empty(), |d| {
+                                d.child(
+                                    label(dir.to_owned(), t.text_muted, 11.)
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis_start(),
+                                )
+                            }),
                     )
-                    .child(label(compact_age(age), t.text_muted, 10.).flex_none()),
+                    .when(plus_w > 0, |d| {
+                        d.child(
+                            label(plus.clone(), if plus == "bin" { t.text_muted } else { t.ok }, 11.)
+                                .flex_none()
+                                .w(mono_width(plus_w, 11.))
+                                .text_right(),
+                        )
+                    })
+                    .when(minus_w > 0, |d| {
+                        d.child(label(minus.clone(), t.error, 11.).flex_none().w(mono_width(minus_w, 11.)).text_right())
+                    }),
             );
         }
-        if commits.is_empty() {
-            panel = panel.child(label("No commits yet", t.text_muted, 12.));
-        }
-        let mut footer = git_row().flex_wrap().justify_between();
-        if commits.len() > 5 {
-            footer = footer.child(
-                div()
-                    .id("git-more-commits")
-                    .debug_selector(|| "git-more-commits".into())
-                    .a11y_button("Toggle all recent commits")
-                    .cursor_pointer()
-                    .py(px(6.))
-                    .child(label(
-                        if self.git_info.show_all_commits {
-                            "Show fewer".into()
-                        } else {
-                            format!("+{} more", commits.len() - 5)
-                        },
-                        t.text_muted,
-                        11.,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.git_info.show_all_commits = !this.git_info.show_all_commits;
-                        cx.notify();
-                    })),
-            );
-        }
-        if snapshot.ahead > 0 || snapshot.behind > 0 {
-            footer = footer.child(label(
-                format!("↑{} unpushed  ↓{} behind", snapshot.ahead, snapshot.behind),
-                gpui::rgb(0x8fb8ff).into(),
-                11.,
+        if rows.len() > FOLD {
+            section = section.child(self.git_more_toggle(
+                "git-more-files",
+                "Toggle all changed files",
+                self.git_info.show_all_files,
+                rows.len() - FOLD,
+                "files",
+                t,
+                cx,
+                |this| this.git_info.show_all_files = !this.git_info.show_all_files,
             ));
         }
-        panel.child(footer).into_any_element()
+        section.into_any_element()
     }
 
-    fn render_git_overview(
+    /// Recent commits as a timeline: a continuous rail with one node per
+    /// commit. Local commits the upstream lacks are blue.
+    fn render_git_commits(&self, snapshot: &GitSnapshot, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let commits: Vec<_> = snapshot.recent_commits.lines().filter(|l| !l.trim().is_empty()).collect();
+        let summary = (snapshot.ahead > 0).then(|| {
+            label(format!("{} unpushed", snapshot.ahead), local_color(), 10.5).into_any_element()
+        });
+        let mut section = git_section("git-commits", "COMMITS", None, summary, t);
+        if commits.is_empty() {
+            return section
+                .child(git_row().h(px(row_height())).child(label("No commits yet", t.text_muted, 12.)))
+                .into_any_element();
+        }
+        let limit = if self.git_info.show_all_commits { commits.len() } else { FOLD };
+        let shown = commits.len().min(limit);
+        let h = row_height();
+        let rail = t.border_focus;
+        for (i, line) in commits.iter().take(limit).enumerate() {
+            let (hash, subject, age) = commit_columns(line);
+            let local = (i as u32) < snapshot.ahead;
+            let head = i == 0;
+            let node = if local { local_color() } else if head { t.text_secondary } else { t.text_muted };
+            // The rail continues below the node while older history exists.
+            let more_below = i + 1 < shown || commits.len() > shown;
+            let segment = |top: bool, color: Hsla| {
+                div().absolute().when(top, |d| d.top_0()).when(!top, |d| d.bottom_0()).h(px(h / 2.)).left(px(8.)).w(px(2.)).bg(color)
+            };
+            section = section.child(
+                git_row()
+                    .h(px(h))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(18.))
+                            .h_full()
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(i > 0, |d| d.child(segment(true, if local { local_color() } else { rail })))
+                            .when(more_below, |d| {
+                                d.child(segment(false, if (i as u32 + 1) < snapshot.ahead { local_color() } else { rail }))
+                            })
+                            .child(
+                                div()
+                                    .size(px(if head { 10. } else { 8. }))
+                                    .rounded_full()
+                                    .border_2()
+                                    .border_color(node)
+                                    .bg(if head { node } else { card_fill(t) }),
+                            ),
+                    )
+                    .child(label(hash.chars().take(7).collect::<String>(), if local { local_color() } else { ref_color() }, 11.).flex_none())
+                    .child(label(subject.to_owned(), if head { t.text } else { t.text_secondary }, 12.5).flex_1().min_w_0().truncate())
+                    .child(label(compact_age(age), t.text_muted, 10.5).flex_none()),
+            );
+        }
+        if commits.len() > FOLD {
+            section = section.child(self.git_more_toggle(
+                "git-more-commits",
+                "Toggle all recent commits",
+                self.git_info.show_all_commits,
+                commits.len() - FOLD,
+                "commits",
+                t,
+                cx,
+                |this| this.git_info.show_all_commits = !this.git_info.show_all_commits,
+            ));
+        }
+        section.into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn git_more_toggle(
         &self,
-        snapshot: &GitSnapshot,
+        id: &'static str,
+        a11y: &'static str,
+        expanded: bool,
+        hidden: usize,
+        noun: &'static str,
         t: &Theme,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let files: Vec<_> = snapshot.status.lines().filter_map(status_columns).collect();
-        let limit = if self.git_info.show_all_files {
-            files.len()
-        } else {
-            5
-        };
-        let mut panel = git_section("git-overview", "OVERVIEW", None, None, t).child(
-            git_row()
-                .child(label("◆", gpui::rgb(0x8fb8ff).into(), 12.))
-                .child(
-                    label(snapshot.branch.clone(), t.text_secondary, 12.)
-                        .min_w_0()
-                        .flex_1()
-                        .truncate(),
-                )
-                .child(label(format!("{} changed", files.len()), t.text_muted, 11.).flex_none()),
-        );
-        for (code, path) in files.iter().take(limit) {
-            let color = if code.contains('?') {
-                t.text_muted
-            } else if code.contains('D') {
-                t.error
-            } else if code.contains('A') {
-                t.ok
-            } else {
-                t.warning
-            };
-            let mut row = git_row()
-                .child(
-                    div()
-                        .flex_none()
-                        .w(px(18.))
-                        .flex()
-                        .justify_center()
-                        .child(label(code.trim().to_owned(), color, 12.)),
-                )
-                .child(
-                    label(path.to_owned(), t.text_secondary, 12.)
-                        .flex_1()
-                        .min_w_0()
-                        .truncate(),
-                );
-            if let Some((added, removed)) = file_stat(path, &snapshot.diff_stat) {
-                row = row.child(
-                    label(
-                        if added == "-" {
-                            "binary".into()
-                        } else {
-                            format!("+{added}")
-                        },
-                        t.ok,
-                        11.,
-                    )
-                    .flex_none(),
-                );
-                if removed != "-" {
-                    row = row.child(label(format!("−{removed}"), t.error, 11.).flex_none());
-                }
-            }
-            panel = panel.child(row);
-        }
-        if files.is_empty() {
-            panel = panel.child(label("✓ Clean working tree", t.ok, 12.));
-        }
-        if files.len() > 5 {
-            panel = panel.child(
-                div()
-                    .id("git-more-files")
-                    .debug_selector(|| "git-more-files".into())
-                    .a11y_button("Toggle all changed files")
-                    .cursor_pointer()
-                    .py(px(6.))
-                    .child(label(
-                        if self.git_info.show_all_files {
-                            "Show fewer".into()
-                        } else {
-                            format!("+{} more", files.len() - 5)
-                        },
-                        t.text_muted,
-                        11.,
-                    ))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.git_info.show_all_files = !this.git_info.show_all_files;
-                        cx.notify();
-                    })),
-            );
-        }
-        let (added, removed) = snapshot
-            .diff_stat
-            .lines()
-            .fold((0_u64, 0_u64), |(a, r), line| {
-                let mut columns = line.split('\t');
-                (
-                    a.saturating_add(
-                        columns
-                            .next()
-                            .and_then(|n| n.parse::<u64>().ok())
-                            .unwrap_or(0),
-                    ),
-                    r.saturating_add(
-                        columns
-                            .next()
-                            .and_then(|n| n.parse::<u64>().ok())
-                            .unwrap_or(0),
-                    ),
-                )
-            });
-        if !snapshot.diff_stat.is_empty() {
-            panel = panel.child(
-                git_row()
-                    .justify_end()
-                    .child(label(format!("+{added}"), t.ok, 11.))
-                    .child(label(format!("−{removed}"), t.error, 11.))
-                    .child(label("all tracked", t.text_muted, 11.)),
-            );
-        }
-        panel.into_any_element()
+        toggle: fn(&mut Self),
+    ) -> gpui::Stateful<gpui::Div> {
+        git_row()
+            .id(id)
+            .debug_selector(move || id.into())
+            .a11y_button(a11y)
+            .h(px(32.))
+            .pl(px(26.))
+            .cursor_pointer()
+            .child(label(
+                if expanded { "Show fewer ▴".to_string() } else { format!("{hidden} more {noun} ▾") },
+                t.text_muted,
+                11.,
+            ))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                toggle(this);
+                cx.notify();
+            }))
     }
+
+    /// Placeholder rows shaped like the loaded widget, breathing gently.
+    fn render_git_skeleton(&self, t: &Theme) -> AnyElement {
+        let block = |title: &'static str, widths: &[f32]| {
+            div()
+                .px(px(14.))
+                .pt(px(10.))
+                .flex()
+                .flex_col()
+                .child(git_row().h(px(24.)).child(label(title, t.text_muted, 10.5).font_weight(gpui::FontWeight::BOLD)))
+                .children(widths.iter().map(|w| {
+                    git_row()
+                        .h(px(row_height()))
+                        .child(div().flex_none().size(px(16.)).rounded(px(4.)).bg(t.border_focus))
+                        .child(div().flex_1().child(div().h(px(9.)).w(gpui::relative(*w)).rounded(px(3.)).bg(t.border_focus)))
+                }))
+        };
+        let body = div()
+            .debug_selector(|| "git-loading".into())
+            .flex()
+            .flex_col()
+            .pb(px(8.))
+            .child(block("CHANGES", &[0.7, 0.5, 0.62]))
+            .child(block("COMMITS", &[0.8, 0.66, 0.74, 0.5]));
+        if crate::system::reduce_motion() {
+            return body.opacity(0.5).into_any_element();
+        }
+        body.with_animation(
+            "git-skeleton",
+            gpui::Animation::new(std::time::Duration::from_millis(1400))
+                .repeat()
+                .with_easing(gpui::pulsating_between(0.3, 0.65)),
+            |d, o| d.opacity(o),
+        )
+        .into_any_element()
+    }
+
 
     fn git_context(&self) -> (u64, Option<String>, Option<String>) {
         (
@@ -752,92 +815,193 @@ impl MobileApp {
             .into_any_element()
     }
 
+    /// The Git widget: a card that drops in below the header over a dimmed
+    /// transcript. Tapping the dimmed area, or ✕, dismisses it.
     pub(super) fn render_git_panel(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let state = &self.git_info;
-        // Slide-out widget over the transcript, anchored to the pull tab's edge.
-        div()
-            .debug_selector(|| "git-overlay".into())
-            .occlude()
-            .absolute()
-            .top(px(8.))
-            .right(px(8.))
-            .w(gpui::relative(0.86))
-            .max_h(gpui::relative(0.72))
+        let snapshot = state.snapshot.as_ref();
+        let calm = crate::system::reduce_motion();
+        let pressed = t.surface_elevated;
+        // Ids stay literal at each call site so coverage inventory names them.
+        let icon_button = move |el: gpui::Stateful<gpui::Div>, a11y: &'static str| {
+            el.a11y_button(a11y)
+                .flex_none()
+                .size(px(44.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .active(move |s| s.bg(pressed))
+        };
+        let chip = |text: String, color: Hsla| {
+            div()
+                .flex_none()
+                .h(px(20.))
+                .px(px(7.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .bg(with_alpha(color, 0.15))
+                .child(label(text, color, 11.).font_weight(gpui::FontWeight::BOLD))
+        };
+
+        let refresh_icon = svg()
+            .path("icons/refresh.svg")
+            .size(px(17.))
+            .text_color(if state.loading { t.text_muted } else { t.text_secondary });
+        let refresh_icon = if state.loading && !calm {
+            refresh_icon
+                .with_animation(
+                    "git-refresh-spin",
+                    Animation::new(std::time::Duration::from_millis(900)).repeat(),
+                    |s, p| s.with_transformation(Transformation::rotate(percentage(p))),
+                )
+                .into_any_element()
+        } else {
+            refresh_icon.into_any_element()
+        };
+        let header = div()
+            .flex_none()
+            .h(px(52.))
+            .pl(px(14.))
+            .pr(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .border_b_1()
+            .border_color(t.border)
+            .child(svg().path("icons/git-branch.svg").size(px(16.)).flex_none().text_color(ref_color()))
+            .child(
+                label(
+                    snapshot.map_or_else(|| "Git".to_owned(), |s| s.branch.clone()),
+                    if snapshot.is_some() { ref_color() } else { t.text_secondary },
+                    14.,
+                )
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .min_w_0()
+                .truncate(),
+            )
+            .when_some(snapshot.filter(|s| s.ahead > 0), |d, s| d.child(chip(format!("↑{}", s.ahead), local_color())))
+            .when_some(snapshot.filter(|s| s.behind > 0), |d, s| d.child(chip(format!("↓{}", s.behind), t.warning)))
+            .child(div().flex_1())
+            .child(
+                icon_button(
+                    div().id("refresh-git").debug_selector(|| "refresh-git".into()),
+                    "Refresh Git information",
+                )
+                    .when(!state.loading, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| {
+                            this.refresh_git(cx);
+                            cx.notify();
+                        }))
+                    })
+                    .child(refresh_icon),
+            )
+            .child(
+                icon_button(
+                    div().id("close-git").debug_selector(|| "close-git".into()),
+                    "Close Git information",
+                )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.git_info.open = false;
+                        cx.notify();
+                    }))
+                    .child(label("✕", t.text_secondary, 15.)),
+            );
+
+        let body = div()
+            .id("git-info-panel")
+            .debug_selector(|| "git-info-panel".into())
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
-            .rounded(px(14.))
-            .border_1()
-            .border_color(t.border_focus)
-            .shadow_lg()
-            .bg(t.background)
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .child(
+            .pb(px(8.));
+        let body = if let Some(error) = state.error.clone() {
+            body.child(
                 div()
-                    .flex_none()
+                    .px(px(14.))
+                    .py(px(16.))
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(16.))
-                    .py(px(10.))
-                    .child(label("Repository", t.text_strong, 16.))
-                    .child(
-                        pill("close-git", "Done", t).on_click(cx.listener(|this, _, _, cx| {
-                            this.git_info.open = false;
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .child(
-                div()
-                    .id("git-info-panel")
-                    .debug_selector(|| "git-info-panel".into())
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(16.))
-                    .pb(px(16.))
+                    .items_start()
+                    .gap(px(10.))
                     .child(
                         div()
-                            .w_full()
-                            .min_w_0()
+                            .flex_none()
+                            .size(px(20.))
+                            .rounded_full()
+                            .bg(with_alpha(t.error, 0.15))
                             .flex()
-                            .flex_col()
-                            .gap(px(12.))
-                            .child(label(
-                                self.session
-                                    .working_dir
-                                    .clone()
-                                    .unwrap_or_else(|| "No session directory".into()),
-                                t.text_muted,
-                                12.,
-                            ))
-                            .child(
-                                outline_button(
-                                    "refresh-git",
-                                    if state.loading {
-                                        "Reading Git…"
-                                    } else {
-                                        "Refresh"
-                                    },
-                                    !state.loading,
-                                    t,
-                                )
-                                .when(!state.loading, |d| {
-                                    d.on_click(cx.listener(|this, _, _, cx| {
-                                        this.refresh_git(cx);
-                                        cx.notify();
-                                    }))
-                                }),
-                            )
-                            .when_some(state.error.clone(), |d, error| {
-                                d.child(label(error, t.error, 12.))
-                            })
-                            .when_some(state.snapshot.as_ref(), |d, snapshot| {
-                                d.child(self.render_git_commits(snapshot, t, cx))
-                                    .child(self.render_git_overview(snapshot, t, cx))
-                            }),
-                    ),
+                            .items_center()
+                            .justify_center()
+                            .child(label("!", t.error, 12.).font_weight(gpui::FontWeight::BOLD)),
+                    )
+                    .child(label(error, t.text_secondary, 12.5).flex_1().min_w_0()),
             )
+        } else if let Some(snapshot) = snapshot {
+            body.child(self.render_git_changes(snapshot, t, cx))
+                .child(div().mx(px(14.)).my(px(4.)).h(px(1.)).bg(t.border))
+                .child(self.render_git_commits(snapshot, t, cx))
+        } else if state.loading {
+            body.child(self.render_git_skeleton(t))
+        } else {
+            body
+        };
+
+        let card = div()
+            .debug_selector(|| "git-overlay".into())
+            .occlude()
+            .relative()
+            .w_full()
+            .max_w(px(420.))
+            .max_h(gpui::relative(0.74))
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .rounded(px(16.))
+            .border_1()
+            .border_color(t.border)
+            .bg(card_fill(t))
+            .shadow_lg()
+            .overflow_hidden()
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(body);
+        let scrim = div()
+            .id("git-dismiss")
+            .debug_selector(|| "git-dismiss".into())
+            .a11y_button("Close Git information")
+            .occlude()
+            .absolute()
+            .inset_0()
+            .bg(gpui::black().opacity(if crate::system::is_light() { 0.16 } else { 0.5 }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.git_info.open = false;
+                cx.notify();
+            }));
+        let (scrim, card) = if calm {
+            (scrim.into_any_element(), card.into_any_element())
+        } else {
+            let enter = || Animation::new(std::time::Duration::from_millis(240)).with_easing(gpui::ease_out_quint());
+            (
+                scrim.with_animation("git-scrim-in", enter(), |d, p| d.opacity(p)).into_any_element(),
+                card.with_animation("git-card-in", enter(), |d, p| d.top(px(-10. * (1. - p))).opacity(p))
+                    .into_any_element(),
+            )
+        };
+        // Below the 48px header, inset from the edges, never past ~3/4 height
+        // so the composer stays visible.
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .flex_col()
+            .items_end()
+            .pt(px(54.))
+            .px(px(8.))
+            .child(scrim)
+            .child(card)
             .into_any_element()
     }
 }

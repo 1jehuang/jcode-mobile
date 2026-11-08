@@ -252,6 +252,70 @@ fn git_pull_threshold_cancel_and_session_invalidation(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn git_card_states_float_below_header_and_keep_composer_visible(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+        app.screen = Screen::Chat;
+        app
+    });
+    // (demo, sections present, skeleton present)
+    let states = [
+        ("git", true, false),
+        ("git-expanded", true, false),
+        ("git-clean", true, false),
+        ("git-loading", false, true),
+        ("git-error", false, false),
+    ];
+    for width in [320., 390., 430.] {
+        cx.simulate_resize(size(px(width), px(844.)));
+        for (demo, sections, skeleton) in states {
+            view.update(cx, |app, cx| {
+                app.device = Some((width, 844.));
+                app.git_info = GitState::default();
+                app.seed_git_demo(demo);
+                cx.notify();
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            let card = cx.debug_bounds("git-overlay").unwrap();
+            let scrim = cx.debug_bounds("git-dismiss").unwrap();
+            let composer = cx.debug_bounds("chat-composer").unwrap();
+            assert!(card.left() >= px(8.) && card.right() <= px(width - 8.), "{demo}@{width}: card inset");
+            assert!(card.size.width <= px(420.), "{demo}@{width}: card max width");
+            assert!(card.top() >= px(54.), "{demo}@{width}: card sits below the header");
+            assert!(card.bottom() < composer.top(), "{demo}@{width}: composer stays visible");
+            assert!(scrim.contains(&card.center()) && scrim.size.width >= card.size.width);
+            for control in ["refresh-git", "close-git"] {
+                let bounds = cx.debug_bounds(control).unwrap();
+                assert!(card.contains(&bounds.center()), "{demo}: {control} in card");
+                assert!(bounds.size.width >= px(44.) && bounds.size.height >= px(44.));
+            }
+            assert_eq!(cx.debug_bounds("git-overview").is_some(), sections, "{demo}: changes");
+            assert_eq!(cx.debug_bounds("git-commits").is_some(), sections, "{demo}: commits");
+            assert_eq!(cx.debug_bounds("git-loading").is_some(), skeleton, "{demo}: skeleton");
+            if sections {
+                let changes = cx.debug_bounds("git-overview").unwrap();
+                assert!(changes.left() >= card.left() && changes.right() <= card.right());
+            }
+            let expanded = demo == "git-expanded";
+            // 8 files and 7 commits exceed the fold of 5 unless expanded.
+            assert_eq!(
+                cx.debug_bounds("git-more-files").is_some(),
+                demo == "git" || expanded,
+                "{demo}: files toggle"
+            );
+            assert_eq!(
+                cx.debug_bounds("git-more-commits").is_some(),
+                sections,
+                "{demo}: commits toggle"
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn git_handle_stays_top_right_and_composer_has_no_microphone(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {

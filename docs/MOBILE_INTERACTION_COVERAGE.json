@@ -821,33 +821,19 @@
       "renderer": false
     },
     {
-      "controls": {
-        "debug_selector:dynamic:id": 1
-      },
-      "coverage": [
-        {
-          "kind": "state_model_mocked",
-          "note": "Commit and overview frame bounds are asserted at 320, 390 and 430 points with populated and empty injected snapshots. No pixel, clipping or real repository acceptance is implied.",
-          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
-        },
-        {
-          "kind": "gap",
-          "note": "Exact frame borders, colors, text clipping and device Dynamic Type combinations have no independent pixel assertions.",
-          "tests": []
-        }
-      ],
-      "coverage_scope": "partial",
-      "events": {},
-      "handler": false,
-      "owner": "src/app/git_info.rs::git_frame",
-      "renderer": true
-    },
-    {
       "controls": {},
       "coverage": [
         {
+          "kind": "state_model_mocked",
+          "note": "Rows render inside the changes and commits sections of seeded populated, expanded and clean snapshots at 320, 390 and 430 points; section bounds stay within the card.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible",
+            "src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"
+          ]
+        },
+        {
           "kind": "gap",
-          "note": "Rows render in the populated Git card fixture, but individual row layout, truncation, status tint and per-row pixel output are not asserted.",
+          "note": "Individual row pixels, badge tint, ellipsis placement and Dynamic Type combinations have no independent pixel assertions.",
           "tests": []
         }
       ],
@@ -859,48 +845,99 @@
     },
     {
       "controls": {
-        "debug_selector:literal:git-more-commits": 1,
-        "id:literal:git-more-commits": 1
+        "debug_selector:dynamic:id": 1
       },
       "coverage": [
         {
-          "kind": "hit_tested",
-          "note": "The rendered more-commits control is clicked after narrow-width frame checks; the expansion flag and unchanged composer draft are asserted with an injected snapshot.",
-          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
+          "kind": "state_model_mocked",
+          "note": "git-overview and git-commits section bounds are asserted at three phone widths for populated, expanded, clean, loading and error fixtures, including absence when no snapshot exists.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible",
+            "src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"
+          ]
         },
         {
           "kind": "gap",
-          "note": "Collapse-after-expand, individual commit pixels, large real histories and authenticated SSH results are not independently verified.",
+          "note": "Section header typography, count and totals colors and divider pixels are not asserted.",
           "tests": []
         }
       ],
       "coverage_scope": "partial",
-      "events": {"on_click": 1},
+      "events": {},
       "handler": false,
-      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_commits",
+      "owner": "src/app/git_info.rs::git_section",
       "renderer": true
     },
     {
       "controls": {
-        "debug_selector:literal:git-more-files": 1,
-        "id:literal:git-more-files": 1
+        "debug_selector:dynamic:id": 1,
+        "id:dynamic:id": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "The rendered more-files control is clicked and expansion plus composer preservation asserted. A clean injected snapshot then verifies that the control disappears.",
-          "tests": ["src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"]
+          "note": "git-more-commits and git-more-files are scrolled into the real panel clip and clicked; expansion flags and the unchanged composer draft are asserted. Presence per fold state is asserted across seeded fixtures.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer",
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible"
+          ]
         },
         {
           "kind": "gap",
-          "note": "Collapse-after-expand, all status/diff-stat visual combinations, real repository completion and device presentation remain unverified.",
+          "note": "Collapse-after-expand via Show fewer, large real histories and authenticated SSH results are not independently verified.",
           "tests": []
         }
       ],
       "coverage_scope": "partial",
       "events": {"on_click": 1},
       "handler": false,
-      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_overview",
+      "owner": "src/app/git_info.rs::impl:MobileApp::git_more_toggle",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Populated, expanded and clean seeded snapshots render the changes section within the card at 320, 390 and 430 points; the files toggle appears only past the fold.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible",
+            "src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "All status/diff-stat visual combinations, deleted-file strikethrough and real repository completion remain unverified.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_changes",
+      "renderer": true
+    },
+    {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "The commit timeline renders within the card for seeded and long-subject fixtures at three phone widths; the commits toggle appears past the fold.",
+          "tests": [
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible",
+            "src/app/git_info_tests.rs::git_cards_fit_phone_widths_and_expand_without_touching_the_composer"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Rail segment and node pixels, unpushed coloring and individual commit truncation have no pixel assertions.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_commits",
       "renderer": true
     },
     {
@@ -933,15 +970,20 @@
     },
     {
       "controls": {
+        "debug_selector:literal:close-git": 1,
+        "debug_selector:literal:git-dismiss": 1,
         "debug_selector:literal:git-info-panel": 1,
+        "debug_selector:literal:git-overlay": 1,
+        "debug_selector:literal:refresh-git": 1,
+        "id:literal:close-git": 1,
+        "id:literal:git-dismiss": 1,
         "id:literal:git-info-panel": 1,
-        "outline_button:literal:refresh-git": 1,
-        "pill:literal:close-git": 1
+        "id:literal:refresh-git": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Panel close/reopen and scroll containment at panel/header boundaries are exercised offline without changing transcript/follow/voice state. Raw overlap points verify modal ownership; rendered Refresh and Done are reached within the real panel clip using offline fixture state.",
+          "note": "Header metadata touches under the scrim only dismiss Git, touches on the card stay inside it, and close-git, refresh-git and a scrim tap below the card are reached offline. Wheel containment at panel boundaries is exercised.",
           "tests": [
             "src/app/git_info_tests.rs::git_pull_threshold_cancel_and_session_invalidation",
             "src/app/git_info.rs::lifecycle_tests::git_overlay_wheel_at_boundaries_never_scrolls_or_releases_transcript",
@@ -950,24 +992,47 @@
         },
         {
           "kind": "state_model_mocked",
-          "note": "Refresh generation/context/account invalidation and sanitized errors use injected Git snapshots/results, not real SSH.",
+          "note": "Card inset, max width, placement below the header, composer visibility and 44pt header controls are asserted for every seeded state; refresh invalidation uses injected results, not real SSH.",
           "tests": [
+            "src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible",
             "src/app/git_info.rs::lifecycle_tests::mocked_git_results_reject_stale_refresh_account_tab_session_and_directory"
           ]
         },
         {
           "kind": "gap",
-          "note": "Large populated remote Git snapshots, real SSH refresh completion and every scroll/content combination remain unverified.",
+          "note": "Entry animation, refresh spinner, reduced-motion variants, shadow and scrim pixels and real SSH refresh completion remain unverified.",
           "tests": []
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 2,
+        "on_click": 3,
         "on_scroll_wheel": 1
       },
       "handler": false,
       "owner": "src/app/git_info.rs::impl:MobileApp::render_git_panel",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:git-loading": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "The seeded loading state renders git-loading in place of both sections at 320, 390 and 430 points and other states never render it.",
+          "tests": ["src/app/git_info_tests.rs::git_card_states_float_below_header_and_keep_composer_visible"]
+        },
+        {
+          "kind": "gap",
+          "note": "Pulse animation timing and the reduced-motion static fallback are not asserted.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/git_info.rs::impl:MobileApp::render_git_skeleton",
       "renderer": true
     },
     {

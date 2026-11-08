@@ -124,34 +124,33 @@ fn git_overlay_owns_metadata_header_and_controls(cx: &mut TestAppContext) {
         for underlying in ["pill-account", "location", "menu", "new-session"] {
             draw(cx);
             let target = cx.debug_bounds(underlying).unwrap().center();
-            let panel = cx.debug_bounds("git-info-panel").unwrap();
+            let card = cx.debug_bounds("git-overlay").unwrap();
             let closes = cx.debug_bounds("close-git").unwrap().contains(&target);
             assert!(target.x >= px(0.) && target.x < px(width));
             assert!(target.y >= px(0.) && target.y < px(844.));
-            // The Git widget overlays the transcript, not the whole screen.
-            // Only controls it actually covers must be shielded.
-            if !panel.contains(&target) && !closes {
-                continue;
-            }
+            // The card floats over a scrim covering the whole chat surface:
+            // touches on the card stay inside it, touches elsewhere only
+            // dismiss Git. Nothing underneath may fire either way.
             touch(cx, target);
             view.read_with(cx, |app, cx| {
                 unchanged(app, cx);
                 assert_eq!(
-                    app.git_info.open, !closes,
-                    "{underlying} must only invoke the overlapping Git control"
+                    app.git_info.open,
+                    card.contains(&target) && !closes,
+                    "{underlying} must only invoke the overlapping Git control or scrim"
                 );
             });
-            if closes {
+            if !view.read_with(cx, |app, _| app.git_info.open) {
                 tap(cx, "git-pull-handle");
             }
         }
         draw(cx);
-        let refresh = cx.debug_bounds("refresh-git").unwrap().center();
-        assert!(
-            cx.debug_bounds("git-info-panel")
-                .unwrap()
-                .contains(&refresh)
-        );
+        let card = cx.debug_bounds("git-overlay").unwrap();
+        for control in ["refresh-git", "close-git"] {
+            let bounds = cx.debug_bounds(control).unwrap();
+            assert!(card.contains(&bounds.center()), "{control} belongs to the card");
+            assert!(bounds.size.width >= px(44.) && bounds.size.height >= px(44.), "{control} touch target");
+        }
         tap(cx, "refresh-git");
         view.read_with(cx, |app, cx| {
             unchanged(app, cx);
@@ -161,6 +160,15 @@ fn git_overlay_owns_metadata_header_and_controls(cx: &mut TestAppContext) {
         view.read_with(cx, |app, cx| {
             unchanged(app, cx);
             assert!(!app.git_info.open);
+        });
+        // Tapping the dimmed transcript below the card also dismisses.
+        tap(cx, "git-pull-handle");
+        draw(cx);
+        let card = cx.debug_bounds("git-overlay").unwrap();
+        touch(cx, gpui::point(px(width / 2.), card.bottom() + px(24.)));
+        view.read_with(cx, |app, cx| {
+            unchanged(app, cx);
+            assert!(!app.git_info.open, "scrim tap must close Git");
         });
     }
 }

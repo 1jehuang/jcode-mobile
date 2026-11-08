@@ -204,14 +204,16 @@ fn selection_is_read_only_copyable_and_done_releases_focus(cx: &mut TestAppConte
             Some(ANSWER.into())
         )
     });
-    // Done sits over the transcript's recorded Git pull handle. The modal
-    // must own this touch even while the underlying header remains rendered.
-    let done = cx.debug_bounds("selection-done").unwrap();
+    // The selection modal covers the Git pull handle still recorded by the
+    // chat underneath. Raw touches over the handle must reach the modal and
+    // never claim the Git gesture.
     let git = cx.debug_bounds("git-pull-handle").unwrap();
-    assert!(
-        git.contains(&done.center()),
-        "fixture must exercise overlapping hit regions"
-    );
+    touch(cx, TouchPhase::Started, git.center());
+    touch(cx, TouchPhase::Ended, git.center());
+    view.read_with(cx, |app, _| {
+        assert!(app.feel.selection.is_some(), "touch over handle stays in the modal");
+        assert!(!app.git_info.open, "selection must not activate Git behind it");
+    });
     tap(cx, "selection-done");
     cx.update(|window, cx| {
         view.read_with(cx, |app, cx| {
