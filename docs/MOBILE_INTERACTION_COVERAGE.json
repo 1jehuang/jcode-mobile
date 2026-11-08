@@ -1,6 +1,28 @@
 {
   "entries": [
     {
+      "owner": "src/app.rs::impl:MobileApp::pinned_todos",
+      "renderer": false,
+      "handler": false,
+      "events": { "on_click": 1 },
+      "controls": {
+        "debug_selector:literal:pinned-todos": 1,
+        "id:literal:pinned-todos": 1,
+        "id:literal:todo-list": 1
+      },
+      "coverage_scope": "partial",
+      "coverage": [{ "kind": "gap", "tests": [], "note": "Pinned todo expansion and collapse, long task wrapping, and composer/transcript layout have no dedicated rendered interaction regression yet. This row records the new concurrent control without claiming voice tests cover it." }]
+    },
+    {
+      "owner": "src/app.rs::transcript_scrollbar",
+      "renderer": false,
+      "handler": false,
+      "events": {},
+      "controls": { "debug_selector:literal:transcript-scrollbar": 1 },
+      "coverage_scope": "partial",
+      "coverage": [{ "kind": "gap", "tests": [], "note": "Scrollbar thumb geometry, visibility at scroll boundaries, and physical device rendering have no dedicated visual regression yet. Existing transcript scrolling tests do not independently assert this new indicator." }]
+    },
+    {
       "controls": {},
       "coverage": [
         {
@@ -1104,6 +1126,8 @@
           "note": "Voice gesture ownership is seeded without real Recording objects. Native capture startup and interruptions require device checks.",
           "tests": [
             "src/app/voice_controls_tests.rs::reverse_to_stop_during_startup_consumes_tail_until_ended",
+            "src/app/voice_controls_tests.rs::deep_held_reverse_finishes_once_and_consumes_the_whole_tail",
+            "src/app/voice_controls_tests.rs::deep_pull_release_uses_current_position_not_the_maximum_pull",
             "src/app/voice_controls_tests.rs::navigation_discards_pending_quick_transcription_after_release"
           ]
         }

@@ -1,48 +1,41 @@
-# Hold-to-send voice gestures
+# Reversible overscroll voice gestures
 
-At the newest message, deliberately scroll beyond the end of the transcript:
+At the newest message, deliberately drag upward beyond the transcript's bottom:
 
-- **START, 32 visible points:** begin microphone capture while the finger is held.
-- **STOP, 16 visible points:** reverse to this point to finish a short recording. Releasing before lock also finishes it.
-- **LOCK, 96 visible points:** snap into hands-free recording. Releasing no longer stops capture. Use **Stop and send** below the composer to transcribe and send, or **Cancel dictation** to discard.
+- **START, 32 visible points:** begin microphone capture immediately while your finger stays down.
+- **STOP, 16 visible points:** move back down to this point to finish and transcribe in the same continuous gesture. Even crossing the deep-lock threshold earlier does not prevent this reversal.
+- **LOCK, 96 visible points, checked only on release:** lift your finger while still this deeply overscrolled to keep recording hands-free. Merely crossing this point while holding never locks. Moving back below it before releasing finishes normally.
+- A shallow release after START also finishes. A pull that never reaches START records nothing.
 
-Feedback stays in a compact 44-point status row: three gently animated text-like strokes and a short Listening or Transcribing label. There is no gesture ruler, moving microphone puck, or pull-driven transcript displacement. Start, lock, and finish retain their one-shot haptic confirmations. Reduce Motion keeps the strokes static.
+After locking, tap the microphone to stop and transcribe, or use the cancel control in the input line to discard. Start and finish have one-shot light haptics. The lock confirmation happens on release, never during the upward pull. Reverse-to-finish consumes the rest of the drag, so moving up again before lifting cannot start a second recording.
 
-Quick and locked gesture recordings send only their own transcribed text. They never send or clear an unrelated typed draft. Tap-to-dictate retains its existing draft-only behavior. A disconnected result is preserved in the draft instead of sent. Empty results, cancellations, stale completions, and navigation changes do not send a message. Stopping during microphone startup is remembered and applied when startup completes.
+The entire chat and composer translate together without adding cards or resizing from gesture status. A bare mic and 24 actual amplitude bars are revealed below the composer. Held displacement follows the finger, and released displacement settles with a critically damped spring. Reduce Motion snaps released travel without changing capture semantics.
 
-Touch Ended, rather than wheel inactivity, finishes a held gesture. Post-release momentum cannot activate the mic again. Failed capture and reverse-to-stop consume the remainder of the original drag.
+Recognized previews appear in the input while recording. The current subscription speech API accepts incremental WAV uploads rather than a bidirectional stream. Stopping performs the authoritative full-recording transcription. Overscroll sends only the spoken result, never an unrelated typed draft. Disconnected results stay in the draft for review. Cancel and navigation restore owned provisional text without overwriting user edits. See `LIVE_VOICE.md` for details.
 
-## Linux touchscreen simulator
+HTTP 401/403 on a speech preview stops capture and shows an actionable account error instead of silently retrying. Native audio failures, empty results and stale callbacks never send messages. A finish during permission/startup is remembered and applied when startup completes.
 
-The same gesture works in the native Wayland desktop preview, including physical
-touchscreen input and mouse-to-touch emulation. Sign in, open a chat, scroll to
-the newest message, then keep dragging upward beyond the bottom. Pull about 40
-logical pixels beyond the bottom to start, or about 240 to lock hands-free.
-This opens the real microphone, not a simulated recording.
+## Linux desktop simulator
 
-Linux capture requires `parec` (commonly provided by `pulseaudio-utils`) and a
-running PulseAudio-compatible server, including PipeWire's PulseAudio service.
-It records the default microphone at 16 kHz, mono PCM16. Audio stays in memory
-until stopping and is discarded on cancellation. Capture is bounded to five
-minutes and 10 MiB. Transcription uses the signed-in account's real service.
-An unavailable recorder/server produces a visible error rather than silently
-ignoring the gesture. Relaunch the simulator after rebuilding to load changes.
+The same recognizer runs in the native desktop phone preview with mouse-to-touch emulation. With Wayland GPUI backend support it can also receive hardware touch, which is a separate device acceptance requirement. About 40 raw logical pixels beyond the bottom reaches START. Roughly 240 raw pixels reaches the visible LOCK position, but hands-free mode begins only if the finger is released there.
 
-## Safe visual preview
+Capture requires `parec` and a PulseAudio-compatible service such as PipeWire PulseAudio. Linux records mono PCM16 at 16 kHz and meters real 50 ms windows. Audio is bounded to five minutes and 10 MiB. `PULSE_SOURCE` can direct only a test simulator process to a virtual source without changing the system default microphone.
+
+The account must have speech transcription access. A signed-in cloud account alone is not proof that voice access is enabled. Relaunch after rebuilding to load source changes.
+
+## Visual-only preview
 
 ```sh
 JCODE_VOICE_DEMO=1 justrust run -p jcode-mobile
 ```
 
-The native phone-sized preview reuses the production `voice_gesture` physics and `voice_visual` renderer. It alternates a short reverse-to-stop recording and a longer locked recording, including transcribing feedback. It initializes neither the account/network services nor the microphone. Audio and transcription states are explicitly simulated. The text-like strokes are a symbolic activity indicator, not a live transcript or measured audio waveform.
-
-The preview is for visual review, not proof of native permission handling or transcription-service delivery. Those require an iPhone.
+This scripted preview uses the production recognizer and renderer but initializes no account, microphone or service. Its empty-history waveform is static silence, not measured audio. It demonstrates a short reverse-to-finish recording and a deep release-to-lock recording. It is not evidence of speech recognition or native device permission behavior.
 
 ## Regression tests
 
 ```sh
 justrust check
-justrust test -p jcode-mobile
+justrust test --workspace voice -- --test-threads=1
 ```
 
-Coverage includes exact thresholds, reverse-to-stop hysteresis, sticky release, cancellation, startup-stop races, stale completions, unrelated drafts, disconnected/empty results, GPUI wheel routing, momentum exclusion, spring rebound, frame-rate consistency, finite input bounds, and Reduce Motion.
+Coverage includes exact release-position boundaries, deep up/down reversal, shallow release, consumed tails, cancellation, startup races, stale completions, typed-draft safety, disconnected/empty results, GPUI wheel routing, momentum exclusion, smooth settling, frame-rate consistency, finite bounds and Reduce Motion.

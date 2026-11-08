@@ -26,4 +26,12 @@ The current subscription endpoint accepts WAV uploads, not a bidirectional strea
 - Nine offline GPUI regressions cover real composer updates, overlap handling, stale callbacks, cancellation selection restoration, manual edits, authoritative replacement, voice-only sending, failure retention and rendered waveform bounds.
 - Capture and pure rendering tests cover PCM amplitude, measured silence, fixed cadence, WAV repair, bounded histories and waveform geometry.
 
+## Desktop simulator acceptance, November 8, 2026
+
+The actual native Linux simulator was exercised in an isolated X11 display with mouse-driven emulated touch, actual `parec` PCM capture, and speech routed through a dedicated PipeWire monitor without using the physical microphone or speakers. Recorded WAV uploads contained nonzero measured audio. A localhost transcription fixture returned known text to validate the transport-to-editor path, not speech recognition accuracy.
+
+Passed: live text in the real composer; measured waveform activity; a deep upward pull followed by downward reversal without lifting stops capture and finishes once; releasing while still deeply pulled keeps recording; Cancel stops capture and restores the pre-gesture draft; HTTP 403 stops capture automatically and displays an actionable error. Screenshots and fixture evidence are in the local scratch `voice-simulator` directory.
+
+The real account's speech endpoint returned HTTP 403 and its account capability reported voice transcription disabled. Real subscription-service recognition remains unverified until voice access is enabled. No physical iOS gesture or GPU frame-pacing claim is made.
+
 No physical microphone-to-service acceptance recording or device GPU frame-pacing measurement was performed. This source change alone is not a TestFlight release.

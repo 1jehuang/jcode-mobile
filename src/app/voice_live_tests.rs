@@ -239,6 +239,28 @@ fn preview_errors_advance_consumption_and_final_errors_keep_reviewable_speech(
 }
 
 #[gpui::test]
+fn denied_preview_stops_capture_surface_and_keeps_review_draft(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        for error in [jcode_mobile_core::voice::ACCESS_DENIED, jcode_mobile_core::voice::SIGN_IN_REQUIRED] {
+            seed(app, "Original draft", cx);
+            preview(app, "recognized speech", 32_000, cx);
+            app.voice.auto_send = true;
+            app.voice.locked = true;
+            app.voice.live.pending = true;
+            app.finish_voice_preview(app.voice.generation, app.active_tab, 64_000, Err(error.into()), cx);
+            assert_eq!(app.composer.read(cx).text(), "Original draft recognized speech");
+            assert!(app.voice.recording.is_none());
+            assert!(!app.voice.auto_send && !app.voice.locked && !app.voice.busy && !app.voice.live.pending);
+            assert!(app.voice.error.as_deref().unwrap().starts_with(error));
+            assert!(app.session.transcript.is_empty());
+            assert!(!app.poll_live_voice(app.voice.generation, app.active_tab, cx));
+        }
+    });
+}
+
+#[gpui::test]
 fn final_error_without_preview_preserves_original_draft(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);

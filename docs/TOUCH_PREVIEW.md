@@ -79,8 +79,9 @@ preview connects to real services and uses real stored accounts, not mock data.
 The bottom-overscroll microphone gesture also records real audio on Linux.
 It requires `parec` and a PulseAudio-compatible server (PipeWire PulseAudio works).
 Pull upward past the newest message while holding your finger down, then release
-to transcribe and send. Pull farther to lock, then use **Stop and send**, or
-**Cancel dictation** to discard. See `docs/VOICE_GESTURES.md` for details.
+to transcribe and send. Release while still deeply pulled to lock hands-free, then tap
+**the microphone** to stop and send, or **Cancel dictation** in the input line to discard.
+Moving back down before releasing finishes the recording, even after a deep pull. See `docs/VOICE_GESTURES.md` for details.
 
 ## Existing preview environment options
 

@@ -22,7 +22,7 @@ pub(super) struct VoiceState {
     pub locked: bool,
     pub auto_send: bool,
     pub began: Option<std::time::Instant>,
-    stop_requested: bool,
+    pub(super) stop_requested: bool,
     generation: u64,
     error: Option<String>,
     live: LiveDictation,
@@ -41,7 +41,7 @@ impl VoiceState {
         } else if self.recording.is_some() && self.locked {
             Some("Mic locked on. Tap Stop and send, or cancel to discard.".into())
         } else if self.recording.is_some() && self.auto_send {
-            Some("Recording. Return to Stop or release to send. Pull farther to lock.".into())
+            Some("Recording. Move back down to finish, or release while deeply pulled to lock.".into())
         } else if self.recording.is_some() {
             Some("Recording. Tap stop to transcribe, or cancel to discard.".into())
         } else if self.busy {

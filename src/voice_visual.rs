@@ -31,7 +31,7 @@ impl Phase {
         match self {
             Self::Pulling => "Pull to start recording",
             Self::Preparing => "Waiting for microphone, not recording",
-            Self::Recording => "Release to send, or pull farther to lock",
+            Self::Recording => "Move back down to finish, or release while deeply pulled to lock",
             Self::Locked => "Tap microphone to stop and send, or use cancel in the input line to discard",
             Self::Transcribing => "Turning your voice into text",
             Self::Error => "Check microphone access and try again",
@@ -162,7 +162,8 @@ mod tests {
     #[test]
     fn locked_explains_explicit_stop() {
         assert!(Phase::Locked.instruction().contains("Tap microphone to stop and send"));
-        assert!(Phase::Recording.instruction().contains("Release to send"));
+        assert!(Phase::Recording.instruction().contains("Move back down to finish"));
+        assert!(Phase::Recording.instruction().contains("release while deeply pulled to lock"));
     }
     #[test]
     fn mic_reveal_tracks_pull_and_is_bounded() {

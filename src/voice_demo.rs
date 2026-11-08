@@ -152,7 +152,7 @@ impl Render for VoiceDemo {
                     .child(if locked_cycle { "Pull farther.\nKeep your flow." } else { "A little pull.\nA whole thought." }))
                 .child(div().mt(px(20.)).p(px(14.)).rounded_lg().bg(t.surface)
                     .text_size(px(12.)).child(if locked_cycle {
-                        "Pull to LOCK, then let go. Recording stays active until Stop sends."
+                        "Release while deeply pulled to lock. Move back down before releasing to finish instead."
                     } else { "Pull past START to speak. Reverse to STOP or release to send." }))
                 .child(div().mt(px(16.)).text_size(px(10.)).text_color(t.text_muted)
                     .child("Rhythmic activity preview, not measured audio.\nNo microphone access. No network requests."))
@@ -286,7 +286,8 @@ mod tests {
             (8.1, State::Idle, Phase::Pulling),
             (9., State::Idle, Phase::Pulling),
             (12.38, State::Recording, Phase::Recording),
-            (12.40, State::Locked, Phase::Locked),
+            (12.40, State::Recording, Phase::Recording),
+            (12.50, State::Locked, Phase::Locked),
             (15.29, State::Locked, Phase::Locked),
             (15.31, State::Idle, Phase::Transcribing),
             (17.1, State::Idle, Phase::Pulling),

@@ -290,6 +290,35 @@ mod tests {
     }
 
     #[test]
+    fn speech_access_status_is_actionable_and_does_not_expose_response_bodies() {
+        use std::io::{Read, Write};
+        for (code, expected) in [(401, SIGN_IN_REQUIRED), (403, ACCESS_DENIED)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buf[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length: usize = headers.lines().find_map(|l| l.strip_prefix("content-length: ")).unwrap().parse().unwrap();
+                        if request.len() >= end + 4 + length { break; }
+                    }
+                }
+                write!(stream, "HTTP/1.1 {code} Denied\r\nContent-Length: 7\r\nConnection: close\r\n\r\nprivate").unwrap();
+            });
+            let account = Account { api_key: "test-key".into(), api_base: base, email: None };
+            assert_eq!(transcribe_preview(&account, recording(32_000)).unwrap_err(), expected);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
     fn preview_does_not_follow_redirects() {
         use std::io::{Read, Write};
         let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
