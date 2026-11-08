@@ -208,6 +208,8 @@ pub struct MobileApp {
     synced: synced_sessions::State,
     /// Pinch-out map of every live session (session_map.rs).
     map: session_map::State,
+    /// Viewport height the map lays out against (set each frame).
+    map_height: f32,
     transfer_input: Entity<TextInput>,
     /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
     apple_link: Option<Entity<apple_sign_in::AppleLinkPanel>>,
@@ -387,6 +389,7 @@ impl MobileApp {
             drawer_directory: Default::default(),
             synced: Default::default(),
             map: Default::default(),
+            map_height: 844.,
             transfer_input,
             apple_link: None,
         };
@@ -404,6 +407,14 @@ impl MobileApp {
             let n: usize = std::env::var("JCODE_MOBILE_TABS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
             for _ in 1..n {
                 app.new_tab(cx);
+            }
+            // Dev hook: JCODE_MOBILE_MAP=1 starts zoomed out, tabs spread over strips.
+            if std::env::var_os("JCODE_MOBILE_MAP").is_some() {
+                for (i, id) in app.tab_order.clone().into_iter().enumerate() {
+                    app.map.set_row(id, i % 3);
+                }
+                app.map.set_open(true);
+                app.map.progress = 1.;
             }
         }
         let _ = window;
@@ -638,6 +649,8 @@ impl MobileApp {
         self.next_tab += 1;
         let at = self.tab_order.iter().position(|t| *t == self.active_tab).map_or(self.tab_order.len(), |i| i + 1);
         self.tab_order.insert(at, id);
+        // New sessions join the strip of the session they were opened from.
+        self.map.set_row(id, self.map.row(self.active_tab));
         self.park_active(cx);
         self.active_tab = id;
         self.session = SessionState::default();

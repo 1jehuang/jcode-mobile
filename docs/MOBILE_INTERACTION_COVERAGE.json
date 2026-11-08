@@ -2172,36 +2172,55 @@
     },
     {
       "controls": {
-        "debug_selector:literal:map-new-session": 1,
         "debug_selector:literal:session-map": 1,
+        "debug_selector:macro:format:literal:map-add-{row}": 1,
         "debug_selector:macro:format:literal:map-card-{id}": 1,
-        "id:literal:map-new-session": 1,
         "id:literal:session-map": 1,
+        "id:tuple:literal:map-add": 1,
         "id:tuple:literal:map-card": 1
       },
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Pinch progress/commit/spring-back and grid geometry are unit tested. Two-finger recognition is tested in the gpui fork.",
+          "note": "Pinch progress/commit/spring-back, strip layout with a + tile per strip, and camera pan clamping are unit tested. Two-finger recognition is tested in the gpui fork.",
           "tests": [
             "src/app/session_map.rs::tests::pinch_out_commits_to_map_and_pinch_in_returns",
             "src/app/session_map.rs::tests::small_pinch_springs_back",
-            "src/app/session_map.rs::tests::grid_cells_fill_two_columns"
+            "src/app/session_map.rs::tests::strips_hold_their_sessions_with_an_add_tile_each",
+            "src/app/session_map.rs::tests::camera_pans_within_the_canvas"
           ]
         },
         {
           "kind": "gap",
-          "note": "Map card tap-to-focus, the + new-session card and the map's mouse-down shield are not hit tested through rendered touch. On-device pinch feel needs a phone.",
+          "note": "Map card tap-to-focus, the per-strip + tiles, scroll-wheel panning and the map's mouse-down shield are not hit tested through rendered touch. On-device pinch and pan feel needs a phone.",
           "tests": []
         }
       ],
       "coverage_scope": "partial",
       "events": {
         "on_click": 2,
-        "on_mouse_down": 1
+        "on_mouse_down": 1,
+        "on_scroll_wheel": 1
       },
       "handler": false,
       "owner": "src/app/session_map.rs::impl:MobileApp::render_session_map",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:map-inset": 1
+      },
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "Non-interactive overview inset of the strip canvas with a lens for the visible area. Geometry comes from the unit-tested layout; pixels are only checked by desktop screenshots.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {},
+      "handler": false,
+      "owner": "src/app/session_map.rs::impl:MobileApp::render_map_inset",
       "renderer": true
     },
     {

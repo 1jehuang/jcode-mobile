@@ -1,7 +1,8 @@
-//! Pinch out to zoom from the open session to a 2D map of every live session
-//! (tab). The focused session's card shrinks from full screen into its grid
-//! cell while the others fade in around it. Tap a card (or pinch back in) to
-//! zoom into it.
+//! Pinch out to zoom from the open session to a minimap of every live session,
+//! laid out like jcode desktop: four horizontal strips of panels. The focused
+//! session shrinks from full screen into its slot on its strip while the
+//! others fade in. Drag to pan the map, tap a panel (or pinch back in) to zoom
+//! into it, and tap a strip's + to start a session on that strip.
 use super::{ConnectionPhase, MobileApp, Screen, label};
 use super::a11y::A11yExt as _;
 use crate::haptics::{self, Haptic};
@@ -14,10 +15,15 @@ use std::time::Instant;
 const COMMIT: f32 = 0.35;
 /// Fingers closing to this fraction of their start spread reach the full map.
 const FULL_PINCH: f32 = 0.55;
-const COLUMNS: usize = 2;
-const GAP: f32 = 12.;
-const PAD: f32 = 16.;
-const CARD_ASPECT: f32 = 1.35;
+/// Strips, as on desktop.
+pub(super) const STRIPS: usize = 4;
+/// Mini panel size relative to the screen.
+const SCALE: f32 = 0.2;
+const GAP: f32 = 8.;
+const ROW_GAP: f32 = 22.;
+/// Canvas margin; also room for each strip's label.
+const PAD: f32 = 24.;
+const ADD_W: f32 = 44.;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -27,6 +33,49 @@ pub(super) struct State {
     /// Accumulated pinch scale (1 at gesture start) and the progress then.
     pinch: Option<(f32, f32)>,
     last: Option<Instant>,
+    /// Strip of each tab. Unlisted tabs live on strip 0.
+    rows: std::collections::HashMap<u64, usize>,
+    /// Map camera: canvas position of the screen's top-left corner.
+    camera: (f32, f32),
+}
+
+/// Map geometry in canvas pixels.
+#[derive(Debug, PartialEq)]
+pub(super) struct Layout {
+    /// (tab id, left, top) of each mini panel.
+    pub panels: Vec<(u64, f32, f32)>,
+    /// (strip, left, top) of each strip's + tile.
+    pub adds: Vec<(usize, f32, f32)>,
+    pub panel: (f32, f32),
+    pub size: (f32, f32),
+}
+
+/// Lay strips out top to bottom, each a left-to-right run of panels in tab
+/// order followed by its + tile.
+pub(super) fn layout(order: &[u64], row_of: impl Fn(u64) -> usize, screen: (f32, f32)) -> Layout {
+    // Every strip fits the screen height; panels keep the phone's shape.
+    let fit_h = (screen.1 - PAD * 2. - ROW_GAP * (STRIPS as f32 - 1.)) / STRIPS as f32;
+    let ph = (screen.1 * SCALE).min(fit_h).max(40.);
+    let panel = (ph * screen.0 / screen.1, ph);
+    let mut l = Layout { panels: vec![], adds: vec![], panel, size: (0., 0.) };
+    for row in 0..STRIPS {
+        let top = PAD + row as f32 * (panel.1 + ROW_GAP);
+        let mut x = PAD;
+        for &id in order.iter().filter(|id| row_of(**id).min(STRIPS - 1) == row) {
+            l.panels.push((id, x, top));
+            x += panel.0 + GAP;
+        }
+        l.adds.push((row, x, top));
+        l.size.0 = l.size.0.max(x + ADD_W + PAD);
+    }
+    l.size.1 = PAD * 2. + STRIPS as f32 * panel.1 + (STRIPS as f32 - 1.) * ROW_GAP;
+    l
+}
+
+/// Keep the camera inside the canvas (centered when the canvas is smaller).
+fn clamp_camera(c: (f32, f32), size: (f32, f32), screen: (f32, f32)) -> (f32, f32) {
+    let axis = |c: f32, size: f32, screen: f32| if size <= screen { (size - screen) / 2. } else { c.clamp(0., size - screen) };
+    (axis(c.0, size.0, screen.0), axis(c.1, size.1, screen.1))
 }
 
 impl State {
@@ -67,6 +116,24 @@ impl State {
         }
     }
 
+    pub(super) fn row(&self, id: u64) -> usize {
+        self.rows.get(&id).copied().unwrap_or(0)
+    }
+
+    pub(super) fn set_row(&mut self, id: u64, row: usize) {
+        self.rows.insert(id, row.min(STRIPS - 1));
+    }
+
+    /// Point the camera so `rect` (left, top, w, h) sits mid-screen.
+    fn center_on(&mut self, rect: (f32, f32, f32, f32), size: (f32, f32), screen: (f32, f32)) {
+        let c = (rect.0 + rect.2 / 2. - screen.0 / 2., rect.1 + rect.3 / 2. - screen.1 / 2.);
+        self.camera = clamp_camera(c, size, screen);
+    }
+
+    fn pan(&mut self, dx: f32, dy: f32, size: (f32, f32), screen: (f32, f32)) {
+        self.camera = clamp_camera((self.camera.0 - dx, self.camera.1 - dy), size, screen);
+    }
+
     pub(super) fn set_open(&mut self, open: bool) {
         self.target = if open { 1. } else { 0. };
         self.pinch = None;
@@ -86,14 +153,6 @@ impl State {
         self.progress = if (next - self.target).abs() < 0.002 { self.target } else { next };
         self.progress != self.target
     }
-}
-
-/// Card rectangle (left, top, width, height) of grid slot `i` within `width`.
-pub(super) fn cell(i: usize, width: f32) -> (f32, f32, f32, f32) {
-    let w = ((width - PAD * 2. - GAP * (COLUMNS as f32 - 1.)) / COLUMNS as f32).max(40.);
-    let h = w * CARD_ASPECT;
-    let (col, row) = (i % COLUMNS, i / COLUMNS);
-    (PAD + col as f32 * (w + GAP), PAD + row as f32 * (h + GAP), w, h)
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -136,6 +195,13 @@ impl MobileApp {
         if ev.phase == TouchPhase::Started {
             // A pinch owns the fingers: drop any half-started tab swipe.
             self.swipe.cancel(self.content_width(), Instant::now());
+            if !self.map.visible() {
+                let screen = self.map_screen();
+                let l = self.map_layout(screen);
+                if let Some(&(_, x, y)) = l.panels.iter().find(|p| p.0 == self.active_tab) {
+                    self.map.center_on((x, y, l.panel.0, l.panel.1), l.size, screen);
+                }
+            }
         }
         if self.map.pinch(ev) {
             haptics::play(Haptic::Selection);
@@ -144,6 +210,14 @@ impl MobileApp {
             haptics::play(Haptic::Light);
         }
         cx.notify();
+    }
+
+    fn map_screen(&self) -> (f32, f32) {
+        (self.content_width(), self.map_height)
+    }
+
+    fn map_layout(&self, screen: (f32, f32)) -> Layout {
+        layout(&self.tab_order, |id| self.map.row(id), screen)
     }
 
     fn zoom_into(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -155,8 +229,17 @@ impl MobileApp {
         cx.notify();
     }
 
+    fn add_on_strip(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.new_tab(cx);
+        self.map.set_row(self.active_tab, row);
+        self.map.set_open(false);
+        cx.notify();
+    }
+
     /// The map layer drawn over the chat body, or None when fully zoomed in.
     pub(super) fn render_session_map(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let full = self.device.map_or_else(|| f32::from(window.viewport_size().height), |(_, h)| h);
+        self.map_height = (full - self.safe.top - self.safe.bottom).max(200.);
         if self.map.tick() {
             window.request_animation_frame();
         }
@@ -165,104 +248,128 @@ impl MobileApp {
         }
         let p = self.map.progress.clamp(0., 1.);
         let over = (self.map.progress - 1.).max(0.);
-        let width = self.content_width();
-        let viewport = f32::from(window.viewport_size().height);
-        let active_pos = self.tab_order.iter().position(|id| *id == self.active_tab).unwrap_or(0);
-        let (_, active_top, _, active_h) = cell(active_pos, width);
-        // Keep the focused card on screen when the canvas is taller than it.
-        let scroll = (active_top + active_h / 2. - viewport * 0.4).max(0.) * p;
-        let ids = self.tab_order.clone();
-        let mut canvas = div().relative().w(px(width)).h(px(cell(ids.len(), width).1 + cell(0, width).3 + PAD));
-        for (i, id) in ids.iter().copied().enumerate() {
+        let screen = self.map_screen();
+        let l = self.map_layout(screen);
+        self.map.camera = clamp_camera(self.map.camera, l.size, screen);
+        // Rubber band past full zoom: the whole map tightens toward the middle.
+        let k = 1. - over * 0.6;
+        let (cam_x, cam_y) = self.map.camera;
+        let at = |x: f32, y: f32| {
+            let (sx, sy) = (x - cam_x, y - cam_y);
+            (screen.0 / 2. + (sx - screen.0 / 2.) * k, screen.1 / 2. + (sy - screen.1 / 2.) * k)
+        };
+        let (pw, ph) = (l.panel.0 * k, l.panel.1 * k);
+        let mut layer = div()
+            .id("session-map")
+            .debug_selector(|| "session-map".into())
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .bg(t.background.opacity(p))
+            .occlude()
+            // The map owns its touches: nothing underneath reacts.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // One-finger drag (or trackpad scroll) pans the camera.
+            .on_scroll_wheel(cx.listener(move |this, ev: &gpui::ScrollWheelEvent, window, cx| {
+                let d = ev.delta.pixel_delta(window.line_height());
+                let screen = this.map_screen();
+                let size = this.map_layout(screen).size;
+                this.map.pan(f32::from(d.x), f32::from(d.y), size, screen);
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        // Strip tracks and labels behind the panels.
+        for row in 0..STRIPS {
+            let (_, ax, top) = l.adds[row];
+            let (x, y) = at(PAD - 8., top - 8.);
+            let (x2, _) = at(ax + ADD_W + 8., top);
+            layer = layer
+                .child(div().absolute().left(px(x)).top(px(y)).w(px((x2 - x).max(0.))).h(px(ph + 16. * k))
+                    .rounded(px(14.)).bg(t.raised).opacity(p * 0.6))
+                .child(label(format!("{}", row + 1), t.text_muted, 10.).absolute().left(px(x - 14.)).top(px(y + 4.)).opacity(p));
+        }
+        for &(id, x, y) in &l.panels {
             let Some(session) = self.tab_session(id) else { continue };
             let focused = id == self.active_tab;
-            let (l, top, w, h) = cell(i, width);
-            // Rubber band past full zoom: the grid tightens slightly.
-            let shrink = 1. - over * 0.5;
-            let (l, top, w, h) = (l + w * (1. - shrink) / 2., top - scroll + h * (1. - shrink) / 2., w * shrink, h * shrink);
-            let (l, top, w, h, alpha) = if focused {
-                (lerp(0., l, p), lerp(0., top, p), lerp(width, w, p), lerp(viewport, h, p), (p * 2.5).min(1.))
+            let (mx, my) = at(x, y);
+            let (left, top, w, h, alpha) = if focused {
+                (lerp(0., mx, p), lerp(0., my, p), lerp(screen.0, pw, p), lerp(screen.1, ph, p), (p * 2.5).min(1.))
             } else {
-                (l, top, w, h, p)
+                (mx, my, pw, ph, p)
             };
             let (dot, state) = status(session, t);
             let title: SharedString = session.session_title.clone().unwrap_or_else(|| "New session".into()).into();
-            let dir = session.working_dir.as_deref().map(|d| d.rsplit('/').find(|s| !s.is_empty()).unwrap_or(d).to_string());
             let lines = snippet(session);
-            let empty = lines.is_empty();
-            let card = div()
-                .id(("map-card", id))
-                .debug_selector(move || format!("map-card-{id}"))
-                .a11y_button(format!("Open {title}"))
-                .absolute()
-                .left(px(l))
-                .top(px(top))
-                .w(px(w))
-                .h(px(h))
-                .opacity(alpha)
-                .rounded(px(lerp(0., 18., p)))
-                .border_1()
-                .border_color(if focused { t.border_focus } else { t.border })
-                .bg(if focused { t.raised } else { t.surface })
-                .overflow_hidden()
-                .p(px(12.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.zoom_into(id, cx)))
-                .child(
-                    div().flex().items_center().gap(px(6.))
-                        .child(div().flex_none().size(px(8.)).rounded_full().bg(dot))
-                        .child(label(state, t.text_muted, 10.5))
-                        .when_some(dir, |d, dir| d.child(label(dir, t.text_muted, 10.5).min_w_0().truncate())),
-                )
-                .child(label(title, t.text_strong, 14.).line_clamp(2))
-                .child(
-                    div().flex_1().min_h_0().overflow_hidden().flex().flex_col().justify_end().gap(px(6.))
-                        .when(empty, |d| d.child(label("No messages yet", t.text_muted, 11.)))
+            layer = layer.child(
+                div()
+                    .id(("map-card", id))
+                    .debug_selector(move || format!("map-card-{id}"))
+                    .a11y_button(format!("Open {title}, {state}"))
+                    .absolute()
+                    .left(px(left)).top(px(top)).w(px(w)).h(px(h))
+                    .opacity(alpha)
+                    .rounded(px(lerp(0., 10., p)))
+                    .border_1()
+                    .border_color(if focused { t.accent } else { t.border })
+                    .bg(if focused { t.raised } else { t.surface })
+                    .overflow_hidden()
+                    .p(px(7.))
+                    .flex().flex_col().gap(px(4.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.zoom_into(id, cx)))
+                    .child(div().flex().items_center().gap(px(4.))
+                        .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
+                        .child(label(title, t.text_strong, 10.).min_w_0().truncate()))
+                    .child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().justify_end().gap(px(3.))
                         .children(lines.into_iter().map(|(user, text)| {
-                            label(text, if user { t.text_strong } else { t.text_secondary }, 10.5)
-                                .line_clamp(4)
-                                .when(user, |d| d.px(px(6.)).py(px(4.)).rounded(px(6.)).bg(t.surface_elevated))
-                        })),
-                );
-            canvas = canvas.child(card);
+                            label(text, if user { t.text_strong } else { t.text_secondary }, 7.5)
+                                .line_clamp(3)
+                                .when(user, |d| d.px(px(3.)).py(px(2.)).rounded(px(3.)).bg(t.surface_elevated))
+                        }))),
+            );
         }
-        // "+" slot after the last session.
-        let (l, top, w, h) = cell(ids.len(), width);
-        canvas = canvas.child(
-            div()
-                .id("map-new-session")
-                .debug_selector(|| "map-new-session".into())
-                .a11y_button("New session")
-                .absolute()
-                .left(px(l)).top(px(top - scroll)).w(px(w)).h(px(h))
-                .opacity(p)
-                .rounded(px(18.))
-                .border_1()
-                .border_color(t.border)
-                .flex().items_center().justify_center()
-                .cursor_pointer()
-                .child(label("+", t.text_muted, 28.))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.new_tab(cx);
-                    this.map.set_open(false);
-                })),
-        );
-        Some(
-            div()
-                .id("session-map")
-                .debug_selector(|| "session-map".into())
-                .absolute()
-                .inset_0()
-                .bg(t.background.opacity(p))
-                .overflow_y_scroll()
-                // The map owns its touches: nothing underneath reacts.
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(canvas)
-                .into_any_element(),
-        )
+        for &(row, x, y) in &l.adds {
+            let (x, y) = at(x, y);
+            layer = layer.child(
+                div()
+                    .id(("map-add", row))
+                    .debug_selector(move || format!("map-add-{row}"))
+                    .a11y_button(format!("New session on strip {}", row + 1))
+                    .absolute()
+                    .left(px(x)).top(px(y)).w(px(ADD_W * k)).h(px(ph))
+                    .opacity(p)
+                    .rounded(px(10.))
+                    .border_1().border_color(t.border)
+                    .flex().items_center().justify_center()
+                    .cursor_pointer()
+                    .child(label("+", t.text_muted, 20.))
+                    .on_click(cx.listener(move |this, _, _, cx| this.add_on_strip(row, cx))),
+            );
+        }
+        Some(layer.child(self.render_map_inset(&l, screen, p, t)).into_any_element())
+    }
+
+    /// Corner overview: the whole canvas in miniature with a lens for what
+    /// the screen shows, like desktop's minimap.
+    fn render_map_inset(&self, l: &Layout, screen: (f32, f32), p: f32, t: &Theme) -> AnyElement {
+        const W: f32 = 96.;
+        let s = (W / l.size.0).min(64. / l.size.1);
+        let (w, h) = (l.size.0 * s, l.size.1 * s);
+        let (cx_, cy_) = self.map.camera;
+        let mut inset = div()
+            .absolute().right(px(12.)).bottom(px(12.)).w(px(w + 8.)).h(px(h + 8.)).p(px(4.))
+            .rounded(px(8.)).bg(t.raised).border_1().border_color(t.border).opacity(p)
+            .child(div().relative().size_full()
+                .children(l.panels.iter().map(|&(id, x, y)| {
+                    div().absolute().left(px(x * s)).top(px(y * s)).w(px(l.panel.0 * s)).h(px(l.panel.1 * s))
+                        .rounded(px(1.5)).bg(if id == self.active_tab { t.accent } else { t.text_muted.opacity(0.6) })
+                }))
+                .child(div().absolute()
+                    .left(px(cx_.max(0.) * s)).top(px(cy_.max(0.) * s))
+                    .w(px((screen.0 * s).min(w))).h(px((screen.1 * s).min(h)))
+                    .rounded(px(2.)).border_1().border_color(t.text_strong.opacity(0.7))));
+        inset = inset.debug_selector(|| "map-inset".into());
+        inset.into_any_element()
     }
 }
 
@@ -304,12 +411,29 @@ mod tests {
     }
 
     #[test]
-    fn grid_cells_fill_two_columns() {
-        let (l0, t0, w, _) = cell(0, 390.);
-        let (l1, t1, _, _) = cell(1, 390.);
-        let (_, t2, _, _) = cell(2, 390.);
-        assert_eq!((l0, t0), (PAD, PAD));
-        assert!((l1 - (PAD + w + GAP)).abs() < 1e-3 && t1 == t0);
-        assert!(t2 > t0);
+    fn strips_hold_their_sessions_with_an_add_tile_each() {
+        let rows = std::collections::HashMap::from([(1u64, 0usize), (2, 2), (3, 0)]);
+        let l = layout(&[1, 2, 3], |id| rows[&id], (390., 844.));
+        assert_eq!(l.adds.len(), STRIPS);
+        let at = |id| l.panels.iter().find(|p| p.0 == id).map(|p| (p.1, p.2)).unwrap();
+        let ((x1, y1), (x3, y3), (_, y2)) = (at(1), at(3), at(2));
+        assert_eq!(y1, y3, "same strip, same row");
+        assert!(x3 > x1, "tab order runs left to right");
+        assert!(y2 > y1, "strip 3 sits below strip 1");
+        assert_eq!(l.adds[1].1, PAD, "empty strip shows only its +");
+        assert!(l.adds[0].1 > x3);
+    }
+
+    #[test]
+    fn camera_pans_within_the_canvas() {
+        let mut s = State::default();
+        let (size, screen) = ((900., 1200.), (390., 844.));
+        s.pan(-10_000., -10_000., size, screen);
+        assert_eq!(s.camera, (510., 356.));
+        s.pan(10_000., 10_000., size, screen);
+        assert_eq!(s.camera, (0., 0.));
+        // A canvas narrower than the screen stays centered.
+        s.pan(50., 0., (300., 1200.), screen);
+        assert_eq!(s.camera.0, -45.);
     }
 }
