@@ -236,6 +236,9 @@ fn open(config: &Config, inbox: &Mutex<Inbox>, emit: &dyn Fn(ConnectionOutput)) 
     }
 }
 
+/// How long to wait for the RuntimeInfo attach pushes before asking for it.
+const RUNTIME_INFO_FALLBACK: Duration = Duration::from_secs(8);
+
 /// Newest sessions fetched for the sidebar.
 const SESSION_LIST_LIMIT: u32 = 80;
 
@@ -359,9 +362,12 @@ fn session_loop(
 ) -> bool {
     let (results, outcomes) = mpsc::channel::<ApiEvent>();
     let (snapshots, initial) = mpsc::channel();
+    // Attach already pushes RuntimeInfo (routes are ~700 KB). Requesting it
+    // too puts a third copy ahead of history on the one channel. Only ask
+    // if an older server has not pushed it shortly after attach.
+    let mut runtime_info_due = Some(std::time::Instant::now() + RUNTIME_INFO_FALLBACK);
     for req in [
         jcode_sdk::ApiRequest::GetHistory { session_id: sid.into() },
-        jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid.into() },
         jcode_sdk::ApiRequest::ListModels { session_id: sid.into() },
         jcode_sdk::ApiRequest::ListSessions {
             include_archived: false,
@@ -458,8 +464,20 @@ fn session_loop(
         while let Ok(event) = outcomes.try_recv() {
             emit(ConnectionOutput::Event(event));
         }
+        if runtime_info_due.is_some_and(|due| std::time::Instant::now() >= due) {
+            runtime_info_due = None;
+            let (client, sid, results) = (client.clone(), sid.to_string(), results.clone());
+            std::thread::spawn(move || {
+                if let Ok(frame) = client.request(jcode_sdk::ApiRequest::GetRuntimeInfo { session_id: sid }) {
+                    let _ = results.send(frame.event);
+                }
+            });
+        }
         match stream.next_timeout(Duration::from_millis(50)) {
             Some(event) => {
+                if matches!(event, ApiEvent::RuntimeInfo { .. }) {
+                    runtime_info_due = None;
+                }
                 // A streamed History is newer than the initial snapshot.
                 history_superseded |= matches!(&event, ApiEvent::History { .. });
                 if is_turn_content(&event) && !std::mem::replace(&mut first_content_seen, true) {
@@ -826,7 +844,7 @@ mod tests {
                     "get_todo_state" => {}
                     other => panic!("unexpected request: {other}"),
                 }
-                if sent && snapshots.len() == 4 {
+                if sent && snapshots.len() == 3 {
                     released.recv_timeout(Duration::from_secs(5)).unwrap();
                     for req in snapshots {
                         let event = if req["req"] == "get_history" {
@@ -861,10 +879,11 @@ mod tests {
         assert_eq!(state.transcript[1].text, "live");
         release.send(()).unwrap();
         snapshots_replied.recv_timeout(Duration::from_secs(5)).unwrap();
-        // All three non-history replies must arrive independently. A late
-        // initial History must never replace the already-rendered live turn.
+        // Both non-history replies must arrive independently (runtime info is
+        // pushed by attach, not requested). A late initial History must never
+        // replace the already-rendered live turn.
         let mut completed = 0;
-        while completed < 3 {
+        while completed < 2 {
             let output = rx.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(!matches!(&output, ConnectionOutput::Event(ApiEvent::History { .. })));
             if matches!(&output, ConnectionOutput::Event(ApiEvent::Error { .. })) {
