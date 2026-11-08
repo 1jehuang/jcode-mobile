@@ -196,8 +196,10 @@ Reply `200 {"ok":true,"pushed":N}`.
 ### POST /v1/push/live-tokens (app)
 
 ```json
-{"token":"<hex>","kind":"update"|"start","environment":"production"|"sandbox","bundle_id":"sh.jcode.mobile.rust"}
+{"token":"<hex>","kind":"update"|"start","environment":"production"|"sandbox","bundle_id":"sh.jcode.mobile.rust","device_token":"<alert token hex, optional>"}
 ```
+`device_token` identifies the phone (falls back to the API key) so sign-out
+via `DELETE /v1/push/devices` can also drop its live tokens.
 `update` is the per-activity push token (`Activity.pushTokenUpdates`). The
 Worker keeps the newest `update` token per device and drops older ones.
 `start` is the iOS 17.2+ push-to-start token (`pushToStartTokenUpdates`).

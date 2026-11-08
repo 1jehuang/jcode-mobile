@@ -13,6 +13,7 @@
 //! runs when the framework is absent (simulator, Linux preview).
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use jcode_mobile_core::agents::{AgentState, AgentsState, LiveTokenKind, LocalAgent, headline};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,74 +93,81 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// What the Live Activity shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveState {
-    pub session_id: String,
-    pub title: String,
-    /// "thinking", "responding", "tools".
-    pub activity: &'static str,
-    pub detail: String,
-}
-
-/// Derive the Live Activity state for a session (None when idle).
-pub fn live_state(s: &jcode_mobile_core::SessionState) -> Option<LiveState> {
+/// This tab's contribution to the account-wide Live Activity.
+pub fn local_agent(s: &jcode_mobile_core::SessionState) -> Option<LocalAgent> {
     use jcode_mobile_core::session::ToolStatus;
-    if !s.is_processing {
-        return None;
-    }
-    let running = s
-        .transcript
-        .iter()
-        .rev()
-        .take(4)
-        .flat_map(|e| e.tool_calls.iter())
-        .find(|t| matches!(t.status, ToolStatus::Running | ToolStatus::StreamingInput));
-    let (activity, detail) = if let Some(t) = running {
-        ("tools", t.name.clone())
-    } else if s.is_reasoning {
-        ("thinking", String::new())
+    let id = s.session_id.clone().filter(|id| !id.is_empty())?;
+    let title = s.session_title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "jcode".into());
+    let (state, detail) = if s.is_processing {
+        let running = s
+            .transcript
+            .iter()
+            .rev()
+            .take(4)
+            .flat_map(|e| e.tool_calls.iter())
+            .find(|t| matches!(t.status, ToolStatus::Running | ToolStatus::StreamingInput));
+        let detail = match running {
+            Some(t) => t.name.clone(),
+            None if s.is_reasoning => "Thinking".into(),
+            None => "Responding".into(),
+        };
+        (Some(AgentState::Running), detail)
+    } else if s.error_banner.is_some() {
+        (Some(AgentState::Error), String::new())
     } else {
-        ("responding", String::new())
+        (None, String::new())
     };
-    Some(LiveState {
-        session_id: s.session_id.clone().unwrap_or_default(),
-        title: s.session_title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "jcode".into()),
-        activity,
-        detail,
-    })
+    Some(LocalAgent { id, title, state, detail })
 }
 
-/// Push `state` to the Live Activity if it changed. `None` ends it.
-pub fn sync_live(state: Option<LiveState>) {
-    static LAST: Mutex<Option<LiveState>> = Mutex::new(None);
+/// Live Activity token reported by the bridge.
+pub type LiveToken = (LiveTokenKind, String);
+
+static TOKEN_TX: Mutex<Option<UnboundedSender<LiveToken>>> = Mutex::new(None);
+
+/// Channel of Live Activity push tokens (update and push-to-start). The app
+/// registers them with the Worker so the activity updates while suspended.
+pub fn install_live_tokens() -> UnboundedReceiver<LiveToken> {
+    let (tx, rx) = unbounded();
+    *TOKEN_TX.lock().unwrap() = Some(tx);
+    imp::install_token_callback();
+    rx
+}
+
+fn emit_token(kind: LiveTokenKind, hex: String) {
+    if let Some(tx) = TOKEN_TX.lock().unwrap().as_ref() {
+        let _ = tx.unbounded_send((kind, hex));
+    }
+}
+
+/// Show `state` in the single account-wide Live Activity if its content
+/// changed. An empty state ends it.
+pub fn sync_live(state: &AgentsState) {
+    static LAST: Mutex<Option<AgentsState>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap();
-    if *last == state {
+    if last.as_ref().is_some_and(|l| l.same_content(state)) {
         return;
     }
-    let started = match (&*last, &state) {
-        (Some(a), Some(b)) => a.session_id == b.session_id && a.title == b.title,
-        _ => false,
-    };
-    *last = state.clone();
+    *last = Some(state.clone());
     drop(last);
-    imp::apply(state, started);
+    imp::apply(state);
 }
 
 #[cfg(target_os = "ios")]
 mod imp {
-    use super::LiveState;
-    use std::ffi::{CString, c_char, c_void};
+    use super::{AgentsState, LiveTokenKind, emit_token};
+    use std::ffi::{CStr, CString, c_char, c_void};
     use std::sync::OnceLock;
 
-    type Start = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, *const c_char) -> i32;
-    type Update = unsafe extern "C" fn(*const c_char, *const c_char);
+    type Sync = unsafe extern "C" fn(*const c_char) -> i32;
     type End = unsafe extern "C" fn();
+    type TokenCb = extern "C" fn(i32, *const c_char);
+    type SetCb = unsafe extern "C" fn(Option<TokenCb>);
 
     struct Bridge {
-        start: Start,
-        update: Update,
+        sync: Sync,
         end: End,
+        set_cb: Option<SetCb>,
         donate: Option<End>,
     }
 
@@ -177,26 +185,39 @@ mod imp {
                 log::info!("live activity: JcodeBridge not bundled");
                 return None;
             }
-            let sym = |n: &std::ffi::CStr| dlsym(h, n.as_ptr());
-            let (s, u, e) = (sym(c"jcode_live_start"), sym(c"jcode_live_update"), sym(c"jcode_live_end"));
-            if s.is_null() || u.is_null() || e.is_null() {
+            let sym = |n: &CStr| dlsym(h, n.as_ptr());
+            let (s, e) = (sym(c"jcode_live_sync"), sym(c"jcode_live_end"));
+            if s.is_null() || e.is_null() {
+                log::info!("live activity: JcodeBridge too old");
                 return None;
             }
+            let opt = |n: &CStr| {
+                let p = sym(n);
+                (!p.is_null()).then_some(p)
+            };
             Some(Bridge {
-                start: std::mem::transmute::<*mut c_void, Start>(s),
-                update: std::mem::transmute::<*mut c_void, Update>(u),
+                sync: std::mem::transmute::<*mut c_void, Sync>(s),
                 end: std::mem::transmute::<*mut c_void, End>(e),
-                donate: {
-                    let d = sym(c"jcode_donate_shortcuts");
-                    (!d.is_null()).then(|| std::mem::transmute::<*mut c_void, End>(d))
-                },
+                set_cb: opt(c"jcode_live_set_token_callback").map(|p| std::mem::transmute::<*mut c_void, SetCb>(p)),
+                donate: opt(c"jcode_donate_shortcuts").map(|p| std::mem::transmute::<*mut c_void, End>(p)),
             })
         })
         .as_ref()
     }
 
-    fn c(s: &str) -> CString {
-        CString::new(s.replace('\0', "")).unwrap_or_default()
+    extern "C" fn on_token(kind: i32, hex: *const c_char) {
+        if hex.is_null() {
+            return;
+        }
+        let hex = unsafe { CStr::from_ptr(hex) }.to_string_lossy().into_owned();
+        let kind = if kind == 1 { LiveTokenKind::Start } else { LiveTokenKind::Update };
+        emit_token(kind, hex);
+    }
+
+    pub(super) fn install_token_callback() {
+        if let Some(set) = bridge().and_then(|b| b.set_cb) {
+            unsafe { set(Some(on_token)) };
+        }
     }
 
     pub(super) fn donate_shortcuts() {
@@ -205,26 +226,26 @@ mod imp {
         }
     }
 
-    pub(super) fn apply(state: Option<LiveState>, started: bool) {
+    pub(super) fn apply(state: &AgentsState) {
         let Some(b) = bridge() else { return };
-        unsafe {
-            match state {
-                None => (b.end)(),
-                Some(s) if started => (b.update)(c(s.activity).as_ptr(), c(&s.detail).as_ptr()),
-                Some(s) => {
-                    let ok = (b.start)(c(&s.title).as_ptr(), c(&s.session_id).as_ptr(), c(s.activity).as_ptr(), c(&s.detail).as_ptr());
-                    log::info!("live activity: start {}", if ok == 1 { "ok" } else { "unavailable" });
-                }
-            }
+        if state.is_empty() {
+            unsafe { (b.end)() };
+            return;
         }
+        let json = CString::new(serde_json::to_string(state).unwrap_or_default()).unwrap_or_default();
+        let ok = unsafe { (b.sync)(json.as_ptr()) };
+        log::debug!("live activity: sync {}", if ok == 1 { "showing" } else { "unavailable" });
     }
 }
 
 #[cfg(not(target_os = "ios"))]
 mod imp {
+    pub(super) fn install_token_callback() {
+        let _ = super::emit_token;
+    }
     pub(super) fn donate_shortcuts() {}
-    pub(super) fn apply(state: Option<super::LiveState>, _started: bool) {
-        log::debug!("live activity (preview): {state:?}");
+    pub(super) fn apply(state: &super::AgentsState) {
+        log::debug!("live activity (preview): {}", super::headline(state));
     }
 }
 
@@ -248,14 +269,19 @@ mod tests {
     }
 
     #[test]
-    fn live_state_tracks_activity() {
+    fn local_agent_tracks_activity() {
         let mut s = jcode_mobile_core::SessionState::default();
-        assert_eq!(live_state(&s), None);
-        s.is_processing = true;
+        assert_eq!(local_agent(&s), None);
         s.session_id = Some("id".into());
-        assert_eq!(live_state(&s).unwrap().activity, "responding");
-        assert_eq!(live_state(&s).unwrap().title, "jcode");
+        let a = local_agent(&s).unwrap();
+        assert_eq!((a.state, a.title.as_str()), (None, "jcode"));
+        s.is_processing = true;
+        assert_eq!(local_agent(&s).unwrap().detail, "Responding");
         s.is_reasoning = true;
-        assert_eq!(live_state(&s).unwrap().activity, "thinking");
+        assert_eq!(local_agent(&s).unwrap().state, Some(AgentState::Running));
+        assert_eq!(local_agent(&s).unwrap().detail, "Thinking");
+        s.is_processing = false;
+        s.error_banner = Some("boom".into());
+        assert_eq!(local_agent(&s).unwrap().state, Some(AgentState::Error));
     }
 }

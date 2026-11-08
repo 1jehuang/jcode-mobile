@@ -2001,6 +2001,21 @@
       "renderer": false
     },
     {
+      "controls": {},
+      "coverage": [
+        {
+          "kind": "gap",
+          "note": "ActivityKit push-token callback from JcodeBridge (activity update and iOS 17.2 push-to-start tokens). Needs a physical iPhone with Live Activities enabled and the API Worker live-tokens endpoint; not reachable on Linux or the simulator.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "gap_only",
+      "events": {},
+      "handler": true,
+      "owner": "src/ios_ext.rs::imp::on_token",
+      "renderer": false
+    },
+    {
       "controls": {
         "debug_selector:literal:sim-keyboard": 1,
         "debug_selector:literal:sim-suggestion": 1,

@@ -2,6 +2,7 @@
 //! and Swift apps share one behavior spec. Nothing here touches UI; the Cloud SSH link
 //! runs a private tokio runtime on its own thread, so it builds unchanged for Linux, macOS and iOS.
 
+pub mod agents;
 pub mod apple;
 pub mod cloud;
 pub mod cloud_machine;

@@ -194,6 +194,10 @@ pub struct MobileApp {
     auto_send: Option<String>,
     /// APNs device token (hex) once iOS hands it over.
     push_token: Option<String>,
+    /// Account-wide agent status from the Worker (all hosts, all sessions).
+    agents_status: Option<jcode_mobile_core::agents::AgentsState>,
+    /// Live Activity push tokens registered for this account.
+    live_tokens: Vec<String>,
     /// Session drawer (see `sidebar.rs`): target, eased progress, clock,
     /// and the (top, bottom) safe insets it pads by.
     drawer_open: bool,
@@ -380,6 +384,8 @@ impl MobileApp {
             status_orb: cx.new(|_| inline_orb()),
             auto_send: (!offline).then(|| std::env::var("JCODE_MOBILE_SEND").ok()).flatten(),
             push_token: None,
+            agents_status: None,
+            live_tokens: Vec::new(),
             // Dev hook (JCODE_MOBILE_DRAWER=1): start with the session drawer open.
             drawer_open: std::env::var_os("JCODE_MOBILE_DRAWER").is_some(),
             drawer_t: 0.,

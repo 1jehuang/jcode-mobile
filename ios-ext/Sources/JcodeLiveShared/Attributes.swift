@@ -2,54 +2,72 @@
 import ActivityKit
 import Foundation
 
-/// Live Activity payload shared by the app (JcodeBridge) and the widget
-/// (JcodeLive). Both must agree on this type exactly.
+/// One account-wide Live Activity for all running agents (docs/PUSH.md,
+/// "Many agents"). Shared by the app (JcodeBridge) and the widget (JcodeLive).
+/// The Worker pushes ContentState as JSON, so keys and types must match
+/// `jcode_mobile_core::agents::AgentsState` exactly. Times are Unix seconds.
 @available(iOS 16.1, *)
-public struct JcodeActivityAttributes: ActivityAttributes {
-    public struct ContentState: Codable, Hashable {
-        /// "thinking", "responding", "tools", "idle", "waiting", "error".
-        public var activity: String
-        /// Short detail, e.g. the running tool name.
+public struct JcodeAgentsAttributes: ActivityAttributes {
+    public struct Item: Codable, Hashable {
+        public var id: String
+        public var title: String
+        /// "running", "waiting" or "error".
+        public var state: String
         public var detail: String
-        public var startedAt: Date
+    }
 
-        public init(activity: String, detail: String, startedAt: Date) {
-            self.activity = activity
-            self.detail = detail
-            self.startedAt = startedAt
-        }
+    public struct ContentState: Codable, Hashable {
+        public var running: Int
+        public var waiting: Int
+        public var errored: Int
+        public var items: [Item]
+        public var updatedAt: Int
+
+        public var total: Int { running + waiting + errored }
     }
 
     public var title: String
-    public var sessionId: String
 
-    public init(title: String, sessionId: String) {
+    public init(title: String) {
         self.title = title
-        self.sessionId = sessionId
     }
 }
 
 public enum JcodeActivityText {
-    public static func label(_ activity: String) -> String {
-        switch activity {
-        case "thinking": return "Thinking"
-        case "responding": return "Responding"
-        case "tools": return "Running tools"
+    public static func label(_ state: String) -> String {
+        switch state {
+        case "running": return "Running"
         case "waiting": return "Needs input"
-        case "error": return "Error"
+        case "error": return "Failed"
         default: return "Idle"
         }
     }
 
-    public static func symbol(_ activity: String) -> String {
-        switch activity {
-        case "thinking": return "brain"
-        case "responding": return "text.bubble"
-        case "tools": return "hammer"
+    public static func symbol(_ state: String) -> String {
+        switch state {
+        case "running": return "hammer"
         case "waiting": return "questionmark.bubble"
         case "error": return "exclamationmark.triangle"
         default: return "checkmark.circle"
         }
+    }
+
+    /// Most urgent state present, for the compact island icon.
+    @available(iOS 16.1, *)
+    public static func top(_ s: JcodeAgentsAttributes.ContentState) -> String {
+        if s.waiting > 0 { return "waiting" }
+        if s.errored > 0 { return "error" }
+        if s.running > 0 { return "running" }
+        return "idle"
+    }
+
+    @available(iOS 16.1, *)
+    public static func headline(_ s: JcodeAgentsAttributes.ContentState) -> String {
+        var parts: [String] = []
+        if s.waiting > 0 { parts.append("\(s.waiting) need\(s.waiting == 1 ? "s" : "") input") }
+        if s.errored > 0 { parts.append("\(s.errored) failed") }
+        if s.running > 0 { parts.append("\(s.running) running") }
+        return parts.isEmpty ? "All agents idle" : parts.joined(separator: ", ")
     }
 }
 #endif

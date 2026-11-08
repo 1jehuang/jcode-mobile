@@ -11,31 +11,51 @@ private func str(_ p: UnsafePointer<CChar>?) -> String {
     p.map { String(cString: $0) } ?? ""
 }
 
-/// Starts (or retargets) the Live Activity. Returns 1 on success.
-@_cdecl("jcode_live_start")
-public func jcode_live_start(_ title: UnsafePointer<CChar>?, _ session: UnsafePointer<CChar>?, _ activity: UnsafePointer<CChar>?, _ detail: UnsafePointer<CChar>?) -> Int32 {
+/// Called with (kind, hex token). kind 0 = activity update token,
+/// 1 = push-to-start token (iOS 17.2+).
+public typealias TokenCallback = @convention(c) (Int32, UnsafePointer<CChar>?) -> Void
+private var tokenCallback: TokenCallback?
+
+private func hex(_ data: Data) -> String {
+    data.map { String(format: "%02x", $0) }.joined()
+}
+
+private func report(_ kind: Int32, _ data: Data) {
+    guard let cb = tokenCallback else { return }
+    hex(data).withCString { cb(kind, $0) }
+}
+
+/// Registers the token callback and starts observing push-to-start tokens.
+@_cdecl("jcode_live_set_token_callback")
+public func jcode_live_set_token_callback(_ cb: TokenCallback?) {
+    tokenCallback = cb
     #if canImport(ActivityKit)
     if #available(iOS 16.2, *) {
-        return LiveController.shared.start(title: str(title), session: str(session), activity: str(activity), detail: str(detail)) ? 1 : 0
+        LiveController.shared.observeStartTokens()
+    }
+    #endif
+}
+
+/// Applies the account-wide agents state (JSON `AgentsState`). An empty
+/// state ends the activity. Returns 1 if an activity is showing afterwards.
+@_cdecl("jcode_live_sync")
+public func jcode_live_sync(_ json: UnsafePointer<CChar>?) -> Int32 {
+    #if canImport(ActivityKit)
+    if #available(iOS 16.2, *) {
+        guard let data = str(json).data(using: .utf8),
+              let state = try? JSONDecoder().decode(JcodeAgentsAttributes.ContentState.self, from: data)
+        else { return 0 }
+        return LiveController.shared.sync(state) ? 1 : 0
     }
     #endif
     return 0
-}
-
-@_cdecl("jcode_live_update")
-public func jcode_live_update(_ activity: UnsafePointer<CChar>?, _ detail: UnsafePointer<CChar>?) {
-    #if canImport(ActivityKit)
-    if #available(iOS 16.2, *) {
-        LiveController.shared.update(activity: str(activity), detail: str(detail))
-    }
-    #endif
 }
 
 @_cdecl("jcode_live_end")
 public func jcode_live_end() {
     #if canImport(ActivityKit)
     if #available(iOS 16.2, *) {
-        LiveController.shared.end()
+        LiveController.shared.endAll()
     }
     #endif
 }
@@ -79,31 +99,71 @@ public func jcode_donate_shortcuts() {
 }
 
 #if canImport(ActivityKit)
+/// Exactly one activity for all agents. The Worker updates it over APNs while
+/// the app is suspended, so its token is reported whenever it changes.
 @available(iOS 16.2, *)
 final class LiveController {
     static let shared = LiveController()
-    private var current: Activity<JcodeActivityAttributes>?
-    private var startedAt = Date()
+    private var current: Activity<JcodeAgentsAttributes>?
+    private var tokenTask: Task<Void, Never>?
+    private var startTokenTask: Task<Void, Never>?
 
-    func start(title: String, session: String, activity: String, detail: String) -> Bool {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return false }
-        if let cur = current, cur.attributes.sessionId == session, cur.attributes.title == title {
-            update(activity: activity, detail: detail)
-            return true
+    func observeStartTokens() {
+        // Pick up an activity the Worker started (push-to-start) or one left
+        // from a previous launch, and ensure there is only one.
+        let all = Activity<JcodeAgentsAttributes>.activities
+        if current == nil, let first = all.first {
+            adopt(first)
         }
-        end()
-        // Activities left over from a previous launch.
-        for a in Activity<JcodeActivityAttributes>.activities {
+        for a in all where a.id != current?.id {
             Task { await a.end(nil, dismissalPolicy: .immediate) }
         }
-        startedAt = Date()
-        let state = JcodeActivityAttributes.ContentState(activity: activity, detail: detail, startedAt: startedAt)
+        guard startTokenTask == nil else { return }
+        if #available(iOS 17.2, *) {
+            startTokenTask = Task {
+                for await data in Activity<JcodeAgentsAttributes>.pushToStartTokenUpdates {
+                    report(1, data)
+                }
+            }
+        }
+        Task {
+            for await a in Activity<JcodeAgentsAttributes>.activityUpdates where a.id != current?.id {
+                await MainActor.run { self.adopt(a) }
+            }
+        }
+    }
+
+    private func adopt(_ a: Activity<JcodeAgentsAttributes>) {
+        if let old = current, old.id != a.id {
+            Task { await old.end(nil, dismissalPolicy: .immediate) }
+        }
+        current = a
+        tokenTask?.cancel()
+        tokenTask = Task {
+            for await data in a.pushTokenUpdates {
+                report(0, data)
+            }
+        }
+    }
+
+    func sync(_ state: JcodeAgentsAttributes.ContentState) -> Bool {
+        if state.total == 0 {
+            endAll()
+            return false
+        }
+        let stale = Date().addingTimeInterval(20 * 60)
+        if let cur = current, cur.activityState == .active || cur.activityState == .stale {
+            Task { await cur.update(ActivityContent(state: state, staleDate: stale)) }
+            return true
+        }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return false }
         do {
-            current = try Activity.request(
-                attributes: JcodeActivityAttributes(title: title, sessionId: session),
-                content: ActivityContent(state: state, staleDate: nil),
-                pushType: nil
+            let a = try Activity.request(
+                attributes: JcodeAgentsAttributes(title: "jcode"),
+                content: ActivityContent(state: state, staleDate: stale),
+                pushType: .token
             )
+            adopt(a)
             return true
         } catch {
             NSLog("jcode live activity: \(error)")
@@ -111,17 +171,13 @@ final class LiveController {
         }
     }
 
-    func update(activity: String, detail: String) {
-        guard let cur = current else { return }
-        let state = JcodeActivityAttributes.ContentState(activity: activity, detail: detail, startedAt: startedAt)
-        Task { await cur.update(ActivityContent(state: state, staleDate: nil)) }
-    }
-
-    func end() {
-        guard let cur = current else { return }
+    func endAll() {
         current = nil
-        let state = JcodeActivityAttributes.ContentState(activity: "idle", detail: "", startedAt: startedAt)
-        Task { await cur.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date().addingTimeInterval(60))) }
+        tokenTask?.cancel()
+        tokenTask = nil
+        for a in Activity<JcodeAgentsAttributes>.activities {
+            Task { await a.end(nil, dismissalPolicy: .after(Date().addingTimeInterval(60))) }
+        }
     }
 }
 #endif

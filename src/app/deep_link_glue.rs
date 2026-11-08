@@ -148,13 +148,18 @@ impl MobileApp {
         }
     }
 
-    /// Mirror the busy session (the visible one first) in the Live Activity.
+    /// Show every agent on the account in the single Live Activity: the
+    /// Worker's account-wide view, corrected by this app's open tabs.
     pub(super) fn sync_live_activity(&self) {
-        let state = ios_ext::live_state(&self.session).or_else(|| {
-            self.parked
-                .iter()
-                .find_map(|p| ios_ext::live_state(&p.session))
-        });
-        ios_ext::sync_live(state);
+        let local: Vec<_> = std::iter::once(&self.session)
+            .chain(self.parked.iter().map(|p| &p.session))
+            .filter_map(ios_ext::local_agent)
+            .collect();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        let merged = jcode_mobile_core::agents::merge(self.agents_status.as_ref(), &local, now);
+        ios_ext::sync_live(&merged);
     }
 }

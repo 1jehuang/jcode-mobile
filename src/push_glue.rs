@@ -3,6 +3,7 @@
 
 use futures::StreamExt;
 use gpui::{AppContext as _, Context};
+use jcode_mobile_core::agents;
 use jcode_mobile_core::cloud::{self, PushDevice};
 use jcode_mobile_core::{ConnectionPhase, LocalIntent, Request, SessionState};
 
@@ -131,6 +132,15 @@ mod tests {
 
 impl MobileApp {
     pub(super) fn install_push(&mut self, cx: &mut Context<Self>) {
+        let mut tokens = crate::ios_ext::install_live_tokens();
+        cx.spawn(async move |this, cx| {
+            while let Some((kind, token)) = tokens.next().await {
+                if this.update(cx, |this, cx| this.register_live_token(kind, token, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut rx = notify::install();
         cx.spawn(async move |this, cx| {
             while let Some(event) = rx.next().await {
@@ -147,6 +157,7 @@ impl MobileApp {
             PushEvent::Token(token) => {
                 self.push_token = Some(token);
                 self.register_push(cx);
+                self.refresh_agents_status(cx);
             }
             PushEvent::Foreground => {
                 if self.offline {
@@ -155,6 +166,7 @@ impl MobileApp {
                 notify::clear_badge();
                 if let Some(account) = self.account.clone() {
                     cloud::prewarm(&account);
+                    self.refresh_agents_status(cx);
                     cx.background_spawn(async move {
                         if let Err(e) = cloud::reset_badge(&account) {
                             log::debug!("push: badge reset failed: {e}");
@@ -170,6 +182,53 @@ impl MobileApp {
 
     /// Register the current APNs token with the signed-in account. Called on
     /// token arrival and after sign-in.
+    /// Fetch the account-wide agent view so the Live Activity covers agents
+    /// on every host, not only this app's open tabs.
+    pub(super) fn refresh_agents_status(&mut self, cx: &mut Context<Self>) {
+        if self.offline {
+            return;
+        }
+        let Some(account) = self.account.clone() else { return };
+        let task = cx.background_spawn(async move { agents::fetch_status(&account) });
+        cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(state) => {
+                    let _ = this.update(cx, |this, _| {
+                        this.agents_status = Some(state);
+                        this.sync_live_activity();
+                    });
+                }
+                Err(e) => log::debug!("agents: status fetch failed: {e}"),
+            }
+        })
+        .detach();
+    }
+
+    fn register_live_token(&mut self, kind: agents::LiveTokenKind, token: String, cx: &mut Context<Self>) {
+        if self.offline {
+            return;
+        }
+        let Some(account) = self.account.clone() else { return };
+        if !self.live_tokens.contains(&token) {
+            self.live_tokens.push(token.clone());
+        }
+        let device = self.push_token.clone();
+        cx.background_spawn(async move {
+            match agents::register_live_token(
+                &account,
+                kind,
+                &token,
+                notify::push_environment(),
+                notify::BUNDLE_ID,
+                device.as_deref(),
+            ) {
+                Ok(()) => log::info!("push: live activity token registered ({kind:?})"),
+                Err(e) => log::warn!("push: live token register failed: {e}"),
+            }
+        })
+        .detach();
+    }
+
     pub(super) fn register_push(&mut self, cx: &mut Context<Self>) {
         if self.offline {
             return;
@@ -196,6 +255,17 @@ impl MobileApp {
     pub(super) fn unregister_push(&mut self, cx: &mut Context<Self>) {
         if self.offline {
             return;
+        }
+        let live = std::mem::take(&mut self.live_tokens);
+        self.agents_status = None;
+        crate::ios_ext::sync_live(&agents::AgentsState::default());
+        if let Some(account) = self.account.clone() {
+            cx.background_spawn(async move {
+                for t in live {
+                    let _ = agents::unregister_live_token(&account, &t);
+                }
+            })
+            .detach();
         }
         let (Some(account), Some(token)) = (self.account.clone(), self.push_token.clone()) else {
             return;
