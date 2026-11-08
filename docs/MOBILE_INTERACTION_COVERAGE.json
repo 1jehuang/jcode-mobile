@@ -173,6 +173,8 @@
     {
       "controls": {
         "debug_selector:dynamic:if": 4,
+        "debug_selector:literal:connection-status": 1,
+        "debug_selector:literal:voice-status": 1,
         "id:literal:chat-composer": 1,
         "id:literal:chat-metadata": 1,
         "id:literal:composer-input": 1,
@@ -213,7 +215,8 @@
           "note": "Cancel reuses the existing send slot. Rendered tests cover synthetic startup/locked/transcribing phases without resizing composer, input, metadata or transcript. Cancellation clears flags and preserves Unicode drafts. No Recording or microphone is acquired.",
           "tests": [
             "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers",
-            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat"
+            "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat",
+            "src/app/voice_live_tests.rs::microphone_and_connection_status_stay_above_the_input"
           ]
         }
       ],

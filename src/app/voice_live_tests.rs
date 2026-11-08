@@ -22,6 +22,62 @@ fn revision(app: &mut MobileApp, text: &str, cx: &mut Context<MobileApp>) {
 }
 
 #[gpui::test]
+fn microphone_and_connection_status_stay_above_the_input(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    for width in [320., 390.] {
+        cx.simulate_resize(gpui::size(px(width), px(844.)));
+        for phase in ["preparing", "transcribing", "error"] {
+            view.update(cx, |app, cx| {
+                seed(app, "Keep my typed draft", cx);
+                app.session.phase = ConnectionPhase::Disconnected;
+                app.feel.voice_gesture.reset();
+                app.voice.auto_send = false;
+                app.finish_dictation(
+                    app.voice.generation,
+                    app.active_tab,
+                    Err(
+                        "Microphone could not start. Check microphone access and try again.".into(),
+                    ),
+                    cx,
+                );
+                app.voice.starting = phase == "preparing";
+                app.voice.busy = phase == "transcribing";
+                cx.notify();
+            });
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+            }
+            let input = cx.debug_bounds("composer-input").unwrap();
+            let voice = cx.debug_bounds("voice-status").expect("microphone status");
+            let connection = cx
+                .debug_bounds("connection-status")
+                .expect("connection status");
+            assert!(
+                voice.bottom() <= input.origin.y,
+                "{width} {phase}: mic status above input"
+            );
+            assert!(
+                connection.bottom() <= input.origin.y,
+                "{width} {phase}: connection status above input"
+            );
+            let metadata = cx.debug_bounds("chat-metadata").unwrap();
+            assert!(
+                metadata.origin.y >= input.bottom(),
+                "metadata stays below input"
+            );
+            view.read_with(cx, |app, cx| {
+                assert!(app.offline && app.voice.recording.is_none());
+                assert_eq!(app.composer.read(cx).text(), "Keep my typed draft");
+            });
+        }
+    }
+}
+
+#[gpui::test]
 fn cancelling_pending_finalization_signals_the_network_worker(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);

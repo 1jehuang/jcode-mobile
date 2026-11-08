@@ -2135,6 +2135,17 @@ impl MobileApp {
             .pt(px(6.))
             .pb(px(8.))
             .bg(t.background)
+            .when_some(if preview || self.voice.auto_send || self.feel.voice_gesture.active() || self.feel.voice_gesture.pull > 0.5 {
+                None
+            } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5)
+                .debug_selector(|| "voice-status".into()).px(px(8.))))
+            .when(!ready, |d| d.child(label(
+                if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
+                    "Not connected. Your draft stays here."
+                } else {
+                    "Connecting… You can keep typing."
+                }, t.text_muted, 10.5,
+            ).debug_selector(|| "connection-status".into()).px(px(8.))))
             .child(
                 div()
                     .flex()
@@ -2167,16 +2178,6 @@ impl MobileApp {
                             .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
-            .when_some(if preview || self.voice.auto_send || self.feel.voice_gesture.active() || self.feel.voice_gesture.pull > 0.5 {
-                None
-            } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5).px(px(8.))))
-            .when(!ready, |d| d.child(label(
-                if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
-                    "Not connected. Your draft stays here."
-                } else {
-                    "Connecting… You can keep typing."
-                }, t.text_muted, 10.5,
-            ).px(px(8.))))
             .child(
                 div()
                     .id("chat-metadata")
