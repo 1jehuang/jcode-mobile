@@ -84,8 +84,19 @@ impl MobileApp {
         result: Result<String, String>, cx: &mut Context<Self>) {
         if self.voice.generation != generation || self.active_tab != tab
             || !self.voice.live.pending || self.voice.busy || self.voice.starting { return; }
+        if result.as_ref().err().is_some_and(|error| matches!(error.as_str(),
+            jcode_mobile_core::voice::ACCESS_DENIED | jcode_mobile_core::voice::SIGN_IN_REQUIRED)) {
+            // Permanent access failures must not leave a live-looking mic that
+            // silently retries forever. Keep any recognized speech for review.
+            self.voice.recording = None;
+            self.feel.voice_gesture.dismiss();
+            self.feel.voice_wheel_at = None;
+            self.feel.voice_pan_ended = true;
+            self.finish_dictation(generation, tab, result, cx);
+            return;
+        }
         self.voice.live.pending = false;
-        // A failed preview never prevents capture or the authoritative final
+        // Transient failures never prevent capture or the authoritative final
         // pass. Move past silence too, rather than repeatedly uploading it.
         self.voice.live.consumed = consumed;
         if let Ok(text) = result {

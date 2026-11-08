@@ -2,6 +2,8 @@
 use crate::Account;
 
 pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
+pub const ACCESS_DENIED: &str = "Voice transcription access was denied (HTTP 403). Check voice access for your account.";
+pub const SIGN_IN_REQUIRED: &str = "Voice transcription needs a valid sign-in (HTTP 401). Sign in again to use voice.";
 
 pub fn transcribe(account: &Account, wav: Vec<u8>) -> Result<String, String> {
     transcribe_with_timeout(account, wav, 120, false)
@@ -50,9 +52,12 @@ fn transcribe_with_timeout(
             &format!("multipart/form-data; boundary={boundary}"),
         )
         .send(body.as_slice())
-        .map_err(|_| {
-            "Transcription failed. Check your connection and voice subscription, then try again."
-                .to_string()
+        .map_err(|error| {
+            match error {
+                ureq::Error::StatusCode(403) => ACCESS_DENIED,
+                ureq::Error::StatusCode(401) => SIGN_IN_REQUIRED,
+                _ => "Transcription failed. Check your connection and voice subscription, then try again.",
+            }.to_string()
         })?;
     let value: serde_json::Value = response
         .body_mut()

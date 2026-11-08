@@ -416,7 +416,10 @@ impl CloudSsh {
                                             ))?
                                                 .map_err(|e| failed(format!("SSH channel open failed: {e}")))?;
                                             trace("channel opened", t_open);
-                                            channel.exec(true, REMOTE_COMMAND).await
+                                            // No exec reply wait: the API hello is pipelined
+                                            // behind it (saves one round trip). A refused exec
+                                            // closes the channel, so hello still fails cleanly.
+                                            channel.exec(false, REMOTE_COMMAND).await
                                                 .map_err(|e| failed(format!("SSH API exec failed: {e}")))?;
                                             Ok(channel)
                                         },
