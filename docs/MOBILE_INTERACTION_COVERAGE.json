@@ -491,7 +491,8 @@
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_mouse_down": 1
+        "on_mouse_down": 1,
+        "on_pinch": 1
       },
       "handler": false,
       "owner": "src/app.rs::impl:Render for MobileApp::render",
@@ -2154,6 +2155,40 @@
       "events": {},
       "handler": false,
       "owner": "src/voice_visual.rs::render",
+      "renderer": true
+    },
+    {
+      "controls": {
+        "debug_selector:literal:map-new-session": 1,
+        "debug_selector:literal:session-map": 1,
+        "debug_selector:macro:format:literal:map-card-{id}": 1,
+        "id:literal:map-new-session": 1,
+        "id:literal:session-map": 1,
+        "id:tuple:literal:map-card": 1
+      },
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "note": "Pinch progress/commit/spring-back and grid geometry are unit tested. Two-finger recognition is tested in the gpui fork.",
+          "tests": [
+            "src/app/session_map.rs::pinch_out_commits_to_map_and_pinch_in_returns",
+            "src/app/session_map.rs::small_pinch_springs_back",
+            "src/app/session_map.rs::grid_cells_fill_two_columns"
+          ]
+        },
+        {
+          "kind": "gap",
+          "note": "Map card tap-to-focus, the + new-session card and the map's mouse-down shield are not hit tested through rendered touch. On-device pinch feel needs a phone.",
+          "tests": []
+        }
+      ],
+      "coverage_scope": "partial",
+      "events": {
+        "on_click": 2,
+        "on_mouse_down": 1
+      },
+      "handler": false,
+      "owner": "src/app/session_map.rs::impl:MobileApp::render_session_map",
       "renderer": true
     }
   ],
