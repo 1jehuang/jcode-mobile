@@ -131,6 +131,13 @@ impl ToolCall {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantPhase {
+    Text,
+    Reasoning,
+    Tools,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEntry {
     pub id: u64,
@@ -394,27 +401,32 @@ impl SessionState {
             History { session_id, messages, .. } => self.apply_history(session_id, messages),
             TextDelta { text, .. } => {
                 self.is_processing = true;
-                self.with_streaming_assistant(|e| e.text.push_str(&text))
+                self.with_streaming_assistant(AssistantPhase::Text, |e| e.text.push_str(&text))
             }
-            TextReplace { text, .. } => self.with_streaming_assistant(|e| e.text = text),
+            TextReplace { text, .. } => self.with_streaming_assistant(AssistantPhase::Text, |e| e.text = text),
             // The text of this response ended; tools may still run, and they
             // update their cards in place.
             TextDone { .. } => self.finish_streaming(),
             ReasoningDelta { text, .. } => {
                 self.is_reasoning = true;
-                self.with_streaming_assistant(|e| e.reasoning.push_str(&text));
+                self.with_streaming_assistant(AssistantPhase::Reasoning, |e| e.reasoning.push_str(&text));
             }
-            ReasoningDone { .. } => self.is_reasoning = false,
+            ReasoningDone { .. } => {
+                self.is_reasoning = false;
+                if self.transcript.last().is_some_and(|e| !e.reasoning.is_empty()) {
+                    self.finish_streaming();
+                }
+            },
             ToolStart { call_id, name, .. } => {
                 if self.find_tool(&call_id).is_none() {
-                    self.with_streaming_assistant(|e| {
+                    self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                         e.tool_calls.push(self::ToolCall::new(call_id, name, ToolStatus::StreamingInput))
                     })
                 }
             }
             ToolInputDelta { call_id, delta, .. } => match self.find_tool(&call_id) {
                 Some(t) => t.input.push_str(&delta),
-                None => self.with_streaming_assistant(|e| {
+                None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                     let mut t = self::ToolCall::new(call_id, "", ToolStatus::StreamingInput);
                     t.input = delta;
                     e.tool_calls.push(t);
@@ -427,7 +439,7 @@ impl SessionState {
                 };
                 match self.find_tool(&call_id) {
                     Some(t) => t.input = input,
-                    None => self.with_streaming_assistant(|e| {
+                    None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                         let mut t = self::ToolCall::new(call_id, name, ToolStatus::Running);
                         t.input = input;
                         e.tool_calls.push(t);
@@ -436,7 +448,7 @@ impl SessionState {
             }
             ToolExec { call_id, name, .. } => match self.find_tool(&call_id) {
                 Some(t) => t.status = ToolStatus::Running,
-                None => self.with_streaming_assistant(|e| {
+                None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                     e.tool_calls.push(self::ToolCall::new(call_id, name, ToolStatus::Running))
                 }),
             },
@@ -447,7 +459,7 @@ impl SessionState {
                         t.output = output;
                         t.status = status;
                     }
-                    None => self.with_streaming_assistant(|e| {
+                    None => self.with_streaming_assistant(AssistantPhase::Tools, |e| {
                         let mut t = self::ToolCall::new(call_id, name, status);
                         t.output = output;
                         e.tool_calls.push(t);
@@ -598,11 +610,12 @@ impl SessionState {
         self.transcript = transcript;
     }
 
+    // A running tool can outlive arbitrarily many text/reasoning phases.
+    // Search settled entries too rather than manufacturing a duplicate card.
     fn find_tool(&mut self, id: &str) -> Option<&mut ToolCall> {
         self.transcript
             .iter_mut()
             .rev()
-            .take(8)
             .flat_map(|e| e.tool_calls.iter_mut())
             .find(|t| t.id == id)
     }
@@ -631,12 +644,25 @@ impl SessionState {
         }
     }
 
-    fn with_streaming_assistant(&mut self, f: impl FnOnce(&mut TranscriptEntry)) {
-        let streaming = self
-            .transcript
-            .last()
-            .is_some_and(|e| e.role == Role::Assistant && e.is_streaming);
+    /// Settle the previous phase before appending the next. An entry contains
+    /// only one live phase, so renderers cannot move later reasoning or tools
+    /// above text that has already arrived. Tool updates bypass this helper.
+    fn with_streaming_assistant(
+        &mut self,
+        phase: AssistantPhase,
+        f: impl FnOnce(&mut TranscriptEntry),
+    ) {
+        self.is_reasoning = phase == AssistantPhase::Reasoning;
+        let streaming = self.transcript.last().is_some_and(|e| {
+            e.role == Role::Assistant && e.is_streaming
+                && match phase {
+                    AssistantPhase::Text => e.reasoning.is_empty() && e.tool_calls.is_empty(),
+                    AssistantPhase::Reasoning => e.text.is_empty() && e.tool_calls.is_empty(),
+                    AssistantPhase::Tools => e.text.is_empty() && e.reasoning.is_empty(),
+                }
+        });
         if !streaming {
+            self.finish_streaming();
             let mut e = self.entry(Role::Assistant, "");
             e.is_streaming = true;
             self.transcript.push(e);
@@ -800,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn streams_text_and_tools_into_one_entry() {
+    fn streams_text_and_tools_into_ordered_entries() {
         let mut s = SessionState::default();
         s.apply_intent(LocalIntent::UserSentMessage("hi".into()));
         ev(&mut s, E::TextDelta { session_id: sid(), text: "Hel".into(), message_id: None });
@@ -809,17 +835,164 @@ mod tests {
         ev(&mut s, E::ToolInputDelta { session_id: sid(), call_id: "t1".into(), delta: "ls".into() });
         ev(&mut s, E::ToolDone { session_id: sid(), call_id: "t1".into(), name: "bash".into(), output: "ok".into(), error: None });
         ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
-        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript.len(), 3);
         let a = &s.transcript[1];
         assert_eq!(a.text, "Hello");
         assert!(!a.is_streaming);
-        assert_eq!(a.tool_calls[0].input, "ls");
-        assert_eq!(a.tool_calls[0].status, ToolStatus::Succeeded);
+        assert!(a.tool_calls.is_empty());
+        assert_eq!(s.transcript[2].tool_calls[0].input, "ls");
+        assert_eq!(s.transcript[2].tool_calls[0].status, ToolStatus::Succeeded);
         assert!(!s.is_processing);
         assert_eq!(s.alerts.len(), 1);
         assert_eq!(s.alerts[0].body, "Hello");
         ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
         assert_eq!(s.alerts.len(), 1, "idle TurnDone must not re-alert");
+    }
+
+    fn text(s: &mut SessionState, value: &str) {
+        ev(s, E::TextDelta { session_id: sid(), text: value.into(), message_id: None });
+    }
+
+    fn reasoning(s: &mut SessionState, value: &str) {
+        ev(s, E::ReasoningDelta { session_id: sid(), text: value.into() });
+    }
+
+    #[test]
+    fn resumed_reasoning_settles_text_in_event_order() {
+        let mut s = SessionState::default();
+        reasoning(&mut s, "first");
+        reasoning(&mut s, " thought");
+        text(&mut s, "answer");
+        assert!(!s.is_reasoning, "text settles reasoning without ReasoningDone");
+        reasoning(&mut s, "second");
+        assert_eq!(s.transcript.len(), 3);
+        assert_eq!(s.transcript[0].reasoning, "first thought");
+        assert_eq!(s.transcript[1].text, "answer");
+        assert_eq!(s.transcript[2].reasoning, "second");
+        assert!(!s.transcript[0].is_streaming);
+        assert!(!s.transcript[1].is_streaming);
+        assert!(s.transcript[2].is_streaming);
+        ev(&mut s, E::ReasoningDone { session_id: sid(), duration_secs: None });
+        assert!(!s.is_reasoning);
+        assert!(!s.transcript[2].is_streaming);
+        reasoning(&mut s, "third");
+        assert_eq!(s.transcript.len(), 4);
+        text(&mut s, "final");
+        ev(&mut s, E::TurnDone { session_id: sid(), pending_soft_interrupts: None });
+        assert_eq!(s.transcript[4].text, "final");
+        assert!(s.transcript.iter().all(|e| !e.is_streaming));
+    }
+
+    #[test]
+    fn old_tool_updates_do_not_reorder_or_split_current_phase() {
+        let mut s = SessionState::default();
+        text(&mut s, "before tool");
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "old".into(), name: "bash".into() });
+        assert!(!s.is_reasoning);
+        assert_eq!(s.transcript[0].text, "before tool");
+        assert!(s.transcript[0].tool_calls.is_empty());
+        assert_eq!(s.transcript[1].tool_calls[0].id, "old");
+        for _ in 0..6 {
+            reasoning(&mut s, "thinking");
+            text(&mut s, "answer");
+        }
+        let len = s.transcript.len();
+        let current_id = s.transcript.last().unwrap().id;
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "old".into(), name: "bash".into() });
+        ev(&mut s, E::ToolInputDelta { session_id: sid(), call_id: "old".into(), delta: "draft".into() });
+        ev(&mut s, E::ToolCall { session_id: sid(), call_id: "old".into(), name: "bash".into(), input: serde_json::json!({"command": "ls"}) });
+        ev(&mut s, E::ToolExec { session_id: sid(), call_id: "old".into(), name: "bash".into() });
+        ev(&mut s, E::ToolDone { session_id: sid(), call_id: "old".into(), name: "bash".into(), output: "failed output".into(), error: Some("failure".into()) });
+        text(&mut s, " continued");
+        assert_eq!(s.transcript.len(), len);
+        assert_eq!(s.transcript.last().unwrap().id, current_id);
+        assert_eq!(s.transcript.last().unwrap().text, "answer continued");
+        let tools: Vec<_> = s.transcript.iter().flat_map(|e| &e.tool_calls).collect();
+        assert_eq!(tools.len(), 1);
+        assert!(tools[0].input.contains("command"));
+        assert_eq!(tools[0].output, "failed output");
+        assert_eq!(tools[0].status, ToolStatus::Failed("failure".into()));
+    }
+
+    #[test]
+    fn replacement_only_replaces_current_text_phase() {
+        let mut s = SessionState::default();
+        reasoning(&mut s, "first");
+        text(&mut s, "draft");
+        let text_id = s.transcript[1].id;
+        ev(&mut s, E::TextReplace { session_id: sid(), text: "replacement".into(), message_id: None });
+        assert_eq!(s.transcript[1].id, text_id);
+        assert_eq!(s.transcript[1].text, "replacement");
+        reasoning(&mut s, "second");
+        ev(&mut s, E::TextReplace { session_id: sid(), text: "new phase".into(), message_id: None });
+        assert_eq!(s.transcript.len(), 4);
+        assert_eq!(s.transcript[0].reasoning, "first");
+        assert_eq!(s.transcript[1].text, "replacement");
+        assert_eq!(s.transcript[2].reasoning, "second");
+        assert_eq!(s.transcript[3].text, "new phase");
+        ev(&mut s, E::TextReplace { session_id: sid(), text: String::new(), message_id: None });
+        ev(&mut s, E::TextDone { session_id: sid(), message_id: None });
+        assert_eq!(s.transcript.len(), 3, "empty replaced phase is removed");
+        assert_eq!(s.transcript[1].text, "replacement");
+    }
+
+    #[test]
+    fn tools_settle_reasoning_and_late_updates_keep_reasoning_active() {
+        let mut s = SessionState::default();
+        reasoning(&mut s, "before");
+        for id in ["one", "two"] {
+            ev(&mut s, E::ToolStart { session_id: sid(), call_id: id.into(), name: "bash".into() });
+            assert!(!s.is_reasoning, "tool phase ends the reasoning orb");
+        }
+        assert_eq!(s.transcript.len(), 2);
+        assert!(!s.transcript[0].is_streaming);
+        assert_eq!(s.transcript[1].tool_calls.len(), 2);
+        reasoning(&mut s, "after");
+        ev(&mut s, E::ToolDone { session_id: sid(), call_id: "one".into(), name: "bash".into(), output: "ok".into(), error: None });
+        assert!(s.is_reasoning, "old tool completion is not a new phase");
+        assert_eq!(s.transcript.len(), 3);
+        assert_eq!(s.transcript[2].reasoning, "after");
+        assert!(s.transcript[2].is_streaming);
+    }
+
+    #[test]
+    fn missing_tool_start_still_settles_text_for_every_tool_event() {
+        for event in [
+            E::ToolInputDelta { session_id: sid(), call_id: "t".into(), delta: "input".into() },
+            E::ToolCall { session_id: sid(), call_id: "t".into(), name: "bash".into(), input: serde_json::json!("input") },
+            E::ToolExec { session_id: sid(), call_id: "t".into(), name: "bash".into() },
+            E::ToolDone { session_id: sid(), call_id: "t".into(), name: "bash".into(), output: "done".into(), error: None },
+        ] {
+            let mut s = SessionState::default();
+            text(&mut s, "before");
+            ev(&mut s, event);
+            reasoning(&mut s, "after");
+            assert_eq!(s.transcript.len(), 3);
+            assert_eq!(s.transcript[0].text, "before");
+            assert_eq!(s.transcript[1].tool_calls.len(), 1);
+            assert_eq!(s.transcript[2].reasoning, "after");
+        }
+    }
+
+    #[test]
+    fn cancellation_and_history_replace_settled_phases_cleanly() {
+        let mut s = SessionState::default();
+        reasoning(&mut s, "first");
+        text(&mut s, "answer");
+        reasoning(&mut s, "second");
+        ev(&mut s, E::SessionStatus { session_id: sid(), status: "cancelled".into(), pending_soft_interrupts: None });
+        assert!(!s.is_processing);
+        assert!(!s.is_reasoning);
+        assert_eq!(s.transcript.len(), 3);
+        assert!(s.transcript.iter().all(|e| !e.is_streaming));
+        ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
+            response_stats: None, role: "assistant".into(), content: "persisted answer".into(),
+        }], images: vec![] });
+        assert_eq!(s.transcript.len(), 1);
+        assert_eq!(s.transcript[0].text, "persisted answer");
+        text(&mut s, "next response");
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript[0].text, "persisted answer");
     }
 
     #[test]
