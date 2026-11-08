@@ -1,12 +1,12 @@
 # Mobile vs desktop streaming transcript rendering
 
-Compared November 7, 2026 (Pacific). Desktop checkout: `4262e5f`. Mobile comparison started after TestFlight source `30daa19` and its tail-anchor fix `daf60a5`; concurrent voice-only work subsequently committed as `59d4e95`. This investigation does not change application behavior or publish another build.
+Compared November 7, 2026 (Pacific). Desktop checkout: `4262e5f`. Mobile comparison started after TestFlight source `30daa19` and its tail-anchor fix `daf60a5`; concurrent voice-only work subsequently committed as `59d4e95`. The comparison below records the original findings. The implementation follow-up describes subsequent source changes, not present in TestFlight build `1794115398`.
 
-## Conclusion
+## Original comparison conclusion
 
-Mobile does **not** currently use desktop's streaming presentation pipeline. The TestFlight fix removes the old delayed-scroll catch-up, but it does not port desktop's block reveal, fade, coordinated tail glide, or activity-row stabilization. Immediate line wrapping on mobile can therefore still look more abrupt. This is a code-backed explanation, not a measurement of physical iPhone frame pacing.
+At comparison time, mobile did **not** use desktop's streaming presentation pipeline. The TestFlight fix removes the old delayed-scroll catch-up, but it does not port desktop's block reveal, fade, coordinated tail glide, or activity-row stabilization. Immediate line wrapping on mobile can therefore still look more abrupt. This is a code-backed explanation, not a measurement of physical iPhone frame pacing.
 
-## Concrete differences
+## Concrete differences at the original comparison
 
 | Area | Current desktop | Current mobile | Consequence |
 | --- | --- | --- | --- |
@@ -59,6 +59,36 @@ An isolated scratch executable exercised the **actual mobile `SessionState` redu
 The probe lives under the session scratch directory and made no application-source changes.
 
 Built and rendered the actual desktop streaming fixture with `scripts/screenshot.py` on a private Xvfb display, then inspected `target/streaming-comparison.png`. This is static styling evidence, not proof of timing or real-device motion parity. Dynamic evidence comes from the focused renderer tests above. No physical iPhone was connected.
+
+## Implementation follow-up
+
+The mobile source now implements the first four parity steps, without restoring stale-offset scroll easing:
+
+- The reducer settles and appends ordered reasoning, answer and tool phases. Earlier tool updates do not reorder phases or change current thinking state. Tool lookup is not limited to the last eight entries.
+- `src/stream_reveal.rs` and `src/app/stream_presentation.rs` preserve raw text while releasing UTF-8-safe blocks on the desktop timing policy. Completion paints the full settled entry. Tab/session restoration and reduced motion snap instead of replaying buffered content.
+- Markdown fades newly released prose using disjoint GPUI highlight runs, preserving emphasis and shaped byte counts. Code remains full contrast. Fading does not alter layout.
+- `src/app/stream_motion.rs` keeps native layout-time anchoring authoritative and applies a bounded, pixel-snapped, finite 120 ms paint translation. Activity stabilization preserves bottom padding. Manual history scrolling transfers displayed displacement to the native offset before disengaging follow.
+- Measurement keys use visible prefixes rather than raw pending input. Suffix windowing includes maximum visual lag, keeping earlier rows available during the glide.
+
+Validation of source `28c1738`, delivered as TestFlight build **1794117691** (Apple `VALID`, internal `IN_BETA_TESTING`):
+
+| Check | Result | Receipt |
+| --- | --- | --- |
+| Hosted production check | Passed | `20261107-220009514-163849` |
+| Full serialized hosted workspace suite | 398 passed, 0 failed, 13 ignored | `20261107-220010809-163927` |
+| Actual GPUI streaming frames | 7 passed, hosted | `20261107-215901066-159070` |
+| Motion model and actual padded GPUI harness | 5 passed, hosted | `20261107-215626907-143512` |
+| Reveal clock policy | 10 passed, hosted | `20261107-215659764-146539` |
+| Markdown parser/cache/fade | 14 passed, 2 benchmarks ignored, hosted | `20261107-215702943-146538` |
+| 1.3x text, actual streaming frames | 7 passed, local | `20261107-220125183-169276` |
+| 1.3x text, scroll/layout frames | 7 passed, local | `20261107-220136750-170358` |
+| Reduce Motion, scroll/layout frames | 7 passed, local | `20261107-220233519-176391` |
+| Reduce Motion, actual event chronology | 1 passed, local | `20261107-220234478-176669` |
+| Signed real-iOS release cross-build | Passed, local Apple SDK | `20261107-220138724-170580` |
+
+The accessibility runs deliberately used local execution: the hosted client forwards an explicit environment allowlist which excludes `JCODE_MOBILE_TEXT_SCALE` and `JCODE_MOBILE_REDUCE_MOTION`. Earlier hosted runs with those caller settings are not evidence of changed accessibility settings. Production checks and the full workspace run were confirmed `remote on hosted`.
+
+Actual app tests drive protocol events and deterministic clocks, checking painted geometry across 320/390/430-point widths, warmed 80-entry history, keyboard contraction, manual scroll during positive displacement, tab/reset, Unicode replacement, cancellation and completion. The padded motion harness additionally checks stable activity position and exact native offset handoff. These changes do not establish rich Markdown parity or physical-iPhone frame pacing.
 
 ## Recommended order for parity work
 

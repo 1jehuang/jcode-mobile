@@ -27,6 +27,19 @@
 - App Store Connect build ID: `d5508cb5-3d2d-433a-9283-9ecad730501b`. Verified `VALID`, internal `IN_BETA_TESTING`, automatic notifications enabled. External state remains `READY_FOR_BETA_SUBMISSION`, not public-beta approval.
 - Added TestFlight notes describing both changes and requesting real-iPhone checks for thinking/tool/response transitions, scrolling, keyboard resize and voice overscroll.
 
+## Build 1794117691, prepared November 7, 2026 (Pacific)
+
+- Source: `28c1738ba8b480ec968f9200c875338c360e6f8c`. Includes chronological streaming phases, desktop-timed block reveal/fades, finite paint-only tail glide, steady thinking/activity placement, and manual-scroll handoff.
+- Also includes the latest stable bare-mic voice smoothing (`2736c97`) and pinch session map (`d678ece`). No extra voice status cards or composer reflow.
+- Full hosted workspace suite: **398 passed, 0 failed, 13 ignored**, receipt `20261107-220010809-163927`. Hosted check: `20261107-220009514-163849`.
+- Genuine 1.3x text runs: streaming **7 passed**, scroll **7 passed**, local receipts `20261107-220125183-169276` and `20261107-220136750-170358`. Reduce Motion scroll **7 passed** and chronology **1 passed**, receipts `20261107-220233519-176391` and `20261107-220234478-176669`. Local execution is required for these environment overrides because the hosted allowlist does not forward them.
+- Signed iOS build passed using the local Apple SDK/linker, receipt `20261107-220138724-170580`. ZIP CRC passed. App, bridge and both extensions have build `1794117691`.
+- Signed IPA SHA-256: `22d1c2059474691f80fcdd6e986dc0b2fc802787da709b48fe4d443b085fe928`. Unstripped binary SHA-256: `85dcad269320c4845a2199a6c97f128f5b03c5fa05ec629fa67faa7072ec3e88`.
+- Exact IPA, unstripped binary and provenance manifest archived under `~/.appstoreconnect/builds/1794117691/`.
+- Uploaded November 7, 2026 at **22:03:28 Pacific** (`2026-11-08T06:03:28Z`), upload state `COMPLETE`. Apple build ID: `2a51d4fe-e6d6-4eb8-87eb-79620acf6ba9`.
+- Verified Apple processing `VALID`, internal state `IN_BETA_TESTING`, automatic notifications enabled. External state `READY_FOR_BETA_SUBMISSION` is not public-beta approval.
+- Updated existing en-US TestFlight notes with the fixes and explicit request for real-iPhone streaming/scroll/keyboard/large-text validation.
+
 ## Validation limits
 
 The reported bouncing thinking/transcript rendering was observed by the user on physical iOS. No iPhone was connected to the release workstation during investigation. Linux GPUI layout tests can check transcript anchoring and reader-scroll behavior but cannot prove physical-device frame pacing or Metal presentation quality.
