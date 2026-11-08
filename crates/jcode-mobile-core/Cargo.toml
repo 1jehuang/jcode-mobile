@@ -13,7 +13,7 @@ dirs = "6"
 # Direct HTTP for account deletion (same ureq the SDK already links).
 ureq = { version = "3", features = ["json"] }
 # Harness API client, Jcode Cloud control plane and pure-Rust SSH (iOS-safe).
-jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "c725fa31511ed80a8a4c03a9a3a29eee4815e0e1", features = ["ssh-native"] }
+jcode-sdk = { git = "https://github.com/1jehuang/jcode", rev = "0871234b59fd3166eb180b35cdacf14b9460cbe1", features = ["ssh-native"] }
 # Match the SDK's pure-Rust SSH stack, with RSA disabled.
 russh = { version = "0.65", default-features = false, features = ["ring"] }
 rand = "0.10"
@@ -23,4 +23,4 @@ tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "ma
 security-framework = { version = "3", default-features = false }
 
 [dev-dependencies]
-jcode-harness-api = { git = "https://github.com/1jehuang/jcode", rev = "c725fa31511ed80a8a4c03a9a3a29eee4815e0e1" }
+jcode-harness-api = { git = "https://github.com/1jehuang/jcode", rev = "0871234b59fd3166eb180b35cdacf14b9460cbe1" }

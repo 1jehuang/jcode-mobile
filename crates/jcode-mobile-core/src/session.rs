@@ -615,8 +615,15 @@ impl SessionState {
             messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
         let history_assistant: HashSet<&str> =
             messages.iter().filter(|m| m.role == "assistant").map(|m| m.content.as_str()).collect();
+        let history_tools: HashSet<&str> =
+            messages.iter().filter_map(|m| m.tool.as_ref()).map(|t| t.id.as_str()).collect();
         let tail: Vec<_> = tail
             .into_iter()
+            .filter_map(|mut e| {
+                e.tool_calls.retain(|t| !history_tools.contains(t.id.as_str()));
+                (e.role == Role::User || !e.tool_calls.is_empty() || !e.text.is_empty() || !e.reasoning.is_empty() || e.is_streaming)
+                    .then_some(e)
+            })
             .filter(|e| match e.role {
                 Role::User => !history_user.contains(e.text.as_str()),
                 // A settled live message the snapshot already stored.
@@ -627,8 +634,29 @@ impl SessionState {
             })
             .collect();
 
-        let mut transcript = Vec::with_capacity(messages.len() + tail.len());
+        let mut transcript: Vec<TranscriptEntry> = Vec::with_capacity(messages.len() + tail.len());
         for m in messages {
+            // Tool rows rebuild the cards a live client saw. Consecutive calls
+            // share one entry, matching how live tool events group.
+            if m.role == "tool" {
+                let Some(tool) = m.tool else { continue };
+                let mut card = ToolCall::new(tool.id, tool.name, ToolStatus::Succeeded);
+                card.input = match tool.input {
+                    serde_json::Value::Null => String::new(),
+                    serde_json::Value::String(s) => s,
+                    v => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                };
+                card.output = m.content;
+                match transcript.last_mut() {
+                    Some(e) if e.role == Role::Assistant && !e.tool_calls.is_empty() => e.tool_calls.push(card),
+                    _ => {
+                        let mut e = self.entry(Role::Assistant, "");
+                        e.tool_calls.push(card);
+                        transcript.push(e);
+                    }
+                }
+                continue;
+            }
             let role = match m.role.as_str() {
                 "user" => Role::User,
                 "assistant" => Role::Assistant,
@@ -750,7 +778,7 @@ mod tests {
             let ptr = text.as_ptr();
             let mut state = SessionState::default();
             state.apply_history(sid(), vec![HistoryMessage {
-                response_stats: None, role: role.into(), content: text,
+                response_stats: None, role: role.into(), content: text, tool: None
             }]);
             assert_eq!(state.transcript[0].text.as_ptr(), ptr);
         }
@@ -777,7 +805,7 @@ mod tests {
             for _ in 0..20 {
                 // Incoming message creation is outside both timed sections.
                 let messages: Vec<_> = (0..250).map(|_| HistoryMessage {
-                    response_stats: None, role: "assistant".into(), content: template.clone(),
+                    response_stats: None, role: "assistant".into(), content: template.clone(), tool: None
                 }).collect();
                 let start = Instant::now();
                 let entries: Vec<_> = messages.iter().map(|m| {
@@ -802,7 +830,7 @@ mod tests {
         let mut s = SessionState::default();
         let content = "*\u{2063}\\*\\*Adding TODO initialization\\*\\*\u{2063}*  \n\n*\u{2063}Checking `path` and C:\\work\u{2063}*  \n\nThe **answer** keeps \\*literal\\* markup.";
         ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
-            response_stats: None, role: "assistant".into(), content: content.into(),
+            response_stats: None, role: "assistant".into(), content: content.into(), tool: None
         }], images: vec![] });
         assert_eq!(s.transcript[0].reasoning, "**Adding TODO initialization**\n\nChecking `path` and C:\\work");
         assert_eq!(s.transcript[0].text, "The **answer** keeps \\*literal\\* markup.");
@@ -825,7 +853,7 @@ mod tests {
         let mut s = SessionState::default();
         let content = "*\u{2063}literal\u{2063}*";
         ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
-            response_stats: None, role: "user".into(), content: content.into(),
+            response_stats: None, role: "user".into(), content: content.into(), tool: None
         }], images: vec![] });
         assert_eq!(s.transcript[0].text, content);
         assert!(s.transcript[0].reasoning.is_empty());
@@ -1035,7 +1063,7 @@ mod tests {
         assert_eq!(s.transcript.len(), 3);
         assert!(s.transcript.iter().all(|e| !e.is_streaming));
         ev(&mut s, E::History { session_id: sid(), messages: vec![HistoryMessage {
-            response_stats: None, role: "assistant".into(), content: "persisted answer".into(),
+            response_stats: None, role: "assistant".into(), content: "persisted answer".into(), tool: None
         }], images: vec![] });
         assert_eq!(s.transcript.len(), 1);
         assert_eq!(s.transcript[0].text, "persisted answer");
@@ -1060,7 +1088,7 @@ mod tests {
     }
 
     fn hm(role: &str, content: &str) -> HistoryMessage {
-        HistoryMessage { response_stats: None, role: role.into(), content: content.into() }
+        HistoryMessage { response_stats: None, role: role.into(), content: content.into(), tool: None }
     }
 
     fn attach_running(s: &mut SessionState) {
@@ -1163,6 +1191,29 @@ mod tests {
     }
 
     #[test]
+    fn history_tool_rows_rebuild_cards() {
+        let mut s = SessionState::default();
+        let tool = |id: &str, out: &str| HistoryMessage {
+            response_stats: None,
+            role: "tool".into(),
+            content: out.into(),
+            tool: Some(jcode_sdk::HistoryTool { id: id.into(), name: "bash".into(), input: serde_json::json!({"command":"ls"}) }),
+        };
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![hm("user", "go"), hm("assistant", "on it"), tool("a", "x"), tool("b", "y"), hm("assistant", "done"),
+                // A row from an older server without tool identity is skipped.
+                hm("tool", "orphan")],
+            images: vec![],
+        });
+        assert_eq!(s.transcript.len(), 4);
+        let cards = &s.transcript[2].tool_calls;
+        assert_eq!(cards.iter().map(|c| (c.id.as_str(), c.output.as_str())).collect::<Vec<_>>(), [("a", "x"), ("b", "y")]);
+        assert!(cards[0].input.contains("ls"));
+        assert_eq!(s.transcript[3].text, "done");
+    }
+
+    #[test]
     fn processing_status_event_marks_busy() {
         let mut s = SessionState::default();
         ev(&mut s, E::SessionStatus { session_id: sid(), status: "processing".into(), pending_soft_interrupts: None });
@@ -1173,7 +1224,7 @@ mod tests {
     fn history_keeps_unseen_optimistic_tail() {
         let mut s = SessionState::default();
         s.apply_intent(LocalIntent::UserSentMessage("new one".into()));
-        let old = HistoryMessage { response_stats: None, role: "user".into(), content: "old".into() };
+        let old = HistoryMessage { response_stats: None, role: "user".into(), content: "old".into(), tool: None };
         ev(&mut s, E::History { session_id: sid(), messages: vec![old], images: vec![] });
         let texts: Vec<_> = s.transcript.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, ["old", "new one"]);

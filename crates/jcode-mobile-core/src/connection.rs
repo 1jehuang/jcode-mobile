@@ -407,17 +407,9 @@ fn session_loop(
                 if is_turn_content(&event) && !std::mem::replace(&mut first_content_seen, true) {
                     // A turn this client started was seen from its start.
                     // Otherwise content that beat the initial snapshot may be
-                    // duplicated by it, and a turn joined mid-delta is cut off.
-                    let foreign = !history_superseded;
-                    resync_at_turn_end = foreign
-                        && (!initial_history_seen
-                            || joined_busy
-                                && matches!(
-                                    &event,
-                                    ApiEvent::TextDelta { .. }
-                                        | ApiEvent::ReasoningDelta { .. }
-                                        | ApiEvent::ToolInputDelta { .. }
-                                ));
+                    // duplicated by it, and a joined turn misses everything
+                    // before the attach, so resync once it ends.
+                    resync_at_turn_end = !history_superseded && (!initial_history_seen || joined_busy);
                 }
                 let turn_ended = matches!(&event, ApiEvent::TurnDone { .. } | ApiEvent::TurnStopped { .. });
                 // Todo writes change the pinned board; refresh it from the
