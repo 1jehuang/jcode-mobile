@@ -1,5 +1,18 @@
 # TestFlight release record
 
+## Build 1794134170, uploaded November 8, 2026 (Pacific)
+
+- Fixes voice TLS trust on iOS. The previous native-root loader searched for Unix/OpenSSL certificate files absent on iPhone. Shared transport now explicitly uses bundled trusted roots, preserving certificate, hostname and expiry verification.
+- Mobile source: `c3fb286ecfcec955071534659a37b6eb750fff29`. Shared source: `3cccd6998228ce124c016fa671124e76e97b97ad`, including implementation `a74b45569`. Both source fixes are committed. Account-only cloud relay remains unchanged, with no device provider key or direct-provider fallback.
+- Built from a committed-source archive, sharing the existing Rust target directory. No branch or worktree was created. Unrelated unfinished Git UI edits and demo hooks were excluded and preserved untouched in the original checkout.
+- Real production rootless probe reproduced the original `IoNotFound` and proved the fixed transport completes verified TLS and reaches expected HTTP 401 using a deliberately invalid bearer. No microphone audio, valid credential or billable transcription was used.
+- Hosted voice integration: **95 passed**, receipt `20261108-023920669-1861761`. Hosted workspace: **453 passed, 14 ignored, 3 filtered out**, receipt `20261108-023835310-1856843`.
+- Exclusions: existing `selection_is_read_only_copyable_and_done_releases_focus`, Git inventory `production_event_inventory_matches_reviewed_coverage_ledger`, and Git geometry `git_overlay_owns_metadata_header_and_controls`. The unfiltered workspace is not claimed green. A separate asynchronous snapshot fixture race was corrected without changing production capture behavior.
+- Signed iOS build passed using the local Apple SDK/linker, exact-source prebuild receipt `20261108-023828886-1840477-pre`. ZIP CRC, microphone permission description and all four bundle build numbers passed.
+- Signed IPA SHA-256: `18d9b3beeecf60437e65d1f9235fcc2d0779811d8ca4e5f4d8cae80b3116d765`. Unstripped binary SHA-256: `e9d7ab1452e93a2e2d34ff51f947f2f6e72113245a9043c83b677c07639faba4`. Exact artifacts, probe source, logs and provenance archived under `~/.appstoreconnect/builds/1794134170/`.
+- Apple upload date: **02:41:15 Pacific** (`2026-11-08T10:41:15Z`). Upload `COMPLETE`, processing `VALID`, internal `IN_BETA_TESTING`, automatic notifications enabled, verified at **02:42 Pacific**. Apple build ID: `665cf853-1183-415d-8e8e-3e4fc0d0bf14`. External `READY_FOR_BETA_SUBMISSION` is not public-beta approval.
+- Published en-US notes explain the secure-connection fix and request iPhone microphone/live-text/finish/cancel validation. Physical iPhone runtime acceptance remains outstanding.
+
 ## Existing release verified November 7, 2026 (Pacific)
 
 - App Store Connect app: `6830033634` (`sh.jcode.mobile.rust`).
