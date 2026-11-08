@@ -29,6 +29,7 @@ mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
 mod panel_preview;
+mod session_map;
 mod voice;
 mod cloud_machine;
 mod git_info;
@@ -194,6 +195,8 @@ pub struct MobileApp {
     drawer_search: Entity<TextInput>,
     drawer_directory: sidebar::DirectorySelection,
     synced: synced_sessions::State,
+    /// Pinch-out map of every live session (session_map.rs).
+    map: session_map::State,
     transfer_input: Entity<TextInput>,
     /// Settings "Link existing Jcode account" panel (apple_sign_in.rs).
     apple_link: Option<Entity<apple_sign_in::AppleLinkPanel>>,
@@ -365,6 +368,7 @@ impl MobileApp {
             drawer_search,
             drawer_directory: Default::default(),
             synced: Default::default(),
+            map: Default::default(),
             transfer_input,
             apple_link: None,
         };
@@ -2496,6 +2500,10 @@ impl Render for MobileApp {
             body
         };
         let body = self.feel_wrap(body, &t, window, cx);
+        let body = match self.render_session_map(&t, window, cx) {
+            Some(map) => div().relative().size_full().flex().flex_col().child(body).child(map).into_any_element(),
+            None => body,
+        };
         let body = self.wrap_wide(body, &t, window, cx);
         self.drawer_insets = (top, base);
         let drawer = self.render_drawer(&t, window, cx);
@@ -2514,6 +2522,8 @@ impl Render for MobileApp {
                 window.blur(cx);
                 window.dismiss_virtual_keyboard();
             })
+            // Two-finger pinch out: zoom to the map of live sessions.
+            .on_pinch(cx.listener(|this, ev: &gpui::PinchEvent, _, cx| this.session_map_pinch(ev, cx)))
             .child(body)
             // A software keyboard belongs above every app overlay, as UIKit
             // does. The drawer must not occlude its own search/transfer keys.
