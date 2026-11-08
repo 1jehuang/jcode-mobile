@@ -50,7 +50,36 @@ fn mic_opacity(height: f32) -> f32 {
     progress * progress * (3. - 2. * progress)
 }
 
-pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &Theme) -> AnyElement {
+const HISTORY_LEN: usize = 24;
+const SIDE_BARS: usize = HISTORY_LEN / 2;
+const BAR_WIDTH: f32 = 2.;
+const BAR_PITCH: f32 = 4.;
+const SIDE_WIDTH: f32 = (SIDE_BARS - 1) as f32 * BAR_PITCH + BAR_WIDTH;
+/// Width required by the waveform and microphone, excluding any touch padding.
+pub const LIVE_WIDTH: f32 = SIDE_WIDTH * 2. + 20. + 12.;
+
+fn waveform_amplitudes(levels: &[f32]) -> [f32; HISTORY_LEN] {
+    let mut amplitudes = [0.; HISTORY_LEN];
+    let recent = &levels[levels.len().saturating_sub(HISTORY_LEN)..];
+    for (output, level) in amplitudes[HISTORY_LEN - recent.len()..].iter_mut().zip(recent) {
+        *output = if level.is_finite() { level.clamp(0., 1.) } else { 0. };
+    }
+    amplitudes
+}
+
+fn bar_geometry(index: usize, amplitude: f32) -> (f32, f32, f32) {
+    let amplitude = if amplitude.is_finite() { amplitude.clamp(0., 1.) } else { 0. };
+    let height = 2. + amplitude * 18.;
+    ((index % SIDE_BARS) as f32 * BAR_PITCH, (26. - height) / 2., height)
+}
+
+pub fn render(pull: f32, phase: Phase, elapsed: f32, reduce_motion: bool, t: &Theme) -> AnyElement {
+    render_live(pull, phase, elapsed, reduce_motion, t, &[])
+}
+
+/// Render the newest 24 normalized amplitude samples, oldest to newest.
+/// Empty history and zero samples are static silence marks, never synthetic motion.
+pub fn render_live(pull: f32, phase: Phase, _elapsed: f32, reduce_motion: bool, t: &Theme, levels: &[f32]) -> AnyElement {
     let height = reveal_height(pull, phase);
     let ink = match phase {
         Phase::Error => t.error,
@@ -67,6 +96,21 @@ pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &
             .border_2().border_t_0().border_color(ink).rounded_b(px(8.)))
         .child(div().absolute().left(px(9.)).top(px(20.)).w(px(2.)).h(px(5.)).bg(ink))
         .child(div().absolute().left(px(5.)).bottom_0().w(px(10.)).h(px(2.)).rounded_full().bg(ink));
+    let amplitudes = waveform_amplitudes(levels);
+    let side = |start: usize| {
+        div().relative().w(px(SIDE_WIDTH)).h(px(26.)).flex_none()
+            .children((0..SIDE_BARS).map(|index| {
+                let (left, top, height) = bar_geometry(index, amplitudes[start + index]);
+                div().absolute().left(px(left)).top(px(top))
+                    .w(px(BAR_WIDTH)).h(px(height)).rounded_full().bg(ink)
+            }))
+    };
+    // Reduced motion only removes the decorative reveal easing. Live signal
+    // samples still update directly, with no interpolation or elapsed-time animation.
+    let opacity = if reduce_motion { if height > 0. { 1. } else { 0. } } else { mic_opacity(height) };
+    let signal = div().flex().items_center().gap(px(6.)).w(px(LIVE_WIDTH)).h(px(26.)).flex_none()
+        .debug_selector(|| "voice-live-waveform".into())
+        .child(side(0)).child(microphone).child(side(SIDE_BARS));
     div()
         .id("voice-control")
         .debug_selector(|| "voice-control".into())
@@ -74,13 +118,42 @@ pub fn render(pull: f32, phase: Phase, _elapsed: f32, _reduce_motion: bool, t: &
         .aria_label(format!("{}. {}", phase.label(), phase.instruction()))
         .w_full().h(px(height)).flex_none().overflow_hidden()
         .flex().items_center().justify_center()
-        .child(microphone.opacity(mic_opacity(height)))
+        .child(signal.opacity(opacity))
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn waveform_uses_only_recent_actual_samples_and_pads_silence() {
+        assert_eq!(waveform_amplitudes(&[]), [0.; HISTORY_LEN]);
+        let short = waveform_amplitudes(&[0.25, 0.75]);
+        assert_eq!(&short[..22], &[0.; 22]);
+        assert_eq!(&short[22..], &[0.25, 0.75]);
+        let history: Vec<_> = (0..30).map(|n| n as f32 / 30.).collect();
+        assert_eq!(waveform_amplitudes(&history).as_slice(), &history[6..]);
+    }
+    #[test]
+    fn waveform_sanitizes_nonfinite_and_out_of_range_levels() {
+        let levels = waveform_amplitudes(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1., 2., 0.5]);
+        assert_eq!(&levels[18..], &[0., 0., 0., 0., 1., 0.5]);
+    }
+    #[test]
+    fn waveform_geometry_stays_inside_existing_mic_height() {
+        assert_eq!(LIVE_WIDTH, 124.);
+        for index in 0..HISTORY_LEN {
+            for amplitude in [0., 0.5, 1., -1., 2., f32::NAN, f32::INFINITY] {
+                let (left, top, height) = bar_geometry(index, amplitude);
+                assert!(left >= 0. && left + BAR_WIDTH <= SIDE_WIDTH);
+                assert!((2. ..=20.).contains(&height));
+                assert!(top >= 0. && top + height <= 26.);
+                assert_eq!(top + height / 2., 13.);
+            }
+        }
+        assert_eq!(bar_geometry(0, 0.), (0., 12., 2.));
+        assert_eq!(bar_geometry(11, 1.), (44., 3., 20.));
+    }
     #[test]
     fn preparing_never_claims_recording() {
         assert_eq!(Phase::Preparing.label(), "Preparing microphone");
