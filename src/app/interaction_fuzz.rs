@@ -466,6 +466,48 @@ fn raw_touch_onboarding_outside_taps_release_focus(cx: &mut TestAppContext) {
     eprintln!("raw-touch focus complete cases=2 contacts=2 events=4");
 }
 
+#[gpui::test]
+fn raw_touch_chat_outside_tap_releases_composer_focus(cx: &mut TestAppContext) {
+    cx.update(init);
+    let dimensions = (390., 844.);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(SafeArea { top: 47., bottom: 34. }, window, cx)
+    });
+    replay(0x434f4d50, 0, Surface::Keyboard, dimensions, || {
+        resize(&view, cx, dimensions);
+        install_surface(&view, cx, Surface::Keyboard);
+        let composer = view.read_with(cx, |app, _| app.composer.clone());
+        composer.update(cx, |input, cx| input.set_text(DRAFT, cx));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(composer.read(cx).is_focused(window), "fixture not focused")
+        });
+        // Middle of the transcript, well clear of header and composer.
+        tap(cx, 1, point(px(195.), px(300.)));
+        cx.update(|window, cx| {
+            assert!(
+                !composer.read(cx).is_focused(window),
+                "transcript tap retained composer focus"
+            )
+        });
+        assert_invariants(&view, cx);
+        // Rendering must not reopen a dismissed keyboard or discard the draft.
+        // Only another intentional input tap restores focus.
+        draw(cx);
+        cx.update(|window, cx| assert!(!composer.read(cx).is_focused(window)));
+        view.read_with(cx, |app, cx| {
+            assert!(!app.keyboard_up);
+            assert_eq!(composer.read(cx).text(), DRAFT);
+        });
+        let bounds = cx.debug_bounds("composer-input").expect("composer visible");
+        tap(cx, 2, bounds.center());
+        cx.update(|window, cx| {
+            assert!(composer.read(cx).is_focused(window));
+            assert_eq!(composer.read(cx).text(), DRAFT);
+        });
+    });
+}
+
 fn wheel(cx: &mut VisualTestContext, phase: TouchPhase, at: Point<Pixels>, dx: f32) {
     cx.update(|window, cx| {
         window.dispatch_event(

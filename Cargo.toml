@@ -7,9 +7,9 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# Same GPUI fork and revision as jcode-desktop so components can be shared.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "805b2dd6a8d0d37a7aa2c234739b24a134ee7cea" }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "805b2dd6a8d0d37a7aa2c234739b24a134ee7cea" }
+# Shared GPUI fork. Mobile pins the iOS outside-tap delivery fix.
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "d2a9e0f8ae74a8b28899b0a2fc68ac4c761fd364" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "d2a9e0f8ae74a8b28899b0a2fc68ac4c761fd364" }
 jcode-mobile-core = { path = "crates/jcode-mobile-core" }
 
 [package]
@@ -48,8 +48,8 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance the app uses.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "805b2dd6a8d0d37a7aa2c234739b24a134ee7cea" }
-cgl = { git = "https://github.com/1jehuang/gpui", rev = "805b2dd6a8d0d37a7aa2c234739b24a134ee7cea" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "d2a9e0f8ae74a8b28899b0a2fc68ac4c761fd364" }
+cgl = { git = "https://github.com/1jehuang/gpui", rev = "d2a9e0f8ae74a8b28899b0a2fc68ac4c761fd364" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
