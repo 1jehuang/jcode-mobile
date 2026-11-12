@@ -17,6 +17,8 @@ struct VoiceDemo {
     raw: f32,
     cycle: i32,
     phase: Phase,
+    /// A reverse-to-stop sent this cycle's message while the finger stays down.
+    sent: bool,
 }
 
 impl VoiceDemo {
@@ -29,6 +31,7 @@ impl VoiceDemo {
             raw: 0.,
             cycle: -1,
             phase: Phase::Pulling,
+            sent: false,
         }
     }
 
@@ -79,6 +82,7 @@ impl VoiceDemo {
             self.gesture.reset();
             self.raw = 0.;
             self.cycle = cycle;
+            self.sent = false;
         }
         // Feed actual finger deltas into the shared recognizer. Never assign its
         // state or pull, so the preview exercises threshold and snap behavior.
@@ -97,7 +101,8 @@ impl VoiceDemo {
         };
         if local < if locking { 3.5 } else { 5.8 } {
             let raw = visible / (1. - visible / 160.);
-            self.gesture.feed(self.raw - raw, false);
+            let actions = self.gesture.feed(self.raw - raw, false);
+            self.sent |= actions.contains(&crate::voice_gesture::Action::Finish);
             self.raw = raw;
         } else if locking && local < 6.3 {
             self.gesture.release();
@@ -118,6 +123,7 @@ impl VoiceDemo {
                 State::Recording if local < 2.05 => Phase::Preparing,
                 State::Recording => Phase::Recording,
                 State::Finished => Phase::Transcribing,
+                State::Pulling if self.sent => Phase::Transcribing,
                 State::Idle | State::Pulling => Phase::Pulling,
             }
         };
@@ -281,7 +287,7 @@ mod tests {
             (1.63, State::Recording, Phase::Preparing),
             (2.06, State::Recording, Phase::Recording),
             (5.48, State::Recording, Phase::Recording),
-            (5.50, State::Finished, Phase::Transcribing),
+            (5.50, State::Pulling, Phase::Transcribing),
             (5.8, State::Idle, Phase::Transcribing),
             (8.1, State::Idle, Phase::Pulling),
             (9., State::Idle, Phase::Pulling),

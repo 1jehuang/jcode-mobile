@@ -2286,7 +2286,7 @@ impl MobileApp {
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
                     .child(div().id("composer-input").debug_selector(move || if preview { "preview-composer-input" } else { "composer-input" }.into()).flex_1().min_w_0().child(composer.clone()))
-                    .child(if !preview && (self.voice.busy || self.voice.starting || self.voice.recording.is_some()) {
+                    .child(if !preview && (self.voice.busy || self.voice.starting || self.voice.recording.is_some() || self.voice.sending()) {
                         // Reuse the existing send slot. Never insert rows during a voice pull.
                         round_button("cancel-dictation", "×", t.error, true, t)
                             .a11y_button("Discard voice recording")

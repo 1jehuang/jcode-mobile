@@ -107,20 +107,61 @@ impl Recording {
         }
         self.events.lock().ok()?.finished.take()
     }
-    /// Capture must finish successfully before its sender EOF commits Nari audio.
-    pub fn stop(mut self) -> Result<String, String> {
+    /// Stop the microphone only, so a following segment can reserve it while
+    /// this one is still finalizing over the network. Idempotent.
+    pub fn release_microphone(&mut self) -> Result<(), String> {
         if let Some(capture) = self.capture.take() {
             if let Err(error) = capture.stop() {
                 self.cancel.store(true, Ordering::Release);
                 return Err(error);
             }
         }
+        Ok(())
+    }
+
+    /// Capture must finish successfully before its sender EOF commits Nari audio.
+    pub fn stop(mut self) -> Result<String, String> {
+        self.release_microphone()?;
         self.commit_guard.take();
         self.worker
             .take()
             .ok_or_else(|| "Voice session has already finished.".to_string())?
             .join()
             .map_err(|_| "Voice networking stopped unexpectedly.".to_string())?
+    }
+}
+
+/// Hands the microphone from a finalizing segment to the next one. The next
+/// start waits (off the UI thread) until the previous capture released it.
+#[derive(Clone, Default)]
+pub struct MicGate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl MicGate {
+    pub fn open(&self) {
+        if let Ok(mut open) = self.0.0.lock() {
+            *open = true;
+        }
+        self.0.1.notify_all();
+    }
+
+    /// True once open. A timeout lets startup proceed and report any conflict.
+    pub fn wait(&self, timeout: std::time::Duration) -> bool {
+        let Ok(open) = self.0.0.lock() else {
+            return false;
+        };
+        self.0
+            .1
+            .wait_timeout_while(open, timeout, |open| !*open)
+            .map(|(open, _)| *open)
+            .unwrap_or(false)
+    }
+}
+
+/// Opens the gate on every exit path, including errors and unwinding.
+pub struct OpenOnDrop(pub MicGate);
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open();
     }
 }
 
@@ -167,6 +208,26 @@ impl Drop for Recording {
         self.cancel.store(true, Ordering::Release);
         // Capture Drop and cancellation are nonblocking. Never join on the UI thread.
         self.capture.take();
+    }
+}
+
+#[cfg(test)]
+impl Recording {
+    /// A recording with no microphone or network whose final transcript is
+    /// already decided. Used by app tests to drive the segment pipeline.
+    pub fn test_delayed(delay: std::time::Duration, result: Result<String, String>) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<i16>>(1);
+        Self {
+            capture: None,
+            commit_guard: Some(tx),
+            events: Arc::new(Mutex::new(Events::default())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            worker: Some(std::thread::spawn(move || {
+                while rx.blocking_recv().is_some() {}
+                std::thread::sleep(delay);
+                result
+            })),
+        }
     }
 }
 
@@ -219,6 +280,37 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[test]
+    fn mic_gate_waits_for_release_and_opens_on_every_exit() {
+        let gate = MicGate::default();
+        assert!(!gate.wait(std::time::Duration::from_millis(5)));
+        let opener = gate.clone();
+        let handle = std::thread::spawn(move || {
+            let _open = OpenOnDrop(opener);
+        });
+        assert!(gate.wait(std::time::Duration::from_secs(5)));
+        handle.join().unwrap();
+        assert!(gate.wait(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn releasing_the_microphone_keeps_the_network_session_open() {
+        let (mut recording, mut rx) = fake();
+        recording.release_microphone().unwrap();
+        recording.release_microphone().unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        let cancel = recording.cancel.clone();
+        recording.worker = Some(std::thread::spawn(move || {
+            assert!(rx.blocking_recv().is_none());
+            assert!(!cancel.load(Ordering::Acquire));
+            Ok("segment".into())
+        }));
+        assert_eq!(recording.stop().unwrap(), "segment");
     }
 
     #[test]

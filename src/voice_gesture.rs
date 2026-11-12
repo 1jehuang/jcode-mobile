@@ -29,7 +29,8 @@ pub enum State {
     Pulling,
     Recording,
     Locked,
-    /// A reverse-to-stop already finished capture. Ignore travel until release.
+    /// Capture startup failed. Ignore travel until release so the rest of the
+    /// drag cannot become a second recording.
     Finished,
 }
 
@@ -97,8 +98,10 @@ impl VoiceGesture {
                 actions.push(Action::Start);
             }
             if self.state == State::Recording && self.pull <= STOP {
-                self.state = State::Finished;
-                self.target = 0.0;
+                // Reverse-to-stop finishes this segment but keeps the finger
+                // armed: pulling past START again records the next segment.
+                // START/STOP hysteresis prevents jitter from re-triggering.
+                self.state = State::Pulling;
                 actions.push(Action::Finish);
             }
         }
@@ -276,18 +279,44 @@ mod tests {
     }
 
     #[test]
-    fn deep_crossing_then_reverse_stop_finishes_once_while_held() {
+    fn reverse_stop_rearms_so_one_held_finger_records_repeatedly() {
         let mut g = VoiceGesture::default();
-        assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
-        assert!(g.pull > LOCK);
-        assert_eq!(g.state, State::Recording);
-        assert_eq!(g.feed(1000.0, false), vec![Action::Finish]);
-        assert_eq!(g.state, State::Finished);
-        assert!(g.held());
-        assert!(g.feed(-1000.0, false).is_empty());
+        for _ in 0..4 {
+            assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
+            assert!(g.pull > LOCK);
+            assert_eq!(g.state, State::Recording);
+            assert_eq!(g.feed(1000.0, false), vec![Action::Finish]);
+            assert_eq!(g.state, State::Pulling);
+            assert!(g.held());
+            // Further reverse travel while disarmed never emits anything.
+            assert!(g.feed(50.0, false).is_empty());
+        }
         assert!(g.release().is_empty());
         assert!(g.release().is_empty());
         assert_eq!(g.state, State::Idle);
+    }
+
+    #[test]
+    fn rearm_needs_start_again_and_hysteresis_ignores_jitter() {
+        let mut g = VoiceGesture::default();
+        assert_eq!(g.feed(-inverse(START), false), vec![Action::Start]);
+        g.raw = inverse(STOP);
+        assert_eq!(g.feed(0.0, false), vec![Action::Finish]);
+        // Jitter between STOP and START neither restarts nor finishes again.
+        for target in [STOP + 1.0, START - 1.0, STOP, START - 0.5] {
+            g.raw = inverse(target);
+            assert!(g.feed(0.0, false).is_empty(), "target={target}");
+            assert_eq!(g.state, State::Pulling);
+        }
+        g.raw = inverse(START);
+        assert_eq!(g.feed(0.0, false), vec![Action::Start]);
+        // Releasing mid-segment still finishes, and a deep release still locks.
+        assert_eq!(g.release(), vec![Action::Finish]);
+        // A regrab starts from the visible pull, so reverse past it fully.
+        assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
+        assert_eq!(g.feed(2000.0, false), vec![Action::Finish]);
+        assert_eq!(g.feed(-1000.0, false), vec![Action::Start]);
+        assert_eq!(g.release(), vec![Action::Lock]);
     }
 
     #[test]
@@ -409,17 +438,11 @@ mod tests {
     }
 
     #[test]
-    fn reverse_stop_and_abort_consume_tail_exactly_once() {
-        for abort in [false, true] {
+    fn abort_consumes_tail_exactly_once() {
+        {
             let mut g = VoiceGesture::default();
             g.feed(-40.0, false);
-            if abort {
-                g.abort();
-            } else {
-                // Isolate the inclusive STOP boundary from subtraction rounding.
-                g.raw = inverse(STOP);
-                assert_eq!(g.feed(0.0, false), vec![Action::Finish]);
-            }
+            g.abort();
             assert_eq!(g.state, State::Finished);
             assert!(g.held());
             let before = g.pull;

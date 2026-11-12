@@ -1193,8 +1193,10 @@
           "kind": "state_model_mocked",
           "note": "Voice gesture ownership is seeded without real Recording objects. Native capture startup and interruptions require device checks.",
           "tests": [
-            "src/app/voice_controls_tests.rs::reverse_to_stop_during_startup_consumes_tail_until_ended",
-            "src/app/voice_controls_tests.rs::deep_held_reverse_finishes_once_and_consumes_the_whole_tail",
+            "src/app/voice_controls_tests.rs::reverse_during_startup_then_pull_again_keeps_the_same_capture",
+            "src/app/voice_controls_tests.rs::one_held_finger_sends_each_pulled_message_in_order",
+            "src/app/voice_controls_tests.rs::cancel_discards_every_queued_voice_message",
+            "src/app/voice_controls_tests.rs::failed_queued_segment_keeps_its_live_preview_for_review",
             "src/app/voice_controls_tests.rs::deep_pull_release_uses_current_position_not_the_maximum_pull",
             "src/app/voice_controls_tests.rs::navigation_discards_pending_quick_transcription_after_release"
           ]

@@ -294,7 +294,7 @@ fn native_touch_pan_enters_voice_and_release_finishes_mocked_capture(cx: &mut Te
 }
 
 #[gpui::test]
-fn reverse_to_stop_during_startup_consumes_tail_until_ended(cx: &mut TestAppContext) {
+fn reverse_during_startup_then_pull_again_keeps_the_same_capture(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(|window, cx| {
         MobileApp::new_offline(
@@ -311,68 +311,127 @@ fn reverse_to_stop_during_startup_consumes_tail_until_ended(cx: &mut TestAppCont
         app.composer
             .update(cx, |input, cx| input.set_text("Unrelated draft", cx));
         assert!(app.feel_voice_wheel(&wheel(80., TouchPhase::Moved), cx));
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
-        assert!(
-            app.voice
-                .status()
-                .unwrap()
-                .contains("Finishing microphone startup")
-        );
-        assert!(app.voice.starting && app.voice.busy && app.voice.auto_send);
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling);
+        assert!(app.voice.stop_requested);
+        assert!(app.voice.status().unwrap().contains("Finishing microphone startup"));
+        // Pulling out again before the mic is ready keeps that startup capture
+        // instead of finishing it or opening a second microphone.
         assert!(app.feel_voice_wheel(&wheel(-240., TouchPhase::Moved), cx));
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
-        assert!(!app.voice.locked, "tail must not restart or lock capture");
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Recording);
+        assert!(!app.voice.stop_requested && app.voice.starting);
+        assert!(app.feel_voice_wheel(&wheel(400., TouchPhase::Moved), cx));
+        assert!(app.voice.stop_requested);
         assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Ended), cx));
         assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
-        assert!(app.feel.voice_wheel_at.is_none());
-        assert!(app.feel.voice_pan_ended);
+        assert!(app.feel.voice_wheel_at.is_none() && app.feel.voice_pan_ended);
         assert!(!app.feel_voice_wheel(&wheel(-240., TouchPhase::Moved), cx));
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
+        assert!(!app.voice.locked);
         assert!(app.session.transcript.is_empty());
         assert_eq!(app.composer.read(cx).text(), "Unrelated draft");
     });
 }
 
 #[gpui::test]
-fn deep_held_reverse_finishes_once_and_consumes_the_whole_tail(cx: &mut TestAppContext) {
+fn one_held_finger_sends_each_pulled_message_in_order(cx: &mut TestAppContext) {
+    use crate::voice_stream::Recording;
     cx.update(init);
     let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
     view.update(cx, |app, cx| {
-        seed_startup(app, false);
+        app.screen = Screen::Chat;
+        app.session.phase = ConnectionPhase::Connected;
+        app.session.session_id = Some("voice-loop".into());
         app.composer.update(cx, |input, cx| input.set_text("Keep this draft", cx));
-        assert!(app.offline && app.voice.recording.is_none());
-        assert!(app.feel_voice_wheel(&wheel(-420., TouchPhase::Moved), cx));
-        assert!(app.feel.voice_gesture.pull > crate::voice_gesture::LOCK);
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Recording);
-        assert!(app.feel.voice_gesture.held());
-        assert!(!app.voice.locked && !app.voice.stop_requested);
-        assert!(app.feel_voice_wheel(&wheel(400., TouchPhase::Moved), cx));
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Recording);
-        assert!(!app.voice.locked && !app.voice.stop_requested);
-        assert!(app.feel_voice_wheel(&wheel(90., TouchPhase::Moved), cx));
-        assert!(app.feel.voice_gesture.pull < crate::voice_gesture::STOP);
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
-        assert!(app.voice.stop_requested);
-        assert!(app.voice.starting && app.voice.busy && app.voice.auto_send);
-
-        // Clear only the request bit as an action sentinel. A duplicate Finish
-        // would set it again, even though no real capture exists in this test.
-        app.voice.stop_requested = false;
-        for delta in [-1000., 1500., -240.] {
-            assert!(app.feel_voice_wheel(&wheel(delta, TouchPhase::Moved), cx));
-            assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
-            assert!(!app.voice.stop_requested && !app.voice.locked);
+        app.feel.voice_wheel_at = Some(Instant::now());
+        for (i, text) in ["first thought", "second thought", "third"].into_iter().enumerate() {
+            // Seed the capture Start would open. Never touches audio or network.
+            // The first segment finalizes slowest, so delivery must reorder.
+            let delay = Duration::from_millis([60, 20, 0][i]);
+            let text = text.to_string();
+            app.voice.recording = Some(Recording::test_delayed(delay, Ok(text)));
+            app.voice.auto_send = true;
+            assert_eq!(app.feel.voice_gesture.feed(-400., false), vec![VoiceAction::Start]);
+            assert!(app.feel.voice_gesture.pull > crate::voice_gesture::LOCK);
+            let actions = app.feel.voice_gesture.feed(400., false);
+            assert_eq!(actions, vec![VoiceAction::Finish]);
+            app.apply_voice_gesture(actions, cx);
+            assert!(app.voice.recording.is_none(), "segment {i} must leave the mic free");
+            assert!(!app.voice.busy && !app.voice.auto_send);
+            assert!(app.feel.voice_gesture.held());
+            assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling);
+            assert!(app.voice.sending());
         }
-        assert!(app.feel_voice_wheel(&wheel(-1000., TouchPhase::Ended), cx));
-        assert!(!app.voice.stop_requested && !app.voice.locked);
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Idle);
-        assert!(app.feel.voice_wheel_at.is_none() && app.feel.voice_pan_ended);
-        assert!(!app.feel_voice_wheel(&wheel(-240., TouchPhase::Moved), cx));
-        assert!(app.feel.voice_gesture.release().is_empty());
-        app.voice.stop_requested = true;
-        assert!(app.voice.status().unwrap().contains("Finishing microphone startup"));
-        assert!(app.voice.recording.is_none() && app.session.transcript.is_empty());
+        assert!(app.voice.status().unwrap().contains("sending voice message"));
+        let actions = app.feel.voice_gesture.release();
+        assert!(actions.is_empty());
+    });
+    cx.run_until_parked();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while view.read_with(cx, |app, _| app.voice.sending()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    view.read_with(cx, |app, cx| {
+        assert!(!app.voice.sending());
+        let sent: Vec<_> = app.session.transcript.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(sent, ["first thought", "second thought", "third"]);
         assert_eq!(app.composer.read(cx).text(), "Keep this draft");
+        assert!(!app.voice.has_error());
+    });
+}
+
+#[gpui::test]
+fn cancel_discards_every_queued_voice_message(cx: &mut TestAppContext) {
+    use crate::voice_stream::Recording;
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        app.screen = Screen::Chat;
+        app.session.phase = ConnectionPhase::Connected;
+        app.session.session_id = Some("voice-loop".into());
+        for text in ["one", "two"] {
+            app.voice.recording = Some(Recording::test_delayed(Duration::from_millis(30), Ok(text.into())));
+            app.voice.auto_send = true;
+            app.feel.voice_gesture.feed(-240., false);
+            let actions = app.feel.voice_gesture.feed(240., false);
+            app.apply_voice_gesture(actions, cx);
+        }
+        assert!(app.voice.sending());
+        app.cancel_voice_animated(cx);
+        assert!(!app.voice.sending());
+    });
+    std::thread::sleep(Duration::from_millis(80));
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(app.session.transcript.is_empty());
+        assert!(!app.voice.sending() && !app.voice.has_error());
+    });
+}
+
+#[gpui::test]
+fn failed_queued_segment_keeps_its_live_preview_for_review(cx: &mut TestAppContext) {
+    use crate::voice_stream::Recording;
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        app.screen = Screen::Chat;
+        app.session.phase = ConnectionPhase::Connected;
+        app.session.session_id = Some("voice-loop".into());
+        app.voice.recording = Some(Recording::test_delayed(Duration::ZERO, Err("Network dropped.".into())));
+        app.voice.auto_send = true;
+        app.voice.seed_live_preview_for_test(app.composer.read(cx).save_draft(), "half a sentence");
+        app.feel.voice_gesture.feed(-240., false);
+        let actions = app.feel.voice_gesture.feed(240., false);
+        app.apply_voice_gesture(actions, cx);
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while view.read_with(cx, |app, _| app.voice.sending()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        cx.run_until_parked();
+    }
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.composer.read(cx).text(), "half a sentence");
+        assert!(app.session.transcript.is_empty());
+        assert!(app.voice.status().unwrap().contains("Live voice draft kept"));
     });
 }
 
@@ -507,7 +566,7 @@ fn explicitly_phased_held_voice_does_not_idle_timeout(cx: &mut TestAppContext) {
         // The same finger gesture can reverse after a speaking pause.
         assert!(app.feel_voice_wheel(&wheel(400., TouchPhase::Moved), cx));
         assert!(app.voice.stop_requested && !app.voice.locked);
-        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Finished);
+        assert_eq!(app.feel.voice_gesture.state, VoiceGestureState::Pulling);
         assert!(app.feel_voice_wheel(&wheel(0., TouchPhase::Ended), cx));
         assert!(app.feel.voice_wheel_at.is_none());
         app.cancel_voice_animated(cx);

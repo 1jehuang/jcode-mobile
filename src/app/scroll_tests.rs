@@ -316,3 +316,97 @@ fn live_tools_release_follow_on_small_upward_scroll(cx: &mut TestAppContext) {
         assert_eq!(app.transcript_scroll.offset(), before, "tool updates must not pull the reader back down");
     });
 }
+
+#[cfg(test)]
+fn drawer_touch_fixture(cx: &mut TestAppContext, at_top: bool) -> (Entity<MobileApp>, &mut gpui::VisualTestContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let mut app = MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx);
+        app.screen = Screen::Chat;
+        app.device = Some((390., 844.));
+        app.session.transcript.push(TranscriptEntry {
+            id: 1, role: Role::Assistant,
+            text: "Long transcript\n\n".repeat(100),
+            reasoning: String::new(), tool_calls: Vec::new(),
+            is_streaming: false, is_queued: false,
+        });
+        for index in 0..80 {
+            app.session.session_list.push(serde_json::from_value(serde_json::json!({
+                "session_id": format!("s-{index}"), "status": "idle",
+                "title": format!("Session {index}"), "working_dir": "/a",
+            })).unwrap());
+        }
+        app.drawer_open = true;
+        app.drawer_t = 1.;
+        app
+    });
+    cx.simulate_resize(size(px(390.), px(844.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    view.update(cx, |app, cx| {
+        if at_top {
+            app.transcript_scroll.set_offset(point(px(0.), px(0.)));
+            app.follow = false;
+        } else {
+            app.transcript_scroll.scroll_to_bottom();
+            app.follow = true;
+        }
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    (view, cx)
+}
+
+#[cfg(test)]
+fn drawer_touch(cx: &mut gpui::VisualTestContext, phase: TouchPhase, at: gpui::Point<gpui::Pixels>) {
+    cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::Touch(gpui::TouchEvent {
+            id: gpui::TouchId(91), phase, position: at, predicted_position: None, force: None,
+        }), cx);
+        window.draw(cx).clear(cx);
+    });
+}
+
+/// Real finger input: pans and post-release flings over the sidebar, in both
+/// directions and from list, header, footer and scrim, never reach the transcript.
+#[gpui::test]
+fn drawer_touch_pans_and_flings_never_scroll_transcript(cx: &mut TestAppContext) {
+    drawer_touch_pans(cx, false);
+}
+
+/// At the transcript's top, a downward pan over the sidebar used to become the
+/// transcript's pull-to-refresh, dragging the chat beneath the drawer.
+#[gpui::test]
+fn drawer_touch_at_transcript_top_never_pulls_transcript(cx: &mut TestAppContext) {
+    drawer_touch_pans(cx, true);
+}
+
+#[cfg(test)]
+fn drawer_touch_pans(cx: &mut TestAppContext, at_top: bool) {
+    let (view, cx) = drawer_touch_fixture(cx, at_top);
+    let before = view.read_with(cx, |app, _| app.transcript_scroll.offset());
+    let follow = view.read_with(cx, |app, _| app.follow);
+    assert!(view.read_with(cx, |app, _| app.transcript_scroll.max_offset().y > px(100.)));
+    for x in [100., 30., 300.] {
+        for (y0, dir) in [(500., 1.), (500., -1.), (60., 1.), (790., -1.)] {
+            let start = point(px(x), px(y0));
+            drawer_touch(cx, TouchPhase::Started, start);
+            for step in 1..=12 {
+                drawer_touch(cx, TouchPhase::Moved, point(px(x), px(y0 + dir * 30. * step as f32)));
+            }
+            drawer_touch(cx, TouchPhase::Ended, point(px(x), px(y0 + dir * 360.)));
+            // Let fling momentum play out frame by frame.
+            for _ in 0..120 {
+                cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+                cx.run_until_parked();
+            }
+            view.update(cx, |app, cx| { app.drawer_open = true; app.drawer_t = 1.; cx.notify(); });
+            cx.update(|window, cx| { window.draw(cx).clear(cx); });
+            view.read_with(cx, |app, _| {
+                assert_eq!(app.transcript_scroll.offset(), before, "touch at x={x} y0={y0} dir={dir} scrolled transcript");
+                assert_eq!(app.follow, follow, "drawer touch must not change transcript follow");
+                assert!(app.feel.g.pull <= 0., "touch at x={x} y0={y0} dir={dir} pulled transcript ({})", app.feel.g.pull);
+                assert!(app.feel.g.refreshing.is_none(), "drawer touch must not trigger refresh");
+            });
+        }
+    }
+}

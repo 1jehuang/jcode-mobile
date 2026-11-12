@@ -1,6 +1,18 @@
 //! Ephemeral voice capture. Never persisted, automatically discarded on navigation.
 use super::*;
-use crate::voice_stream::Recording;
+use crate::voice_stream::{MicGate, OpenOnDrop, Recording};
+use std::collections::VecDeque;
+
+/// A pulled voice message that finished while the finger kept going. It
+/// finalizes in the background, in order, so the next pull can record at once.
+struct Segment {
+    id: u64,
+    tab: u64,
+    /// Live preview text, kept for review if finalization fails.
+    partial: String,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    result: Option<Result<String, String>>,
+}
 
 #[derive(Default)]
 struct LiveDictation {
@@ -24,8 +36,17 @@ pub(super) struct VoiceState {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     error: Option<String>,
     live: LiveDictation,
+    segments: VecDeque<Segment>,
+    next_segment: u64,
+    /// Opens once the most recent segment released the microphone.
+    mic_gate: Option<MicGate>,
 }
 impl VoiceState {
+    /// Finished voice messages still transcribing in the background.
+    pub fn sending(&self) -> bool {
+        !self.segments.is_empty()
+    }
+
     pub fn status(&self) -> Option<String> {
         if self.starting {
             Some(
@@ -54,6 +75,8 @@ impl VoiceState {
                 }
                 .into(),
             )
+        } else if self.sending() {
+            Some("Transcribing, then sending voice message…".into())
         } else {
             self.error.clone()
         }
@@ -65,6 +88,17 @@ impl VoiceState {
 
     pub(super) fn levels(&self) -> &[f32] {
         &self.live.levels
+    }
+
+    #[cfg(test)]
+    pub(super) fn seed_live_preview_for_test(&mut self, original: crate::text_input::InputDraft, text: &str) {
+        self.live = LiveDictation {
+            original: Some(original),
+            base: String::new(),
+            shown: Some(String::new()),
+            transcript: text.into(),
+            levels: Vec::new(),
+        };
     }
 }
 impl MobileApp {
@@ -185,6 +219,12 @@ impl MobileApp {
 
     /// Start while the finger is still held, not after release.
     pub(super) fn start_overscroll_voice(&mut self, cx: &mut Context<Self>) {
+        // Pulled back out before the microphone was ready: keep that capture.
+        if self.voice.starting && self.voice.stop_requested {
+            self.voice.stop_requested = false;
+            cx.notify();
+            return;
+        }
         if cfg!(any(target_os = "ios", target_os = "linux")) && self.scene_allows_voice() {
             self.begin_voice(true, cx);
         }
@@ -231,27 +271,7 @@ impl MobileApp {
             Ok(text) if !text.trim().is_empty() => {
                 // Voice sends only its own transcript. Never send or clear a draft
                 // that the user was typing while the service was working.
-                if auto_send
-                    && self.session.phase == ConnectionPhase::Connected
-                    && self.session.session_id.is_some()
-                {
-                    let text = text.trim().to_string();
-                    if self.session.is_processing {
-                        self.session
-                            .apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
-                        self.send(|id| Request::SoftInterrupt {
-                            id,
-                            content: text,
-                            urgent: false,
-                        });
-                    } else {
-                        self.session
-                            .apply_intent(LocalIntent::UserSentMessage(text.clone()));
-                        self.send(|id| Request::Message { id, content: text });
-                    }
-                    self.follow = true;
-                    self.feel_sent();
-                } else {
+                if !(auto_send && self.send_voice_text(&text)) {
                     if had_live_draft && !owned_preview {
                         self.voice.error = Some(
                             "Your edited voice draft was kept. Review it before sending.".into(),
@@ -288,9 +308,124 @@ impl MobileApp {
         cx.notify();
     }
 
+    /// Send a voice transcript as its own message. False when not connected.
+    fn send_voice_text(&mut self, text: &str) -> bool {
+        if self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
+            return false;
+        }
+        let text = text.trim().to_string();
+        if self.session.is_processing {
+            self.session
+                .apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
+            self.send(|id| Request::SoftInterrupt {
+                id,
+                content: text,
+                urgent: false,
+            });
+        } else {
+            self.session
+                .apply_intent(LocalIntent::UserSentMessage(text.clone()));
+            self.send(|id| Request::Message { id, content: text });
+        }
+        self.follow = true;
+        self.feel_sent();
+        true
+    }
+
+    /// Hand a finished pulled message to the background and free the gesture,
+    /// so the same held finger can immediately record the next one.
+    fn queue_voice_segment(&mut self, mut recording: Recording, cx: &mut Context<Self>) {
+        self.feel_voice_motion_changed();
+        let partial = self.voice.live.transcript.clone();
+        let owned = self.restore_voice_draft(cx);
+        self.voice.live = LiveDictation::default();
+        let id = self.voice.next_segment;
+        self.voice.next_segment = id.wrapping_add(1);
+        let gate = MicGate::default();
+        self.voice.mic_gate = Some(gate.clone());
+        self.voice.segments.push_back(Segment {
+            id,
+            tab: self.active_tab,
+            partial: if owned { partial } else { String::new() },
+            cancel: recording.cancel_handle(),
+            result: None,
+        });
+        // Invalidate live polling and the capture timeout of this recording.
+        self.voice.generation = self.voice.generation.wrapping_add(1);
+        self.voice.cancel = None;
+        self.voice.busy = false;
+        self.voice.starting = false;
+        self.voice.locked = false;
+        self.voice.auto_send = false;
+        self.voice.stop_requested = false;
+        self.voice.began = None;
+        let task = cx.background_spawn(async move {
+            let mic = {
+                let _open = OpenOnDrop(gate);
+                recording.release_microphone()
+            };
+            mic?;
+            recording.stop()
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| this.voice_segment_done(id, result, cx));
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Deliver finished segments strictly in the order they were spoken.
+    fn voice_segment_done(&mut self, id: u64, result: Result<String, String>, cx: &mut Context<Self>) {
+        let Some(segment) = self.voice.segments.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        segment.result = Some(result);
+        while self.voice.segments.front().is_some_and(|s| s.result.is_some()) {
+            let Some(segment) = self.voice.segments.pop_front() else { break };
+            if segment.tab == self.active_tab {
+                self.deliver_voice_segment(segment, cx);
+            }
+        }
+        self.feel_voice_motion_changed();
+        cx.notify();
+    }
+
+    fn deliver_voice_segment(&mut self, segment: Segment, cx: &mut Context<Self>) {
+        let append = |this: &mut Self, text: &str, cx: &mut Context<Self>| {
+            let draft = jcode_mobile_core::voice::append(this.composer.read(cx).text(), text);
+            this.composer.update(cx, |input, cx| input.set_text(draft, cx));
+        };
+        match segment.result {
+            Some(Ok(text)) if !text.trim().is_empty() => {
+                // Same as a single pulled message: auto-send wins when connected.
+                if !self.send_voice_text(&text) {
+                    append(self, text.trim(), cx);
+                    self.voice.error =
+                        Some("Connection changed. Voice text saved to your draft, not sent.".into());
+                }
+            }
+            result => {
+                let kept = !segment.partial.is_empty();
+                if kept {
+                    append(self, &segment.partial, cx);
+                }
+                self.voice.error = Some(match result {
+                    Some(Err(error)) if kept => format!("{error} Live voice draft kept. Review before sending."),
+                    Some(Err(error)) => error,
+                    _ if kept => "Final transcription was empty. Live voice draft kept. Review before sending.".into(),
+                    _ => "No speech detected. Nothing was sent.".into(),
+                });
+            }
+        }
+    }
+
     pub(super) fn cancel_voice(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = self.voice.cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        for segment in self.voice.segments.drain(..) {
+            segment.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         self.restore_voice_draft(cx);
         self.voice.live = LiveDictation::default();
@@ -359,6 +494,10 @@ impl MobileApp {
         let Some(recording) = self.voice.recording.take() else {
             return;
         };
+        if self.voice.auto_send {
+            self.queue_voice_segment(recording, cx);
+            return;
+        }
         self.feel_voice_motion_changed();
         self.voice.busy = true;
         self.voice.starting = false;
@@ -440,7 +579,14 @@ impl MobileApp {
         };
         let generation = self.voice.generation;
         let tab = self.active_tab;
-        let task = cx.background_spawn(async move { Recording::start(account) });
+        let gate = self.voice.mic_gate.clone();
+        let task = cx.background_spawn(async move {
+            // A just-finished pulled message may still be releasing the mic.
+            if let Some(gate) = gate {
+                gate.wait(Duration::from_secs(3));
+            }
+            Recording::start(account)
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {

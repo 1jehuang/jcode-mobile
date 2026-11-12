@@ -173,13 +173,20 @@ impl MobileApp {
     fn scene(&self) -> Scene {
         let chat = self.screen == Screen::Chat;
         let at_top = f(self.transcript_scroll.offset().y) >= -0.5;
+        // The sidebar is modal while visible, including while it slides. The
+        // window-level gesture stack sees input in the capture phase, before the
+        // drawer can stop it, so gate the transcript's pull-to-refresh and
+        // message long-press here. Otherwise a downward pan over the sidebar
+        // with the chat at its top drags the transcript beneath it.
+        let drawer = self.drawer_open || self.drawer_t > 0.;
         Scene {
             pushed: self.screen == Screen::Settings,
             sheet_open: self.model_picker && chat,
-            at_top: at_top && !self.dir_picker,
+            at_top: at_top && !self.dir_picker && !drawer,
             // Voice has its own held/locked lifecycle, separate from reconnect.
             dictate: false,
             menus: chat
+                && !drawer
                 && !self.git_info.open
                 && !self.model_picker
                 && !self.dir_picker
@@ -344,13 +351,14 @@ impl MobileApp {
     pub(super) fn feel_voice_surface(&self, content: AnyElement, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::voice_visual::{self, Phase};
         let pull = self.feel.voice_gesture.pull;
-        let visible = self.feel.voice_gesture.active() || pull > 0.5
+        let visible = self.feel.voice_gesture.active() || pull > 0.5 || self.voice.sending()
             || (self.voice.auto_send && (self.voice.busy || self.voice.recording.is_some()));
         let phase = if self.voice.has_error() { Phase::Error }
             else if self.voice.locked { Phase::Locked }
             else if self.voice.starting { Phase::Preparing }
             else if self.voice.busy { Phase::Transcribing }
             else if self.voice.recording.is_some() { Phase::Recording }
+            else if self.voice.sending() && !self.feel.voice_gesture.held() { Phase::Transcribing }
             else { Phase::Pulling };
         let height = if visible { voice_visual::reveal_height(pull, phase) } else { 0. };
         let elapsed = self.voice.began.map_or(0., |at| at.elapsed().as_secs_f32());
@@ -411,7 +419,7 @@ impl MobileApp {
             0.
         } else if self.voice.auto_send && self.voice.locked && (self.voice.starting || self.voice.recording.is_some()) {
             crate::voice_gesture::LOCK_REST
-        } else if self.voice.auto_send && self.voice.busy {
+        } else if (self.voice.auto_send && self.voice.busy) || self.voice.sending() {
             crate::voice_visual::PROCESSING_REST
         } else { 0. };
         let retargeted = self.feel.voice_rest != rest;
