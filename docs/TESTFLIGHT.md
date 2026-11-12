@@ -5,7 +5,7 @@
 - Source: `809ac4a` (clean tree). Adds Settings → "New sessions start in", a configurable default directory for new sessions (`docs/DEFAULT_DIRECTORY.md`). Includes the outside-tap keyboard dismissal fix from 1794467643.
 - Shared `jcode-voice` from release pin `3cccd6998228ce124c016fa671124e76e97b97ad` via `JCODE_SRC`, as for 1794467643.
 - Tests: app suite 378 passed, 0 failed, 11 ignored (includes the coverage ledger). Core suite 89 passed.
-- ZIP CRC passed, all four bundle build numbers `1794494539`. Signed IPA SHA-256: `3d2ae7ba8881535cff5d4b287fc71d98d5a74a9d5d9cc74551b3da044a2107ae`, archived under `~/.appstoreconnect/builds/1794494539/`. Upload state `COMPLETE`. Apple build ID `02ad8831-b40a-4a01-b462-ec904bfbe4e4`, processing `VALID`, internal `IN_BETA_TESTING`.
+- ZIP CRC passed, all four bundle build numbers `1794494539`. Signed IPA SHA-256: `3d2ae7ba8881535cff5d4b287fc71d98d5a74a9d5d9cc74551b3da044a2107ae`, archived under `~/.appstoreconnect/builds/1794494539/`. Upload state `COMPLETE`. Apple build ID `02ad8831-b40a-4a01-b462-ec904bfbe4e4`, processing `VALID`, internal `IN_BETA_TESTING`. Apple build ID `02ad8831-b40a-4a01-b462-ec904bfbe4e4`, processing `VALID`, internal `IN_BETA_TESTING`.
 - Backend at upload time: production version `e22824e4` serves realtime voice and push. Voice verified end to end with a real account.
 
 ## Build 1794467643, uploaded November 11, 2026 (Pacific)
@@ -59,7 +59,7 @@
 - Core suite: **60 passed, 0 failed, 2 ignored**, receipt `20261107-211746485-75184`.
 - Larger-text (1.3x) scroll suite: **7 passed**, receipt `20261107-211936167-86164`.
 - Test runs used automatic local fallback following a verified hosted DNS timeout. The hosted check receipt explicitly reports `remote on hosted`.
-- Uploaded November 7, 2026 at **21:25:15 Pacific** (`2026-11-08T05:25:15Z`). Upload state `COMPLETE`. Apple build ID `02ad8831-b40a-4a01-b462-ec904bfbe4e4`, processing `VALID`, internal `IN_BETA_TESTING`.
+- Uploaded November 7, 2026 at **21:25:15 Pacific** (`2026-11-08T05:25:15Z`). Upload state `COMPLETE`.
 - App Store Connect build ID: `d5508cb5-3d2d-433a-9283-9ecad730501b`. Verified `VALID`, internal `IN_BETA_TESTING`, automatic notifications enabled. External state remains `READY_FOR_BETA_SUBMISSION`, not public-beta approval.
 - Added TestFlight notes describing both changes and requesting real-iPhone checks for thinking/tool/response transitions, scrolling, keyboard resize and voice overscroll.
 
