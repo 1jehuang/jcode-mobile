@@ -1,5 +1,14 @@
 # TestFlight release record
 
+## Build 1794467643, uploaded November 11, 2026 (Pacific)
+
+- Source: `13dbeeb` (clean tree). Pins GPUI `d2a9e0f8ae74a8b28899b0a2fc68ac4c761fd364`, which stops UIKit text-interaction recognizers from cancelling touches across the whole view. Tapping outside the composer now reaches the blur handler and dismisses the keyboard. See `docs/INPUT_FOCUS.md`.
+- Shared `jcode-voice` built from release pin `3cccd6998228ce124c016fa671124e76e97b97ad`, mounted via `JCODE_SRC`, because the local `../jcode` checkout has diverged and lacks `connect_relay`.
+- Built with `scripts/cloud-ios-build.sh` on the managed VM. ZIP CRC passed, all four bundle build numbers `1794467643`. Signed IPA SHA-256: `c2910ed5155f4b0b3342549825f9382bd9be0612274e45b7bd7d4f5398667a3b`, archived under `~/.appstoreconnect/builds/1794467643/`.
+- Upload state `COMPLETE`. Apple build ID `6693c3ed-2128-437d-8fb9-afa30b3d5100`, processing `VALID`, internal `IN_BETA_TESTING`, auto-notify on.
+- Known server issue, not fixed by this build: production `api.jcode.sh` returns 404 for `/v1/voice/realtime`, so the app shows "Cloud voice is not ready". The relay exists only on backend branch `feat/managed-cloud-hosts` and needs a Worker deploy.
+- Headless tests do not exercise UIKit recognizers. Physical iPhone validation of outside-tap dismissal remains outstanding.
+
 ## Build 1794144761, uploaded November 8, 2026 (Pacific)
 
 - Source: `f4706c316d0100806a3b371107668661b19ce903` (clean tree). Adds SSH zlib compression, always-on timing logs, floating git pull-tab card, connection/foreground revalidation fixes and RuntimeInfo open-latency reduction since 1794134170.
