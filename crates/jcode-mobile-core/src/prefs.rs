@@ -20,11 +20,11 @@ impl Prefs {
     }
 }
 
-/// Trim and drop a trailing slash. Empty or relative paths are rejected:
-/// the server resolves relative paths against an unspecified cwd.
+/// Trim and drop a trailing slash. Only absolute paths are accepted: the
+/// server uses the path literally, so `~` and relative paths would not resolve.
 pub fn normalize_dir(dir: &str) -> Option<String> {
     let dir = dir.trim();
-    if dir.is_empty() || !(dir.starts_with('/') || dir.starts_with('~')) || dir.contains('\0') {
+    if !dir.starts_with('/') || dir.contains('\0') {
         return None;
     }
     let trimmed = dir.trim_end_matches('/');
@@ -107,7 +107,7 @@ mod tests {
     fn normalization_rejects_relative_and_empty() {
         assert_eq!(normalize_dir("/"), Some("/".into()));
         assert_eq!(normalize_dir("///"), Some("/".into()));
-        assert_eq!(normalize_dir("~/src/app/"), Some("~/src/app".into()));
+        assert_eq!(normalize_dir("~/src/app/"), None, "server does not expand ~");
         assert_eq!(normalize_dir("src/app"), None);
         assert_eq!(normalize_dir("   "), None);
         assert_eq!(normalize_dir("/a\0b"), None);

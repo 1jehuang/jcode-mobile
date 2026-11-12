@@ -51,7 +51,7 @@ impl MobileApp {
                 .bg(t.surface).cursor_pointer().child(super::label(text, t.text_strong, 12.))
         };
         let help = if invalid {
-            ("Use an absolute path, like /home/you/project or ~/project.", t.error)
+            ("Use an absolute path, like /home/you/project.", t.error)
         } else if saved.is_empty() {
             ("New sessions start in the cloud machine's home directory.", t.text_muted)
         } else {
@@ -119,7 +119,9 @@ mod tests {
             assert_eq!(app.prefs.default_dir, None);
             assert_eq!(app.default_dir_input.read(cx).text(), "");
             app.set_default_dir("~/proj", cx);
-            assert_eq!(app.prefs.default_dir.as_deref(), Some("~/proj"));
+            assert_eq!(app.prefs.default_dir, None, "~ is not expanded by the server");
+            app.set_default_dir("/home/me/proj", cx);
+            assert_eq!(app.prefs.default_dir.as_deref(), Some("/home/me/proj"));
             app.set_default_dir("", cx);
             assert_eq!(app.new_session_dir(None, None, None), None);
         });

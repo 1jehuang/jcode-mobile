@@ -7,15 +7,15 @@ of the cloud machine's home directory.
 
 Settings → **New sessions start in**:
 
-- Type an absolute path (`/home/you/project`) or a home-relative one
-  (`~/project`) and tap **Save** or the keyboard's Done key.
+- Type an absolute path (`/home/you/project`) and tap **Save** or the
+  keyboard's Done key.
 - **Use current** saves the current session's directory. It appears only when
   that differs from the saved default.
 - **Reset** clears the default, so new sessions start in the server default
   (the cloud machine's home) again.
 
-Relative paths such as `src/app` are rejected, because the server resolves
-them against an unspecified working directory.
+Relative paths such as `src/app` and `~/project` are rejected. The server
+uses the path literally and does not expand `~`.
 
 ## What it applies to
 
