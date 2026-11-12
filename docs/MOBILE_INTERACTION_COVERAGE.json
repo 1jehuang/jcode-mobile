@@ -2384,6 +2384,27 @@
       "handler": false,
       "owner": "src/markdown.rs::render_streaming",
       "renderer": true
+    },
+    {
+      "owner": "src/app/default_dir.rs::impl:MobileApp::render_default_dir",
+      "renderer": true,
+      "handler": false,
+      "events": { "on_click": 3 },
+      "controls": {
+        "debug_selector:dynamic:id": 1,
+        "debug_selector:literal:default-dir-input": 1,
+        "id:dynamic:id": 1,
+        "id:literal:default-dir-input": 1
+      },
+      "coverage": [{
+        "kind": "hit_tested",
+        "tests": [
+          "src/app/default_dir.rs::tests::settings_controls_set_use_current_and_reset",
+          "src/app/default_dir.rs::tests::new_sessions_use_default_but_explicit_resume_and_fork_do_not",
+          "src/app/default_dir.rs::tests::invalid_or_empty_input_clears_rather_than_storing_garbage"
+        ],
+        "note": "Use current, Reset and Save are raw-touch tapped on a settled Settings screen, with visibility toggling verified after each. Precedence of explicit, resume and fork over the default, and rejection of relative paths, are asserted directly. prefs.json persistence is covered by jcode-mobile-core prefs tests. Physical iPhone keyboard Done submission is not exercised headlessly."
+      }]
     }
   ],
   "schema_version": 1,

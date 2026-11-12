@@ -11,7 +11,7 @@ use gpui::{
 };
 use jcode_mobile_core::{
     Account, AccountStore, Config, Connection, ConnectionOutput, ConnectionPhase, LocalIntent,
-    Request, Role, SessionState, ToolStatus, TranscriptEntry, cloud,
+    Prefs, PrefsStore, Request, Role, SessionState, ToolStatus, TranscriptEntry, cloud,
 };
 
 use crate::text_input::{InputDraft, TextInput, TextInputEvent};
@@ -23,6 +23,7 @@ mod deep_link_glue;
 mod a11y;
 use a11y::A11yExt as _;
 mod recent_dirs;
+mod default_dir;
 mod sidebar;
 mod synced_sessions;
 mod apple_sign_in;
@@ -179,6 +180,10 @@ pub struct MobileApp {
     /// Directory sheet opened from the composer's location label.
     dir_picker: bool,
     dir_input: Entity<TextInput>,
+    /// Persisted user preferences, including the default new-session directory.
+    prefs: Prefs,
+    /// Settings field editing `prefs.default_dir`.
+    default_dir_input: Entity<TextInput>,
     /// Horizontal swipe between tabs, like the desktop workspace pull.
     swipe: crate::swipe::Swipe,
     spinner_step: usize,
@@ -310,6 +315,29 @@ impl MobileApp {
         })
         .detach();
 
+        let prefs = if offline { Prefs::default() } else { PrefsStore::default_location().load() };
+        let default_dir_input = cx.new(|cx| {
+            let mut t = TextInput::new("Cloud home (server default)", cx);
+            t.bare = true;
+            t.config = TextInputConfiguration {
+                input_action: TextInputAction::Done,
+                purpose: TextInputPurpose::Text,
+                ..Default::default()
+            };
+            if let Some(dir) = &prefs.default_dir {
+                t.set_text(dir.clone(), cx);
+            }
+            t
+        });
+        cx.subscribe(&default_dir_input, |this, input, ev, cx| match ev {
+            TextInputEvent::Submit => {
+                let dir = input.read(cx).text().to_string();
+                this.set_default_dir(&dir, cx);
+            }
+            TextInputEvent::Changed => cx.notify(),
+        })
+        .detach();
+
         let store = AccountStore::default_location();
         // Dev convenience: JCODE_MOBILE_USE_CLI_ACCOUNT=1 reuses the jcode CLI login.
         let account = (!offline).then(|| store.load().or_else(|| {
@@ -376,6 +404,8 @@ impl MobileApp {
             recent_dirs_asked: None,
             dir_picker: false,
             dir_input,
+            prefs,
+            default_dir_input,
             swipe: Default::default(),
             spinner_step: 0,
             spinner_tick: None,
@@ -654,6 +684,11 @@ impl MobileApp {
         self.cancel_voice(cx);
         if self.offline { return; }
         let Some(account) = self.account.clone() else { return };
+        let working_dir = self.new_session_dir(resume.as_deref(), working_dir, fork_from.as_deref());
+        if working_dir.is_some() && self.session.working_dir.is_none() {
+            // Show the location label before the server confirms it.
+            self.session.working_dir = working_dir.clone();
+        }
         let mut config = Config::cloud(account);
         config.working_dir = working_dir;
         config.fork_from = fork_from;
@@ -2484,6 +2519,7 @@ impl MobileApp {
         ];
         let apple_link = self.render_apple_link(cx);
         let machine = self.render_cloud_machine(t, cx);
+        let default_dir = self.render_default_dir(t, cx);
         div()
             .flex()
             .flex_col()
@@ -2532,6 +2568,8 @@ impl MobileApp {
                                         .child(v.unwrap_or_else(|| "—".into())),
                                 )
                         })))
+                        .child(div().h(px(1.)).bg(t.border))
+                        .child(default_dir)
                         .child(div().h(px(1.)).bg(t.border))
                         .child(outline_button("new", "New session", true, t).on_click(cx.listener(
                             |this, _, _, cx| {
@@ -2948,7 +2986,7 @@ impl MobileApp {
     /// same field inventory, including fields in transient overlays.
     fn focused_text_input(&self, window: &Window, cx: &App) -> Option<Entity<TextInput>> {
         [&self.email, &self.code, &self.composer, &self.drawer_search,
-            &self.dir_input, &self.transfer_input]
+            &self.dir_input, &self.transfer_input, &self.default_dir_input]
             .into_iter()
             .find(|input| input.read(cx).is_focused(window))
             .cloned()

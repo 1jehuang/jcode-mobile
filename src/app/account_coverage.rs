@@ -270,7 +270,7 @@ fn settings_new_clear_delete_guard_and_signout_controls_are_hit_tested(cx: &mut 
 /// Settle only its visual translation before locating real controls, otherwise
 /// a partially visible button can move away between raw touch down and up.
 /// The handlers, hit testing, and all resulting state assertions remain real.
-fn settle_settings_fixture(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
+pub(super) fn settle_settings_fixture(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
     draw(cx);
     view.update(cx, |app, cx| {
         assert!(matches!(app.screen, Screen::Settings));

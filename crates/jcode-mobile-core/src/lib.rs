@@ -9,6 +9,7 @@ pub mod cloud_machine;
 pub mod cloud_ssh;
 mod cloud_direct;
 pub mod mobile_sync;
+pub mod prefs;
 pub mod connection;
 pub mod crash;
 pub mod credentials;
@@ -27,6 +28,7 @@ pub use jcode_sdk;
 pub use cloud::{Account, AccountStore};
 pub use connection::{Config, Connection, Endpoint, Request, TransportFactory};
 pub use credentials::{CredentialStore, FileCredentialStore, ServerCredential};
+pub use prefs::{Prefs, PrefsStore};
 pub use gateway::{Gateway, PairPayload, PairResponse, parse_pair_uri};
 pub use session::{
     ConnectionOutput, ConnectionPhase, LocalIntent, Role, SessionState, ToolCall, ToolStatus,
