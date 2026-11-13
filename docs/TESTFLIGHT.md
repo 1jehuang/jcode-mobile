@@ -7,6 +7,15 @@
 - Repeat for future builds with `python3 scripts/asc_public_beta.py [VERSION]`. Later builds of version 1.0 usually clear beta review quickly.
 - App Store 1.0 (build 1793919915) has been `WAITING_FOR_REVIEW` since November 5.
 
+## Build 1794600756, uploaded November 13, 2026 (Pacific)
+
+- Source: `3887354` (clean tree). App changes since 1794498559: Google sign-in sheet (`ab6cd58`), gestures (`8af0a54`), pull to reconnect (`bef3f24`).
+- Shared `jcode-voice` from jcode `8ca50a9c9` (master), mounted via `JCODE_SRC=/home/ec2-user/jcode`. The default `/home/jeremy/jcode` checkout on the VM is stale (`c675d26f14`, no `connect_relay`) and fails the build.
+- Built with `scripts/cloud-ios-build.sh` on the managed VM. The managed SSH proxy never reported the machine ready, so the VM was reached with the API's `recovery: true` connect and the pinned host keys.
+- Tests: mobile workspace 484 passed (three of them only on a solo rerun). Backend 599 passed, 1 skipped.
+- ZIP test clean, main app and both extension build numbers `1794600756`. Signed IPA SHA-256: `2c61b223c87cd06fec33bb107a3b8dd2355686102566cda47a41be0e1404a6e1`, archived under `~/.appstoreconnect/builds/1794600756/`. Upload state `COMPLETE`. Apple build ID `87f87cad-01aa-4f35-b29a-60eaf98b3ee4`, processing `VALID`, internal `READY_FOR_BETA_TESTING`, external `READY_FOR_BETA_SUBMISSION` (not submitted to the public group).
+- Backend at upload time: production version `5332938c-9b04-4dcf-aaa9-c72a4a60db56`, source `c2a4217`, which shows the session name on the notification's second line (`docs/PUSH.md`). The notification layout is server-side and does not depend on this build.
+
 ## Build 1794498559, uploaded November 12, 2026 (Pacific)
 
 - Source: `3030c2d`. Repeated pull-to-talk: one held finger can send several voice messages (`docs/VOICE_REPEAT.md`). Commit also carries another session's drawer-touch tests in `src/app/scroll_tests.rs`.
