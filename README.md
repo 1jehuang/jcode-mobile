@@ -4,6 +4,8 @@ A native iPhone client for Jcode, built in Rust with GPUI. Follow coding session
 
 The same app also runs in a phone-sized desktop window for development. The client connects to a Jcode backend, it does not run the coding agent locally on your iPhone.
 
+**Try it:** join the public TestFlight beta at https://testflight.apple.com/join/ZHSYwcyf (needs a Jcode account).
+
 > **Status:** Active development. Platform tooling, account setup, and iOS signing are not yet a one-command onboarding experience.
 
 ## What's here

@@ -1,5 +1,12 @@
 # TestFlight release record
 
+## Public beta: build 1794498559 submitted November 13, 2026 (Pacific)
+
+- Public link: https://testflight.apple.com/join/ZHSYwcyf (group "Public Beta", no tester limit).
+- Build 1794498559 added to the group with en-US "What to Test" notes and submitted for beta app review: `WAITING_FOR_REVIEW`. The previous public build was 1793952485 (Nov 6).
+- Repeat for future builds with `python3 scripts/asc_public_beta.py [VERSION]`. Later builds of version 1.0 usually clear beta review quickly.
+- App Store 1.0 (build 1793919915) has been `WAITING_FOR_REVIEW` since November 5.
+
 ## Build 1794498559, uploaded November 12, 2026 (Pacific)
 
 - Source: `3030c2d`. Repeated pull-to-talk: one held finger can send several voice messages (`docs/VOICE_REPEAT.md`). Commit also carries another session's drawer-touch tests in `src/app/scroll_tests.rs`.
