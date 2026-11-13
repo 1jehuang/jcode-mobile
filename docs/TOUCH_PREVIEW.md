@@ -23,13 +23,19 @@ Run from a terminal inside an existing **Wayland** desktop session:
 
 ```bash
 scripts/touch-preview.sh
-# Optional optimized build, or inspect the command without building/launching:
+# Release builds are the default. Inspect without building/launching:
 scripts/touch-preview.sh --release
 scripts/touch-preview.sh --dry-run
 ```
 
-The launcher is non-interactive and executes `justrust run --package jcode-mobile
---bin jcode-mobile`. It does not start a compositor, switch sessions, install
+The launcher is non-interactive and executes `justrust build --release --package
+jcode-mobile --bin jcode-mobile`, then runs the downloaded release executable
+locally. This allows hosted compilation while local builds are disabled on
+battery, unlike `justrust run`, which always builds locally. A failed build
+never launches an older executable. Build options are forwarded, with
+`--target-dir` supported. Custom profiles and cross targets are rejected because
+this preview runs on the host. Pass app arguments after `--`.
+It does not start a compositor, switch sessions, install
 packages, or change login settings. You need Linux, `justrust` on PATH, normal
 GPUI Linux build dependencies, and a working Wayland compositor. For physical
 touch testing the compositor must expose the touchscreen to the application.
@@ -40,8 +46,10 @@ is not proof of compositor connectivity or touchscreen support.
 
 ## Local GPUI and native touch status
 
-By default `GPUI_LOCAL=1` uses `$HOME/gpui`. Select another checkout with
-`GPUI_DIR=/absolute/path/to/gpui`. The command-line Cargo overrides follow the
+By default the preview uses the pinned GPUI revision, which includes native
+Wayland touch support. Opt into local development with `GPUI_LOCAL=1`, which
+uses `$HOME/gpui`. Select another checkout with
+`GPUI_LOCAL=1 GPUI_DIR=/absolute/path/to/gpui`. The command-line Cargo overrides follow the
 pattern in `scripts/ios-bundle.sh`, without editing Cargo.toml or persistent
 Cargo configuration. They patch the GPUI git source for `gpui`, `gpui_platform`,
 `gpui_linux`, `gpui_wgpu`, `gpui_macros`, shared string/util crates, and the other
@@ -51,12 +59,12 @@ Both source overrides for the repository's vendored `cgl` are kept local too.
 Normal dependency resolution when you actually run may update Cargo.lock.
 
 ```bash
-GPUI_DIR=/home/jeremy/gpui scripts/touch-preview.sh
-GPUI_LOCAL=0 scripts/touch-preview.sh # pinned revision, not local touch work
+GPUI_LOCAL=1 GPUI_DIR=/home/jeremy/gpui scripts/touch-preview.sh
+scripts/touch-preview.sh # pinned revision, not local touch work
 ```
 
 **Native finger input depends on GPUI's Wayland `wl_touch` implementation.**
-The local GPUI checkout now subscribes to `wl_touch` and forwards contact down,
+The pinned GPUI revision subscribes to `wl_touch` and forwards contact down,
 motion, up, and cancellation into the same recognizer used on iOS. Contacts
 retain their starting window and get unique IDs even when Wayland reuses a slot.
 Capability loss cancels active touches instead of treating them as taps.
@@ -64,7 +72,7 @@ This launcher alone does not provide that implementation. Use the checkout
 containing the backend changes (`fe70561`, native Wayland touchscreen input),
 and verify actual taps, drags, scrolling, cancellation, and long presses on
 hardware. The pinned revision
-is not a substitute for the local backend changes. XWayland pointer events are
+includes that implementation, but does not include uncommitted local changes. XWayland pointer events are
 not evidence that native Wayland touch works. Multitouch and gesture fidelity
 must not be assumed from a successful build or mouse-only test.
 

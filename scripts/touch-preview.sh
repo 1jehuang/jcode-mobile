@@ -5,13 +5,14 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'HELP'
-Usage: scripts/touch-preview.sh [--dry-run] [justrust run options...]
+Usage: scripts/touch-preview.sh [--dry-run] [justrust build options...] [-- app arguments...]
 
 Requires Linux, an existing Wayland session, and justrust on PATH.
-Uses ~/gpui by default. Set GPUI_DIR=/path/to/gpui to choose a checkout,
-or GPUI_LOCAL=0 to use the pinned dependencies instead.
+Uses the pinned GPUI dependencies by default. Set GPUI_LOCAL=1 to use
+~/gpui, or GPUI_DIR=/path/to/gpui to choose a checkout with GPUI_LOCAL=1.
 --dry-run validates prerequisites and prints the command without running it.
-Other arguments are passed to justrust run (for example --release).
+Other arguments are passed to justrust build (release is the default).
+Arguments after -- are passed to the app. Hosted builds work on battery.
 See docs/TOUCH_PREVIEW.md for touch limitations and preview settings.
 HELP
 }
@@ -34,7 +35,7 @@ esac
 command -v justrust >/dev/null 2>&1 || fail 'justrust is not on PATH.'
 
 PATCH=()
-if [[ "${GPUI_LOCAL:-1}" != 0 ]]; then
+if [[ "${GPUI_LOCAL:-0}" != 0 ]]; then
   G="${GPUI_DIR:-$HOME/gpui}"
   [[ -d "$G" ]] || fail "GPUI checkout not found: $G (set GPUI_DIR or GPUI_LOCAL=0)."
   G="$(cd "$G" && pwd -P)"
@@ -60,11 +61,34 @@ fi
 
 # WAYLAND_DISPLAY takes precedence in GPUI. Remove X11 fallback explicitly.
 unset DISPLAY
-COMMAND=(justrust run --package jcode-mobile --bin jcode-mobile "${PATCH[@]}" "$@")
+# `run` always compiles locally, which fails under the battery policy.
+# Release builds can run hosted and download the executable instead.
+BUILD_ARGS=()
+APP_ARGS=()
+TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
+while (( $# )); do
+  case "$1" in
+    --) shift; APP_ARGS=("$@"); break ;;
+    --release) shift ;;
+    --target-dir)
+      (( $# >= 2 )) || fail 'missing value for --target-dir'
+      TARGET_DIR="$2"; BUILD_ARGS+=("$1" "$2"); shift 2 ;;
+    --target-dir=*) TARGET_DIR="${1#*=}"; BUILD_ARGS+=("$1"); shift ;;
+    --profile|--profile=*|--target|--target=*)
+      fail 'the native preview requires the host release profile' ;;
+    *) BUILD_ARGS+=("$1"); shift ;;
+  esac
+done
+BINARY="$TARGET_DIR/release/jcode-mobile"
+COMMAND=(justrust build --release --package jcode-mobile --bin jcode-mobile "${PATCH[@]}" "${BUILD_ARGS[@]}")
 if (( DRY_RUN )); then
   printf 'unset DISPLAY\n'
   printf '%q ' "${COMMAND[@]}"
   printf '\n'
+  printf '%q ' "$BINARY" "${APP_ARGS[@]}"
+  printf '\n'
 else
-  exec "${COMMAND[@]}"
+  "${COMMAND[@]}"
+  [[ -x "$BINARY" ]] || fail "build succeeded but executable not found: $BINARY"
+  exec "$BINARY" "${APP_ARGS[@]}"
 fi
