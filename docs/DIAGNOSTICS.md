@@ -62,6 +62,13 @@ backend has its own validation, authentication, deduplication and storage tests.
 Physical-device performance and delivery still need validation with a newly
 installed iOS build.
 
+On November 13, hosted `justrust check -p jcode-mobile-core` and the main core
+suite (98 passed, three ignored) succeeded. After final integration fixes,
+`justrust test -p jcode-mobile-core --lib diagnostics::tests` passed all nine
+focused tests, including metadata fallbacks and concurrent sequence ordering.
+An optional subsequent Clippy run was cancelled while waiting for the shared
+hosted build-directory lock, so no completed lint result is claimed.
+
 The additive backend migration and endpoint were deployed on November 13, 2026
 as Worker version `8d2aea83-11c6-4c47-b00b-55fb08aa04bf`, at 100% traffic.
 Live smoke checks verified authentication, rejection of forbidden fields,
