@@ -5,12 +5,13 @@ cd "$(dirname "$0")/.."
 
 usage() {
   cat <<'HELP'
-Usage: scripts/touch-preview.sh [--dry-run] [justrust build options...] [-- app arguments...]
+Usage: scripts/touch-preview.sh [--dry-run | --no-build] [justrust build options...] [-- app arguments...]
 
 Requires Linux, an existing Wayland session, and justrust on PATH.
 Uses the pinned GPUI dependencies by default. Set GPUI_LOCAL=1 to use
 ~/gpui, or GPUI_DIR=/path/to/gpui to choose a checkout with GPUI_LOCAL=1.
 --dry-run validates prerequisites and prints the command without running it.
+--no-build opens the existing release binary without compiling.
 Other arguments are passed to justrust build (release is the default).
 Arguments after -- are passed to the app. Hosted builds work on battery.
 See docs/TOUCH_PREVIEW.md for touch limitations and preview settings.
@@ -19,9 +20,11 @@ HELP
 fail() { printf 'touch-preview: %s\n' "$*" >&2; exit 1; }
 
 DRY_RUN=0
+NO_BUILD=0
 case "${1:-}" in
   --help|-h) usage; exit 0 ;;
   --dry-run) DRY_RUN=1; shift ;;
+  --no-build) NO_BUILD=1; shift ;;
 esac
 [[ "$(uname -s)" == Linux ]] || fail 'this launcher requires Linux.'
 [[ -n "${WAYLAND_DISPLAY:-}" ]] || fail 'WAYLAND_DISPLAY is unset. Run from a Wayland desktop session.'
@@ -32,10 +35,12 @@ case "$WAYLAND_DISPLAY" in
      SOCKET="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ;;
 esac
 [[ -S "$SOCKET" ]] || fail "Wayland socket not found: $SOCKET"
-command -v justrust >/dev/null 2>&1 || fail 'justrust is not on PATH.'
+if (( ! NO_BUILD )); then
+  command -v justrust >/dev/null 2>&1 || fail 'justrust is not on PATH.'
+fi
 
 PATCH=()
-if [[ "${GPUI_LOCAL:-0}" != 0 ]]; then
+if (( ! NO_BUILD )) && [[ "${GPUI_LOCAL:-0}" != 0 ]]; then
   G="${GPUI_DIR:-$HOME/gpui}"
   [[ -d "$G" ]] || fail "GPUI checkout not found: $G (set GPUI_DIR or GPUI_LOCAL=0)."
   G="$(cd "$G" && pwd -P)"
@@ -88,7 +93,9 @@ if (( DRY_RUN )); then
   printf '%q ' "$BINARY" "${APP_ARGS[@]}"
   printf '\n'
 else
-  "${COMMAND[@]}"
-  [[ -x "$BINARY" ]] || fail "build succeeded but executable not found: $BINARY"
+  if (( ! NO_BUILD )); then
+    "${COMMAND[@]}"
+  fi
+  [[ -x "$BINARY" ]] || fail "preview executable not found: $BINARY (run without --no-build to build it)"
   exec "$BINARY" "${APP_ARGS[@]}"
 fi

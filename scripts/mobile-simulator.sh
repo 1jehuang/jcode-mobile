@@ -6,9 +6,11 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 case "${1:-}" in
   --help|-h)
-    printf '%s\n' 'Usage: scripts/mobile-simulator.sh [--install | --dry-run | preview options...]' \
+    printf '%s\n' 'Usage: scripts/mobile-simulator.sh [--install | --dry-run | --rebuild | preview options...]' \
       'Launches the desktop phone preview using touch-preview.sh.' \
       '--install adds an app-menu entry, Desktop shortcut and command.' \
+      'With no arguments, opens an existing release preview when available.' \
+      '--rebuild builds current source before launching.' \
       'Other options, such as --release, are forwarded to touch-preview.sh.'
     exit 0
     ;;
@@ -54,6 +56,16 @@ ENTRY
   --dry-run)
     exec "$ROOT/scripts/touch-preview.sh" "$@"
     ;;
+  --rebuild)
+    shift
+    ;;
+  '')
+    # An app-menu click should open the app, not require a build service.
+    # Rebuilding current source remains explicit via --rebuild.
+    if [[ -x "${CARGO_TARGET_DIR:-$ROOT/target}/release/jcode-mobile" ]]; then
+      set -- --no-build
+    fi
+    ;;
 esac
 
 state="${XDG_STATE_HOME:-$HOME/.local/state}/jcode-mobile"
@@ -64,7 +76,11 @@ notify() {
     notify-send --app-name='Jcode Mobile Simulator' "$@" >/dev/null 2>&1 || true
   fi
 }
-notify 'Starting Jcode Mobile Simulator' 'Building the desktop preview if needed…'
+if [[ "${1:-}" == --no-build ]]; then
+  notify 'Starting Jcode Mobile Simulator' 'Opening the existing release preview. Use --rebuild to update it.'
+else
+  notify 'Starting Jcode Mobile Simulator' 'Building the desktop preview if needed…'
+fi
 # GUI launchers have no terminal. Keep build/runtime failures discoverable.
 if "$ROOT/scripts/touch-preview.sh" "$@" > "$log" 2>&1; then
   exit 0

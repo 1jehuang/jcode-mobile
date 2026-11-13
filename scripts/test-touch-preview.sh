@@ -64,6 +64,8 @@ printf 'app\n' >> "$TEST_EVENTS"
 [[ -z "${DISPLAY+x}" ]] || exit 91
 SH
 chmod +x "$TMP/bin/justrust" "$TEST_APP_TEMPLATE"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/bin/notify-send"
+chmod +x "$TMP/bin/notify-send"
 reset_case() {
   rm -f "$TEST_BUILD_LOG" "$TEST_APP_LOG" "$TEST_EVENTS" "$CARGO_TARGET_DIR/release/jcode-mobile"
   export TEST_BUILD_MODE=success DISPLAY=:fake-x11
@@ -116,4 +118,25 @@ assert_build_args
 grep -Fq "$CARGO_TARGET_DIR/release/jcode-mobile" "$TMP/output" || fail 'missing artifact diagnostic does not identify expected executable'
 grep -Eiq 'not found|missing|not executable|did not|no executable' "$TMP/output" || fail 'missing artifact diagnostic is unclear'
 printf 'PASS: missing artifact fails with a clear executable diagnostic\n'
+
+reset_case
+mkdir -p "$CARGO_TARGET_DIR/release"
+cp "$TEST_APP_TEMPLATE" "$CARGO_TARGET_DIR/release/jcode-mobile"
+chmod +x "$CARGO_TARGET_DIR/release/jcode-mobile"
+export TEST_BUILD_MODE=failure
+bash "$LAUNCHER" --no-build -- 'existing preview' > "$TMP/output" 2>&1 || fail 'no-build launch failed'
+[[ ! -e "$TEST_BUILD_LOG" && -e "$TEST_APP_LOG" ]] || fail 'no-build did not skip compilation'
+printf 'PASS: no-build opens existing executable without compilation\n'
+
+reset_case
+export XDG_STATE_HOME="$TMP/state"
+export HOME="$TMP/home"
+mkdir -p "$HOME"
+bash "$ROOT/scripts/mobile-simulator.sh" --rebuild > "$TMP/output" 2>&1 || fail 'desktop rebuild failed'
+assert_build_args
+rm -f "$TEST_BUILD_LOG" "$TEST_APP_LOG"
+export TEST_BUILD_MODE=failure
+bash "$ROOT/scripts/mobile-simulator.sh" > "$TMP/output" 2>&1 || fail 'desktop existing-preview launch failed'
+[[ ! -e "$TEST_BUILD_LOG" && -e "$TEST_APP_LOG" ]] || fail 'desktop launch attempted a rebuild'
+printf 'PASS: desktop launches existing preview, while --rebuild compiles\n'
 printf 'All touch-preview launcher regression tests passed.\n'
