@@ -37,12 +37,52 @@ Machine-scoped keys (cloud machines) are rejected.
   "session_id": "session_...",
   "session_title": "Fix login bug",
   "body": "Short preview text",
-  "turn_id": 42
+  "turn_id": 42,
+  "origin": "XPS 14",
+  "repo": "jcode-mobile",
+  "duration_secs": 252
 }
 ```
+`origin`, `repo` and `duration_secs` are optional structured copies of the
+labels described below. The Worker ignores unknown fields, so they do not need
+a Worker deploy.
+
 Reply `200 {"sent":N,"devices":M}`. `devices:0` lets the server back off
 (cache "no devices" for 10 minutes). Allowed for host keys too (add to the
 machine-credential allowlist). Rate limit: 60 sends / account / minute.
+
+## Where, which repo, how long
+
+The jcode server composes these labels into the text it sends, so they appear
+without a Worker or app release:
+
+- **Origin** leads the title: `Cloud` on a managed Jcode Cloud machine,
+  otherwise the machine's name. The name is the hardware model without its SKU
+  code (`XPS 14 DA14260` reads `XPS 14`), falling back to the hostname, then
+  `Local`.
+- **Repo** follows: the name of the git repository containing the session's
+  working directory, or the directory's own name outside a repository. The
+  home directory and `/` are left unlabeled.
+- The per-kind marker and session name come last, so truncation eats the
+  session name, not the origin.
+- **Run time** leads the body of turn-end notifications (finished, error, and
+  finished-with-a-question). Wakes have no turn and carry no run time.
+
+```text
+XPS 14 · jcode-mobile · ✅ Label push notifications
+Finished
+4m 12s · Notifications now say where the session ran.
+
+Cloud · api · ❓ Fix login bug
+Needs your input
+38s · Should I deploy it now?
+```
+
+Labels are capped at 24 characters each, the title at 120 and the body at 180
+including the run time.
+
+Local fallback previews posted by the app itself are not labeled this way:
+the app only connects to cloud sessions and does not time turns.
 
 ## APNs payload built by the Worker
 
