@@ -12,6 +12,7 @@ pub mod mobile_sync;
 pub mod prefs;
 pub mod connection;
 pub mod crash;
+pub mod diagnostics;
 pub mod credentials;
 pub mod gateway;
 pub mod git_info;

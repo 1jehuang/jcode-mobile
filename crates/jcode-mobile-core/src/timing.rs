@@ -7,6 +7,9 @@
 //! device can be pulled after the fact. Set `JCODE_STARTUP_TRACE` to also get
 //! them on stderr (desktop and the latency probe). Never logs addresses,
 //! keys, or session content.
+//!
+//! When diagnostics are started, allowlisted stage/event names and durations
+//! are also buffered for authenticated upload. Event detail strings stay local.
 use std::time::Duration;
 
 /// Process start, captured as early as `main` calls it.
@@ -17,6 +20,9 @@ pub fn process_start() -> std::time::Instant {
 
 /// A one-off connection event with no duration (disconnect reason, retry).
 pub fn event(name: &str, detail: &str) {
+    // Details may contain server errors or user data. Upload the allowlisted
+    // event name only, never the detail string.
+    crate::diagnostics::record(name, None);
     log::info!("conn_event {name} {detail}");
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ON.get_or_init(|| std::env::var_os("JCODE_STARTUP_TRACE").is_some()) {
@@ -33,6 +39,7 @@ pub fn timed<T>(stage_name: &str, f: impl FnOnce() -> T) -> T {
 }
 
 pub fn stage(stage: &str, elapsed: Duration) {
+    crate::diagnostics::record(stage, Some(elapsed));
     let ms = elapsed.as_secs_f64() * 1000.0;
     log::info!("conn_timing {stage} {ms:.1}ms");
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

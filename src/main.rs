@@ -75,6 +75,7 @@ fn main() {
     // First thing: capture panics to disk, upload last run's report in the background.
     let crash_path = jcode_mobile_core::crash::default_path();
     jcode_mobile_core::crash::install_hook(crash_path.clone());
+    jcode_mobile_core::diagnostics::start();
     std::thread::spawn(move || {
         let account = jcode_mobile_core::cloud::AccountStore::default_location().load();
         // Open SSH and a ready API channel while the UI loads, so the first
