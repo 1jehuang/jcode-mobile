@@ -1,6 +1,7 @@
 //! Read-only cloud inventory. No credential contents enter the UI or transcript.
 use super::*;
 use crate::haptics::{self, Haptic};
+use gpui::svg;
 use jcode_mobile_core::cloud_machine::{self, MachineSnapshot};
 
 #[derive(Default)]
