@@ -10,19 +10,34 @@ pub(super) struct MachineState {
     snapshot: Option<MachineSnapshot>,
     error: Option<String>,
     generation: u64,
+    auto_requested: bool,
 }
 
 const SETUP_PROMPT: &str = "Help me set up persistent GitHub authentication on this cloud machine. First inspect where my home directory is mounted and whether it survives machine restarts and replacement. Check whether GitHub CLI is installed and authenticated without printing tokens, private keys, credential files, or secret environment values. Prefer a browser/device authorization flow that I approve myself. Before storing credentials, explain whether a secure credential store exists or whether storage would be plaintext, and ask for my approval if plaintext storage is necessary. Do not copy credentials from another machine, request secrets in chat, or overwrite existing credentials. Once approved and authenticated, configure Git to use the GitHub CLI credential helper, verify access without printing secrets, and explain what survives a restart and how to revoke access.";
 
 impl MobileApp {
+    pub(super) fn ensure_computer_stats(&mut self, cx: &mut Context<Self>) {
+        if self.offline || self.account.is_none() || self.cloud_machine.auto_requested {
+            return;
+        }
+        self.cloud_machine.auto_requested = true;
+        self.refresh_cloud_machine(false, cx);
+    }
+
     fn inspect_cloud_machine(&mut self, cx: &mut Context<Self>) {
+        self.refresh_cloud_machine(true, cx);
+    }
+
+    fn refresh_cloud_machine(&mut self, interactive: bool, cx: &mut Context<Self>) {
         if self.offline || self.cloud_machine.loading {
             return;
         }
         let Some(account) = self.account.clone() else {
             return;
         };
-        haptics::play(Haptic::Light);
+        if interactive {
+            haptics::play(Haptic::Light);
+        }
         static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.cloud_machine.generation =
             NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -40,7 +55,7 @@ impl MobileApp {
                 match result {
                     Ok(snapshot) => this.cloud_machine.snapshot = Some(snapshot),
                     Err(_) => {
-                        haptics::play(Haptic::Error);
+                        if interactive { haptics::play(Haptic::Error); }
                         this.cloud_machine.error = Some("Could not inspect your cloud machine. Check your connection and try again.".into());
                     }
                 }
@@ -48,6 +63,90 @@ impl MobileApp {
             }).ok();
         }).detach();
         cx.notify();
+    }
+
+    /// A quiet snapshot, not a live utilization monitor. Never show local-device stats.
+    pub(super) fn render_computer_stats(&self, t: &Theme) -> Option<AnyElement> {
+        self.account.as_ref()?;
+        let state = &self.cloud_machine;
+        let resources = state.snapshot.as_ref().and_then(|s| s.resources.as_ref());
+        let mut card = div()
+            .id("cloud-computer-stats")
+            .debug_selector(|| "cloud-computer-stats".into())
+            .flex_none()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(12.))
+            .rounded(px(14.))
+            .bg(t.surface)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .child(
+                        svg()
+                            .path("icons/cloud.svg")
+                            .size(px(13.))
+                            .text_color(t.text_muted),
+                    )
+                    .child(
+                        label(
+                            computer_title(self.account.as_ref().and_then(|a| a.email.as_deref())),
+                            t.text_muted,
+                            12.,
+                        )
+                        .truncate(),
+                    ),
+            );
+        if let Some(r) = resources {
+            let stats = [
+                (
+                    "CPU",
+                    format!(
+                        "{} vCPU{}",
+                        r.cpu_count,
+                        if r.cpu_count == 1 { "" } else { "s" }
+                    ),
+                ),
+                (
+                    "RAM",
+                    capacity(r.memory_available_bytes, r.memory_total_bytes),
+                ),
+                ("Disk", capacity(r.disk_available_bytes, r.disk_total_bytes)),
+            ];
+            let mut row = div().flex().gap(px(10.));
+            for (name, value) in stats {
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .child(label(name, t.text_muted, 10.))
+                        .child(label(value, t.text, 11.).truncate()),
+                );
+            }
+            card = card.child(row).child(label(
+                "RAM available · Disk free · At last refresh",
+                t.text_muted,
+                10.,
+            ));
+        } else {
+            card = card.child(label(
+                if state.loading {
+                    "Checking your cloud computer…"
+                } else {
+                    "Computer stats unavailable · Refresh in Settings"
+                },
+                t.text_muted,
+                11.,
+            ));
+        }
+        Some(card.into_any_element())
     }
 
     pub(super) fn render_cloud_machine(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -143,6 +242,27 @@ impl MobileApp {
     }
 }
 
+fn computer_title(email: Option<&str>) -> String {
+    let name = email
+        .and_then(|email| email.split('@').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    name.map(|name| format!("{name}'s Jcode computer"))
+        .unwrap_or_else(|| "Your Jcode computer".into())
+}
+
+fn capacity(available: u64, total: u64) -> String {
+    format!(
+        "{:.1} / {}",
+        available as f64 / (1024. * 1024. * 1024.),
+        gib(total)
+    )
+}
+
+fn gib(bytes: u64) -> String {
+    format!("{:.1} GiB", bytes as f64 / (1024. * 1024. * 1024.))
+}
+
 fn present(value: bool) -> &'static str {
     if value {
         "Present (contents hidden)"
@@ -162,6 +282,69 @@ fn setup_draft(existing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn computer_name_and_capacity_formatting() {
+        assert_eq!(
+            computer_title(Some("jeremy@example.test")),
+            "jeremy's Jcode computer"
+        );
+        assert_eq!(computer_title(None), "Your Jcode computer");
+        assert_eq!(computer_title(Some("@example.test")), "Your Jcode computer");
+        assert_eq!(gib(8 * 1024 * 1024 * 1024), "8.0 GiB");
+        assert_eq!(
+            capacity(4 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024),
+            "4.0 / 8.0 GiB"
+        );
+    }
+
+    #[gpui::test]
+    fn computer_card_renders_without_suggestions_and_offline_fetch_stays_silent(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx) = super::super::navigation_coverage::mount(cx);
+        view.update(cx, |app, cx| {
+            let (_, feedback) = haptics::capture(|| app.ensure_computer_stats(cx));
+            assert!(feedback.is_empty());
+            assert!(!app.cloud_machine.loading);
+            assert!(!app.cloud_machine.auto_requested);
+            assert!(app.session.session_list.is_empty());
+        });
+        super::super::navigation_coverage::draw(cx);
+        assert!(cx.debug_bounds("cloud-computer-stats").is_some());
+        assert!(cx.debug_bounds("start-suggestions").is_none());
+        view.update(cx, |app, cx| {
+            app.cloud_machine.snapshot = Some(MachineSnapshot {
+                resources: Some(jcode_mobile_core::cloud_machine::MachineResources {
+                    cpu_count: 8,
+                    memory_total_bytes: 16 * 1024 * 1024 * 1024,
+                    memory_available_bytes: 8 * 1024 * 1024 * 1024,
+                    disk_total_bytes: 100 * 1024 * 1024 * 1024,
+                    disk_available_bytes: 50 * 1024 * 1024 * 1024,
+                }),
+                home: "/home/fixture".into(),
+                entries: vec![],
+                github_cli: false,
+                github_authenticated: false,
+                github_config_present: false,
+                ssh_key_count: 0,
+                git_credentials_present: false,
+            });
+            cx.notify();
+        });
+        super::super::navigation_coverage::draw(cx);
+        let card = cx
+            .debug_bounds("cloud-computer-stats")
+            .expect("resource card");
+        assert!(card.size.width <= px(390.));
+        assert!(card.size.height > px(50.));
+        view.update(cx, |app, cx| {
+            app.account = None;
+            cx.notify();
+        });
+        super::super::navigation_coverage::draw(cx);
+        assert!(cx.debug_bounds("cloud-computer-stats").is_none());
+    }
+
     #[test]
     fn setup_requires_approval_and_forbids_secret_disclosure() {
         assert!(SETUP_PROMPT.contains("ask for my approval"));
@@ -206,6 +389,7 @@ mod tests {
                 github_config_present: true,
                 ssh_key_count: 1,
                 git_credentials_present: false,
+                resources: None,
             });
             app.screen = Screen::Settings;
             let (_, feedback) = haptics::capture(|| app.inspect_cloud_machine(cx));

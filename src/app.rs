@@ -1838,6 +1838,7 @@ impl MobileApp {
         let empty = entries.is_empty() && !self.session.is_reasoning;
         if empty && self.session.phase == ConnectionPhase::Connected {
             self.ensure_recent_dirs();
+            self.ensure_computer_stats(cx);
         }
         let recent = if empty { self.render_recent_dirs(t, cx) } else { None };
         self.suggestions_shown = recent.is_some();
@@ -1861,6 +1862,7 @@ impl MobileApp {
                     })))
                 })
                 .child(label("What would you like to work on?", t.text, 20.).line_height(crate::system::fs(28.)))
+                .children(self.render_computer_stats(t))
                 .children(recent)
                 .into_any_element()
         } else {

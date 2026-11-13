@@ -16,6 +16,7 @@ impl MobileApp {
                 .children(status())
                 .when_some(session.error_banner.clone(), |d, error| d.child(banner(&error, t.error, t)))
                 .child(label("What would you like to work on?", t.text, 20.).line_height(crate::system::fs(28.)))
+                .children(self.render_computer_stats(t))
                 .children(self.render_recent_dirs_for(session, t, cx))
                 .into_any_element()
         } else {
