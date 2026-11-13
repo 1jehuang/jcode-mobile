@@ -13,7 +13,7 @@
 - Shared `jcode-voice` from release pin `3cccd6998228ce124c016fa671124e76e97b97ad` via `JCODE_SRC`.
 - Tests: app suite 385 passed, 0 failed, 11 ignored. Core suite 89 passed. Backend 598 passed.
 - All four bundle build numbers `1794498559`, ZIP test clean. Signed IPA SHA-256: `2d95ebd078d67916fe74211bf7862961258f3c2ae62fd43a933cd83fc1de533b`, archived under `~/.appstoreconnect/builds/1794498559/`. Upload state `COMPLETE`. Apple build ID `e2462b79-fd8f-460b-b9a3-4cb1f7b2bbfb`, processing `VALID`, internal `IN_BETA_TESTING`.
-- Backend: raised voice start limits (12/min, 200/day) committed as `5288d1c` but NOT deployed, because the Cloudflare token was rejected as invalid. Production still allows 3 starts/min, 30/day.
+- Backend: raised voice start limits (12/min, 200/day), commit `5288d1c`, deployed 2026-11-13 as version `d843a2e0-42c9-42c3-9fa5-f4ff909cbc5d` using the local wrangler login. Verified live: 5 session starts inside one minute all returned 101 (the old limit rejected the 4th).
 
 ## Build 1794494539, uploaded November 12, 2026 (Pacific)
 
