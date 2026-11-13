@@ -110,6 +110,7 @@ impl Connection {
         resume_session_id: Option<String>,
         on_output: impl Fn(ConnectionOutput) + Send + 'static,
     ) -> Connection {
+        crate::timing::event("connection start", "");
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("jcode-connection".into())
@@ -143,10 +144,12 @@ impl Connection {
 
     /// Call when the app returns to the foreground.
     pub fn wake(&self) {
+        crate::timing::event("connection wake", "");
         let _ = self.commands.send(Command::Wake);
     }
 
     pub fn stop(&self) {
+        crate::timing::event("connection stop requested", "");
         let _ = self.commands.send(Command::Stop);
     }
 }
@@ -161,6 +164,7 @@ enum Failure {
 }
 
 fn classify(e: jcode_sdk::Error) -> Failure {
+    record_error(&e.kind);
     match e.kind {
         ErrorKind::Cancelled => Failure::Stopped,
         ErrorKind::CloudAuth | ErrorKind::CloudNotEntitled | ErrorKind::HostKeyMismatch => {
@@ -168,6 +172,35 @@ fn classify(e: jcode_sdk::Error) -> Failure {
         }
         _ => Failure::Retry(e.message),
     }
+}
+
+/// Never derive diagnostic labels from error text or harness payloads.
+fn error_event(kind: &ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::ConnectFailed => "connection error connect failed",
+        ErrorKind::HandshakeFailed => "connection error handshake failed",
+        ErrorKind::Timeout => "connection error timeout",
+        ErrorKind::Disconnected => "connection error disconnected",
+        ErrorKind::UnexpectedReply => "connection error unexpected reply",
+        ErrorKind::Harness(_) => "connection error harness",
+        ErrorKind::Transport => "connection error transport",
+        ErrorKind::LaunchFailed => "connection error launch failed",
+        ErrorKind::JcodeNotFound => "connection error jcode not found",
+        ErrorKind::StartupFailed => "connection error startup failed",
+        ErrorKind::StartupTimeout => "connection error startup timeout",
+        ErrorKind::InvalidInstanceHome => "connection error invalid instance home",
+        ErrorKind::InvalidOption => "connection error invalid option",
+        ErrorKind::UnsupportedTransport => "connection error unsupported transport",
+        ErrorKind::EventBufferOverflow => "connection error event buffer overflow",
+        ErrorKind::Cancelled => "connection error cancelled",
+        ErrorKind::CloudAuth => "connection error cloud auth",
+        ErrorKind::CloudNotEntitled => "connection error cloud not entitled",
+        ErrorKind::HostKeyMismatch => "connection error host key mismatch",
+    }
+}
+
+fn record_error(kind: &ErrorKind) {
+    crate::timing::event(error_event(kind), "");
 }
 
 /// Commands that arrive before the session is live are kept, not dropped.
@@ -260,6 +293,14 @@ fn run(
     commands: Receiver<Command>,
     emit: impl Fn(ConnectionOutput),
 ) {
+    // Covers every exit, including fatal errors and exhausted retries.
+    struct Stopped;
+    impl Drop for Stopped {
+        fn drop(&mut self) {
+            crate::timing::event("connection stopped", "");
+        }
+    }
+    let _stopped = Stopped;
     // Cloud sessions cache every History snapshot so the next open can paint
     // instantly. Custom endpoints (tests, probes) never touch the disk cache.
     let caching = matches!(config.endpoint, Endpoint::Cloud(_));
@@ -292,6 +333,7 @@ fn run(
                 // empty session when the source no longer exists.
                 client.attach_session(source).map_err(classify)?;
                 let fork = crate::timing::timed("session fork", || client.fork_session(source)).map_err(|e| {
+                    record_error(&e.kind);
                     // A lost response may still have created a fork. Do not
                     // replay a non-idempotent request and create duplicates.
                     Failure::Fatal(format!("Could not fork session: {}", e.message))
@@ -465,13 +507,20 @@ fn session_loop(
             let (tx, rx) = mpsc::channel();
             let client = client.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(client.ping().is_ok());
+                let result = client.ping();
+                if let Err(e) = &result {
+                    record_error(&e.kind);
+                }
+                let _ = tx.send(result.is_ok());
             });
             probe = Some((std::time::Instant::now() + WAKE_PROBE_TIMEOUT, rx));
         }
         if let Some((deadline, rx)) = &probe {
             match rx.try_recv() {
-                Ok(true) => probe = None,
+                Ok(true) => {
+                    crate::timing::event("wake probe succeeded", "");
+                    probe = None;
+                }
                 Ok(false) | Err(TryRecvError::Disconnected) => {
                     crate::timing::stage("wake probe failed", started.elapsed());
                     return false;
@@ -657,6 +706,9 @@ fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent
             .list_sessions_limited(SESSION_LIST_LIMIT)
             .map(|sessions| Some(ApiEvent::Sessions { sessions })),
     };
+    if let Err(e) = &result {
+        record_error(&e.kind);
+    }
     match result {
         Ok(event) => event,
         Err(e) if e.kind == ErrorKind::Disconnected && !user_input => None,
@@ -675,6 +727,25 @@ mod tests {
     use serde_json::{Value, json};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
+
+    #[test]
+    fn error_diagnostics_use_only_kind_and_preserve_retry_policy() {
+        let private = "private server address and user content";
+        for kind in [ErrorKind::Timeout, ErrorKind::Transport, ErrorKind::Disconnected] {
+            let label = error_event(&kind);
+            assert!(label.starts_with("connection error "));
+            assert!(!label.contains(private));
+            assert!(matches!(classify(jcode_sdk::Error::new(kind, private)), Failure::Retry(message) if message == private));
+        }
+        for kind in [ErrorKind::CloudAuth, ErrorKind::CloudNotEntitled, ErrorKind::HostKeyMismatch] {
+            assert!(matches!(classify(jcode_sdk::Error::new(kind, private)), Failure::Fatal(message) if message == private));
+        }
+        assert!(matches!(classify(jcode_sdk::Error::new(ErrorKind::Cancelled, private)), Failure::Stopped));
+        assert_eq!(error_event(&ErrorKind::Timeout), "connection error timeout");
+        for code in [jcode_sdk::api::ErrorCode::Internal, jcode_sdk::api::ErrorCode::UnknownSession] {
+            assert_eq!(error_event(&ErrorKind::Harness(code)), "connection error harness");
+        }
+    }
 
     struct Tcp(TcpStream);
     impl Transport for Tcp {

@@ -205,6 +205,7 @@ mod imp {
 
         // Foregrounding resets the badge and lets the app refresh state.
         let block = RcBlock::new(|_n: std::ptr::NonNull<objc2_foundation::NSNotification>| {
+            jcode_mobile_core::timing::event("ios foreground", "");
             emit(PushEvent::Foreground);
         });
         let token = unsafe {
@@ -216,6 +217,25 @@ mod imp {
             )
         };
         KEEP.with(|k| k.borrow_mut().push(unsafe { Retained::cast_unchecked(token) }));
+
+        // Observe lifecycle signals only. Never inspect notification userInfo.
+        for (notification, label) in [
+            ("UIApplicationDidEnterBackgroundNotification", "ios background"),
+            ("UIApplicationDidReceiveMemoryWarningNotification", "ios memory warning"),
+        ] {
+            let block = RcBlock::new(move |_n: std::ptr::NonNull<objc2_foundation::NSNotification>| {
+                jcode_mobile_core::timing::event(label, "");
+            });
+            let token = unsafe {
+                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                    Some(&NSString::from_str(notification)),
+                    None,
+                    None,
+                    &block,
+                )
+            };
+            KEEP.with(|k| k.borrow_mut().push(unsafe { Retained::cast_unchecked(token) }));
+        }
 
         gpui_platform::ios::register_for_remote_notifications(|event| {
             use gpui_platform::ios::RemoteNotificationEvent as E;
