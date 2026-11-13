@@ -150,6 +150,12 @@ fn browser_cancel_old_failure_and_old_success_cannot_replace_new_login(cx: &mut 
         app.complete_browser_sign_in(&current, Err("current error".into()), cx);
         assert!(app.browser_login.is_none());
         assert_eq!(app.sign_in_error.as_deref(), Some("current error"));
+        // Closing the in-app sheet ends the wait without an error banner.
+        app.sign_in_error = None;
+        let closed = Arc::new(AtomicBool::new(false));
+        app.browser_login = Some(closed.clone());
+        app.complete_browser_sign_in(&closed, Err(String::new()), cx);
+        assert!(app.browser_login.is_none() && app.sign_in_error.is_none());
         let latest = Arc::new(AtomicBool::new(false));
         app.browser_login = Some(latest.clone());
         app.sign_out(cx);

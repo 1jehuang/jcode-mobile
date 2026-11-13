@@ -221,8 +221,74 @@ pub fn start_browser_login() -> Result<DeviceStart, String> {
 }
 
 /// Polls until the browser approves. `cancel` returning true stops early.
-pub fn finish_browser_login(start: &DeviceStart, cancel: impl Fn() -> bool) -> Result<Account, String> {
-    client().wait_for_device_login(start, &cancel).map_err(|e| e.message)
+///
+/// `dismissed` reports that the in-app sign-in sheet was closed. The approval
+/// may have landed just before, so one more poll runs, then this gives up
+/// with an empty error (nothing to show: the person backed out).
+pub fn finish_browser_login(
+    start: &DeviceStart,
+    cancel: impl Fn() -> bool,
+    dismissed: impl Fn() -> bool,
+) -> Result<Account, String> {
+    wait_for_browser_login(&client(), start, &cancel, &dismissed)
+}
+
+fn wait_for_browser_login(
+    client: &CloudClient,
+    start: &DeviceStart,
+    cancel: &dyn Fn() -> bool,
+    dismissed: &dyn Fn() -> bool,
+) -> Result<Account, String> {
+    let mut login = start.clone();
+    let deadline = Instant::now() + Duration::from_secs(if login.expires_in > 0 { login.expires_in } else { 900 });
+    loop {
+        let until = Instant::now() + Duration::from_secs(login.interval.max(2));
+        while Instant::now() < until {
+            if cancel() {
+                return Err(String::new());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if Instant::now() > deadline {
+            return Err("Sign-in expired. Try again.".into());
+        }
+        let last = dismissed();
+        if let Some(account) = client.poll_device_login(&mut login).map_err(|e| e.message)? {
+            return Ok(account);
+        }
+        if last {
+            return Err(String::new());
+        }
+    }
+}
+
+/// Where "Continue with Google" should land: Google's account chooser itself.
+///
+/// The device flow's own link is jcode.sh/account, where the person would
+/// have to press "Continue with Google" a second time. The API's Google start
+/// endpoint takes the same public flow id, redirects straight to Google, and
+/// approves the flow in its callback. Falls back to the account page when the
+/// link carries no flow id.
+pub fn google_login_url(start: &DeviceStart) -> String {
+    google_login_url_at(DEFAULT_API_BASE, start)
+}
+
+pub fn google_login_url_at(api_base: &str, start: &DeviceStart) -> String {
+    let link = &start.verification_uri_complete;
+    let flow = link
+        .split_once('?')
+        .map(|(_, query)| query.split('#').next().unwrap_or(""))
+        .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("flow=")))
+        .filter(|flow| {
+            (16..=128).contains(&flow.len()) && flow.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        });
+    match flow {
+        Some(flow) => format!(
+            "{}/browser/login/google/start?return=%2Faccount&flow={flow}",
+            api_base.trim_end_matches('/')
+        ),
+        None => link.clone(),
+    }
 }
 
 /// Permanently deletes the jcode.sh account (App Store in-app deletion):
@@ -598,6 +664,85 @@ mod tests {
         assert_eq!(client_for(&account).client_name, "jcode-cli");
         assert_eq!(client_for(&account).api_base, account.api_base);
         assert_eq!(CLIENT_NAME, "jcode-ios");
+    }
+
+    #[test]
+    fn google_login_goes_straight_to_the_account_chooser() {
+        let start = |link: &str| DeviceStart {
+            device_code: "secret-device-code".into(),
+            verification_uri_complete: link.into(),
+            interval: 3,
+            expires_in: 600,
+        };
+        let direct = google_login_url(&start("https://jcode.sh/account?flow=AbC_def-0123456789xyz"));
+        assert_eq!(
+            direct,
+            "https://api.jcode.sh/v1/browser/login/google/start?return=%2Faccount&flow=AbC_def-0123456789xyz"
+        );
+        assert!(!direct.contains("secret-device-code"));
+        assert_eq!(
+            google_login_url_at("https://dev.example/v1/", &start("https://jcode.sh/account?x=1&flow=AbC_def-0123456789xyz#top")),
+            "https://dev.example/v1/browser/login/google/start?return=%2Faccount&flow=AbC_def-0123456789xyz"
+        );
+        // No usable flow id: keep the server's own link rather than guess.
+        for link in [
+            "https://jcode.sh/account",
+            "https://jcode.sh/account?flow=short",
+            "https://jcode.sh/account?flow=bad%2Fchars0123456789",
+            "https://jcode.sh/account?flow=AbC_def-0123456789xyz%26return=//evil",
+        ] {
+            assert_eq!(google_login_url(&start(link)), link);
+        }
+    }
+
+    /// Serves one canned JSON reply per expected request, in order.
+    fn canned_server(replies: Vec<(u16, &'static str)>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for (status, reply) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with("POST /auth/token HTTP/1.1"), "{line}");
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" { break; }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") { length = value.trim().parse().unwrap(); }
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            }
+        });
+        (api_base, server)
+    }
+
+    const PENDING: (u16, &str) = (428, r#"{"error":{"code":"authorization_pending","message":"user has not approved yet"}}"#);
+
+    #[test]
+    fn browser_login_stops_after_one_more_poll_once_the_sheet_is_dismissed() {
+        let start = DeviceStart { device_code: "d".into(), verification_uri_complete: "u".into(), interval: 2, expires_in: 600 };
+        // Dismissed and still pending: exactly one poll, then a silent stop.
+        let (api_base, server) = canned_server(vec![PENDING]);
+        let result = wait_for_browser_login(&client().with_api_base(api_base), &start, &|| false, &|| true);
+        assert_eq!(result.unwrap_err(), "");
+        server.join().unwrap();
+        // Approval that landed just before the dismissal still signs in.
+        let (api_base, server) = canned_server(vec![(200, r#"{"api_key":"key-1","email":"a@b.c"}"#)]);
+        let account = wait_for_browser_login(&client().with_api_base(api_base.clone()), &start, &|| false, &|| true).unwrap();
+        assert_eq!((account.api_key.as_str(), account.email.as_deref()), ("key-1", Some("a@b.c")));
+        server.join().unwrap();
+        // Cancel never reaches the network.
+        let result = wait_for_browser_login(&client().with_api_base(api_base), &start, &|| true, &|| false);
+        assert_eq!(result.unwrap_err(), "");
     }
 
     #[test]

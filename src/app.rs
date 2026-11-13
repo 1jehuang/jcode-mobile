@@ -514,6 +514,7 @@ impl MobileApp {
         self.signing_in = false;
         if let Some(cancel) = self.browser_login.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::web_auth::close();
         }
     }
 
@@ -592,6 +593,7 @@ impl MobileApp {
     fn complete_browser_sign_in(&mut self, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>, result: Result<Account, String>, cx: &mut Context<Self>) {
         if !self.browser_request_current(cancel) { return; }
         self.browser_login = None;
+        crate::web_auth::close();
         match result {
             Ok(account) => {
                 if !self.offline {
@@ -601,6 +603,7 @@ impl MobileApp {
                 }
                 self.adopt_account(account, cx);
             }
+            Err(error) if error.is_empty() => {}
             Err(error) => {
                 haptics::play(Haptic::Error);
                 self.sign_in_error = Some(error);
@@ -609,11 +612,13 @@ impl MobileApp {
         cx.notify();
     }
 
-    /// "Continue with Google": opens jcode.sh/account (Google sign-in) in the
-    /// system browser and polls the device flow until it is approved.
+    /// "Continue with Google": shows Google's account chooser in the in-app
+    /// sign-in sheet (system browser where there is none) and polls the device
+    /// flow until it is approved, then dismisses the sheet.
     fn google_sign_in(&mut self, cx: &mut Context<Self>) {
         if let Some(c) = self.browser_login.take() {
             c.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::web_auth::close();
             haptics::play(Haptic::Light);
             cx.notify();
             return;
@@ -634,17 +639,24 @@ impl MobileApp {
                     return;
                 }
             };
-            let url = start.verification_uri_complete.clone();
+            let url = cloud::google_login_url(&start);
+            let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let opened = this.update(cx, |this, cx| {
                 if !this.browser_request_current(&cancel) { return false; }
-                cx.open_url(&url);
+                if !crate::web_auth::open(&url, dismissed.clone()) {
+                    cx.open_url(&url);
+                }
                 true
             }).unwrap_or(false);
             if !opened { return; }
             let flag = cancel.clone();
             let result = cx
                 .background_spawn(async move {
-                    cloud::finish_browser_login(&start, || flag.load(std::sync::atomic::Ordering::Relaxed))
+                    cloud::finish_browser_login(
+                        &start,
+                        || flag.load(std::sync::atomic::Ordering::Relaxed),
+                        || dismissed.load(std::sync::atomic::Ordering::Relaxed),
+                    )
                 })
                 .await;
             this.update(cx, |this, cx| this.complete_browser_sign_in(&cancel, result, cx))
@@ -1356,7 +1368,7 @@ impl MobileApp {
                                 .active(|s| s.opacity(0.85))
                                 .when(!waiting, |d| d.child(gpui::img(google_mark()).size(px(18.)).flex_none()))
                                 .child(if waiting {
-                                    format!("{} Waiting for browser… (tap to cancel)", spinner_glyph(self.spinner_step))
+                                    format!("{} Waiting for Google… (tap to cancel)", spinner_glyph(self.spinner_step))
                                 } else {
                                     "Continue with Google".into()
                                 })

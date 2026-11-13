@@ -21,6 +21,7 @@ mod tool_output;
 mod labels;
 mod ios_ext;
 mod haptics;
+mod web_auth;
 mod gestures;
 mod share;
 mod voice_capture;
