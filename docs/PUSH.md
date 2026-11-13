@@ -35,7 +35,8 @@ Machine-scoped keys (cloud machines) are rejected.
 {
   "kind": "turn_done" | "turn_error" | "needs_input" | "wake",
   "session_id": "session_...",
-  "session_title": "Fix login bug",
+  "session_title": "XPS 14 · jcode-mobile · ✅ 4m 12s",
+  "session_name": "Fix login bug",
   "body": "Short preview text",
   "turn_id": 42,
   "origin": "XPS 14",
@@ -43,9 +44,11 @@ Machine-scoped keys (cloud machines) are rejected.
   "duration_secs": 252
 }
 ```
-`origin`, `repo` and `duration_secs` are optional structured copies of the
-labels described below. The Worker ignores unknown fields, so they do not need
-a Worker deploy.
+`session_title` is the headline shown on the first line. `session_name` is
+optional: when present it is shown on the second line in place of the fixed
+status word, and older servers that omit it keep the status word. `origin`,
+`repo` and `duration_secs` are optional structured copies of the labels
+described below, which the Worker ignores.
 
 Reply `200 {"sent":N,"devices":M}`. `devices:0` lets the server back off
 (cache "no devices" for 10 minutes). Allowed for host keys too (add to the
@@ -53,33 +56,43 @@ machine-credential allowlist). Rate limit: 60 sends / account / minute.
 
 ## Where, which repo, how long
 
-The jcode server composes these labels into the text it sends, so they appear
-without a Worker or app release:
+Each line has one job. The jcode server composes the headline and sends the
+session name separately:
 
-- **Origin** leads the title: `Cloud` on a managed Jcode Cloud machine,
-  otherwise the machine's name. The name is the hardware model without its SKU
-  code (`XPS 14 DA14260` reads `XPS 14`), falling back to the hostname, then
-  `Local`.
-- **Repo** follows: the name of the git repository containing the session's
-  working directory, or the directory's own name outside a repository. The
-  home directory and `/` are left unlabeled.
-- The per-kind marker and session name come last, so truncation eats the
-  session name, not the origin.
-- **Run time** leads the body of turn-end notifications (finished, error, and
-  finished-with-a-question). Wakes have no turn and carry no run time.
+- **Headline (title)**: origin, repo, status marker, run time. It is short
+  enough to fit a lock screen without truncation.
+  - **Origin** is `Cloud` on a managed Jcode Cloud machine, otherwise the
+    machine's name. The name is the hardware model without its SKU code
+    (`XPS 14 DA14260` reads `XPS 14`), falling back to the hostname, then
+    `Local`.
+  - **Repo** is the name of the git repository containing the session's
+    working directory, or the directory's own name outside a repository. The
+    home directory and `/` are left unlabeled.
+  - **Status** is `✅` plus the run time for a finished turn, `❌ Failed`,
+    `❓ Needs input` or `⏰ Update`, each followed by the run time when the
+    push ends a turn. A finished push with no run time reads `✅ Done`. Wakes
+    have no turn and carry no run time.
+- **Second line (subtitle)**: the session name, on a line of its own.
+- **Body**: only the result, the failure or the question.
 
 ```text
-XPS 14 · jcode-mobile · ✅ Label push notifications
-Finished
-4m 12s · Notifications now say where the session ran.
+XPS 14 · jcode-mobile · ✅ 4m 12s
+Label push notifications
+Notifications now say where the session ran.
 
-Cloud · api · ❓ Fix login bug
-Needs your input
-38s · Should I deploy it now?
+Cloud · api · ❓ Needs input · 38s
+Fix login bug
+Should I deploy it now?
 ```
 
-Labels are capped at 24 characters each, the title at 120 and the body at 180
-including the run time.
+Labels are capped at 24 characters each, the headline and session name at 120
+and the body at 180.
+
+A provider failover prompt is reworded for the body (`Anthropic (a) is
+unavailable. Open the session to continue on Anthropic (b).`). An error
+identical to the last one pushed for the same session is not pushed again for
+10 minutes, unless another notification for that session arrives in between.
+The skip is recorded in `~/.jcode/logs/mobile-push.jsonl`.
 
 Local fallback previews posted by the app itself are not labeled this way:
 the app only connects to cloud sessions and does not time turns.
@@ -89,7 +102,7 @@ the app only connects to cloud sessions and does not time turns.
 ```json
 {
   "aps": {
-    "alert": {"title": "<session_title or 'jcode'>", "subtitle": "<kind label>", "body": "<body, max 180 chars>"},
+    "alert": {"title": "<session_title or 'jcode'>", "subtitle": "<session_name or kind label>", "body": "<body, max 180 chars>"},
     "sound": "default",
     "badge": <account unread count, incremented per send>,
     "thread-id": "<session_id>",
@@ -104,16 +117,15 @@ the app only connects to cloud sessions and does not time turns.
 
 Kind mapping:
 
-| kind        | subtitle          | category    | interruption   | relevance |
+| kind        | subtitle without `session_name` | category    | interruption   | relevance |
 |-------------|-------------------|-------------|----------------|-----------|
 | turn_done   | "Finished"        | JCODE_TURN  | active         | 0.6       |
 | turn_error  | "Stopped with an error" | JCODE_TURN | active      | 0.8       |
 | needs_input | "Needs your input"| JCODE_INPUT | time-sensitive | 1.0       |
 | wake        | "Update"          | JCODE_TURN  | active         | 0.5       |
 
-Each field has one job: title identifies the session, subtitle conveys the
-event, and body supplies the result, failure, or question. The Worker removes
-repeated leading session titles, app names, and status labels from the body
+The body supplies the result, failure, or question. The Worker removes
+repeated leading titles, session names, app names, and status labels from the body
 before applying its length limit. It does not remove matching words inside
 substantive prose. Empty or status-only bodies receive a kind-specific prompt
 to review the result, inspect/retry the failure, respond, or see the update.
@@ -121,7 +133,7 @@ Blank titles fall back to `jcode`, as do titles identical to the status subtitle
 Text is whitespace-normalized and Unicode-safe, with truncation preserving
 complete emoji and combining-character sequences.
 
-For example, `session_title: "Fix login"` and
+For example, from an older server with no `session_name`, `session_title: "Fix login"` and
 `body: "Fix login: Finished: Fixed token refresh; 12 tests pass."` produce:
 
 ```text
