@@ -62,9 +62,18 @@ backend has its own validation, authentication, deduplication and storage tests.
 Physical-device performance and delivery still need validation with a newly
 installed iOS build.
 
-Deploy the additive backend migration and endpoint before releasing the app.
-Existing installed app builds do not upload connection diagnostics. Historical
-phone-local timings cannot be reconstructed by deploying the endpoint alone.
+The additive backend migration and endpoint were deployed on November 13, 2026
+as Worker version `8d2aea83-11c6-4c47-b00b-55fb08aa04bf`, at 100% traffic.
+Live smoke checks verified authentication, rejection of forbidden fields,
+successful ingestion, immutable retry deduplication and exactly one stored
+synthetic batch. Existing bindings and live configuration were preserved.
+Backend regression results: 610 passed, one skipped, zero failed.
+
+Existing installed app builds do not upload connection diagnostics. A new mobile
+build is still required. Historical phone-local timings cannot be reconstructed
+by deploying the endpoint alone. UIKit-specific compilation and physical-device
+delivery/performance acceptance remain release checks, not claims made by the
+Linux core tests.
 
 The backend source and exact migration/read-only operator query contract are in
 `solosystems-backend/workers/api/MOBILE_DIAGNOSTICS.md`. Retrieval is scoped to an
