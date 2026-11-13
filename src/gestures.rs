@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use gpui::{Bounds, Pixels, Point};
+use gpui::{Bounds, Pixels, Point, TouchPhase};
 
 use crate::haptics::{self, Haptic};
 
@@ -125,6 +125,13 @@ pub struct Gestures {
     pull_armed: bool,
     pub refreshing: Option<Instant>,
     wheel_pull_at: Option<Instant>,
+    /// The current scroll gesture began at the top and never left it. Only
+    /// such a gesture may turn into a pull, so scrolling up to the top and
+    /// carrying on (or its momentum) cannot reconnect.
+    scroll_from_top: bool,
+    /// The platform reports touch phases, so gestures are not split by idling.
+    scroll_phased: bool,
+    scroll_at: Option<Instant>,
     last_frame: Instant,
 }
 
@@ -157,6 +164,9 @@ impl Default for Gestures {
             pull_armed: false,
             refreshing: None,
             wheel_pull_at: None,
+            scroll_from_top: false,
+            scroll_phased: false,
+            scroll_at: None,
             last_frame: now,
         }
     }
@@ -453,13 +463,40 @@ impl Gestures {
         self.wheel_at(p, dy, ended, Instant::now())
     }
 
+    /// Feed every scroll event's phase, before `wheel`, so a pull can be
+    /// limited to gestures that started at the top of the transcript.
+    pub fn scroll_event(&mut self, p: Point<Pixels>, phase: TouchPhase) {
+        self.note_scroll(p, phase, Instant::now());
+    }
+
+    fn note_scroll(&mut self, p: Point<Pixels>, phase: TouchPhase, now: Instant) {
+        let top = self.wheel_pull_at.is_some() || matches!(self.candidate(p), Some(Kind::Pull));
+        match phase {
+            TouchPhase::Started => {
+                self.scroll_phased = true;
+                self.scroll_from_top = top;
+            }
+            // Whatever follows a lift is momentum, never a new pull.
+            TouchPhase::Ended | TouchPhase::Cancelled => self.scroll_from_top = false,
+            TouchPhase::Moved => {
+                // Without phases, an idle gap is what separates two gestures.
+                let fresh = !self.scroll_phased
+                    && self.scroll_at.map_or(true, |at| now.duration_since(at).as_secs_f32() > 0.18);
+                self.scroll_from_top = (fresh || self.scroll_from_top) && top;
+            }
+        }
+        self.scroll_at = Some(now);
+    }
+
     fn wheel_at(&mut self, p: Point<Pixels>, dy: f32, ended: bool, now: Instant) -> (Option<Action>, bool) {
+        self.note_scroll(p, TouchPhase::Moved, now);
         let pulling = self.wheel_pull_at.is_some();
         if !pulling {
             let dictate = dy < 0. && self.scene.dictate && !self.scene.pushed
                 && !self.scene.sheet_open && self.refreshing.is_none()
                 && self.transcript.is_some_and(|b| b.contains(&p));
-            let ok = (dictate || (dy > 0. && matches!(self.candidate(p), Some(Kind::Pull)))) && !self.dragging();
+            let pull = dy > 0. && self.scroll_from_top && matches!(self.candidate(p), Some(Kind::Pull));
+            let ok = (dictate || pull) && !self.dragging();
             if !ok {
                 return (None, false);
             }
@@ -997,6 +1034,43 @@ mod tests {
         g.moved(point(px(100.), px(420.)));
         assert!(g.pull >= PULL_TRIGGER);
         assert_eq!(g.up().0, Some(Action::Refresh));
+    }
+
+    #[test]
+    fn pull_requires_scroll_gesture_started_at_top() {
+        let ms = std::time::Duration::from_millis;
+        let p = point(px(100.), px(200.));
+        let mid = Scene { menus: true, ..Default::default() };
+        let top = Scene { at_top: true, ..mid };
+        for phased in [true, false] {
+            // One motion that begins mid-transcript and reaches the top.
+            let mut now = Instant::now();
+            let mut g = configured(mid, now);
+            if phased { g.note_scroll(p, TouchPhase::Started, now); }
+            assert_eq!(g.wheel_at(p, 300., false, now), (None, false));
+            g.tick_at(top, now);
+            for _ in 0..5 {
+                now += ms(16);
+                if phased { g.note_scroll(p, TouchPhase::Moved, now); }
+                assert_eq!(g.wheel_at(p, 300., false, now), (None, false), "phased={phased}");
+            }
+            if phased {
+                g.note_scroll(p, TouchPhase::Ended, now);
+                assert_eq!(g.wheel_at(p, 0., true, now), (None, false));
+                // Momentum after the lift cannot pull either.
+                now += ms(400);
+                g.note_scroll(p, TouchPhase::Moved, now);
+                assert_eq!(g.wheel_at(p, 300., false, now), (None, false));
+            }
+            assert_eq!((g.pull, g.refreshing), (0., None));
+
+            // A new motion that begins at the top does reconnect.
+            now += ms(400);
+            if phased { g.note_scroll(p, TouchPhase::Started, now); }
+            assert_eq!(g.wheel_at(p, 300., false, now), (None, true), "phased={phased}");
+            if phased { g.note_scroll(p, TouchPhase::Ended, now); }
+            assert_eq!(g.wheel_at(p, 0., true, now).0, Some(Action::Refresh), "phased={phased}");
+        }
     }
 
     #[test]

@@ -619,6 +619,7 @@ impl MobileApp {
                         .update(cx, |this, cx| {
                             if this.git_info.open { return false; }
                             this.sync_gestures();
+                            this.feel.g.scroll_event(p, e.touch_phase);
                             if this.feel_voice_wheel(e, cx) {
                                 return true;
                             }
