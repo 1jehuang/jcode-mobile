@@ -410,3 +410,95 @@ fn drawer_touch_pans(cx: &mut TestAppContext, at_top: bool) {
         }
     }
 }
+
+/// A finger resting mid-drag keeps holding the drawer; only its lift settles it.
+#[gpui::test]
+fn drawer_drag_survives_a_resting_finger(cx: &mut TestAppContext) {
+    let (view, cx) = drawer_touch_fixture(cx, true);
+    drawer_touch(cx, TouchPhase::Started, point(px(200.), px(500.)));
+    for step in 1..=5 {
+        drawer_touch(cx, TouchPhase::Moved, point(px(200. - 8. * step as f32), px(500.)));
+    }
+    let held = view.read_with(cx, |app, _| app.drawer_drag);
+    assert!(held < 0., "leftward drag must move the drawer");
+    std::thread::sleep(crate::swipe::IDLE_END * 2);
+    for _ in 0..3 {
+        cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+    }
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.drawer_drag, held, "a resting finger let go of the drawer");
+        assert!(app.drawer_open);
+    });
+}
+
+/// The pinch-out session map covers the chat: touches on it never pull the
+/// transcript underneath into a reconnect.
+#[gpui::test]
+fn session_map_touch_never_pulls_transcript(cx: &mut TestAppContext) {
+    let (view, cx) = drawer_touch_fixture(cx, true);
+    for map in [false, true] {
+        view.update(cx, |app, cx| {
+            app.drawer_open = false;
+            app.drawer_t = 0.;
+            if map { app.map.show_for_test(); }
+            cx.notify();
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        drawer_touch(cx, TouchPhase::Started, point(px(200.), px(300.)));
+        for step in 1..=8 {
+            drawer_touch(cx, TouchPhase::Moved, point(px(200.), px(300. + 25. * step as f32)));
+        }
+        let pull = view.read_with(cx, |app, _| app.feel.g.pull);
+        if map {
+            assert!(pull <= 0., "map touch pulled the transcript ({pull})");
+        } else {
+            assert!(pull > 0., "control: a drag from the top must pull");
+        }
+        drawer_touch(cx, TouchPhase::Cancelled, point(px(200.), px(500.)));
+        for _ in 0..60 {
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+            cx.run_until_parked();
+        }
+    }
+}
+
+/// The start screen's suggestions scroll on their own: dragging down while
+/// they are scrolled brings them back instead of pulling to reconnect.
+#[gpui::test]
+fn scrolled_suggestions_scroll_back_before_pulling(cx: &mut TestAppContext) {
+    let (view, cx) = super::navigation_coverage::mount(cx);
+    view.update(cx, |app, cx| {
+        app.session.session_list = (0..12).map(|i| serde_json::from_value(serde_json::json!({
+            "session_id": format!("session_fixture_{}", 1700000001000u64 + i), "status": "idle",
+            "title": format!("Fixture {i}"), "working_dir": format!("/dir{i}"),
+        })).unwrap()).collect();
+        cx.notify();
+    });
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    let list = cx.debug_bounds("start-suggestions").expect("suggestions");
+    let range = view.read_with(cx, |app, _| app.suggestions_scroll.max_offset().y);
+    assert!(range > px(60.), "fixture must overflow the suggestions list ({range:?})");
+    let start = point(list.center().x, list.top() + px(40.));
+    for scrolled in [true, false] {
+        view.update(cx, |app, cx| {
+            app.suggestions_scroll.set_offset(point(px(0.), if scrolled { px(-60.) } else { px(0.) }));
+            cx.notify();
+        });
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        drawer_touch(cx, TouchPhase::Started, start);
+        for step in 1..=8 {
+            drawer_touch(cx, TouchPhase::Moved, point(start.x, start.y + px(25. * step as f32)));
+        }
+        let pull = view.read_with(cx, |app, _| app.feel.g.pull);
+        if scrolled {
+            assert!(pull <= 0., "scrolled suggestions pulled to reconnect ({pull})");
+        } else {
+            assert!(pull > 0., "control: suggestions at their top still allow a pull");
+        }
+        drawer_touch(cx, TouchPhase::Cancelled, point(start.x, start.y + px(200.)));
+        for _ in 0..60 {
+            cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
+            cx.run_until_parked();
+        }
+    }
+}

@@ -131,6 +131,8 @@ pub struct Gestures {
     scroll_from_top: bool,
     /// The platform reports touch phases, so gestures are not split by idling.
     scroll_phased: bool,
+    /// A finger is on the glass (between a Started and its Ended/Cancelled).
+    scroll_touching: bool,
     scroll_at: Option<Instant>,
     last_frame: Instant,
 }
@@ -166,6 +168,7 @@ impl Default for Gestures {
             wheel_pull_at: None,
             scroll_from_top: false,
             scroll_phased: false,
+            scroll_touching: false,
             scroll_at: None,
             last_frame: now,
         }
@@ -396,6 +399,8 @@ impl Gestures {
         self.pull_raw = 0.;
         self.pull_armed = false;
         self.wheel_pull_at = None;
+        // The rest of this finger's travel belongs to whatever replaced us.
+        self.scroll_from_top = false;
         // Keep visible offsets intact so tick springs them home instead of jumping.
     }
 
@@ -474,10 +479,14 @@ impl Gestures {
         match phase {
             TouchPhase::Started => {
                 self.scroll_phased = true;
+                self.scroll_touching = true;
                 self.scroll_from_top = top;
             }
             // Whatever follows a lift is momentum, never a new pull.
-            TouchPhase::Ended | TouchPhase::Cancelled => self.scroll_from_top = false,
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.scroll_touching = false;
+                self.scroll_from_top = false;
+            }
             TouchPhase::Moved => {
                 // Without phases, an idle gap is what separates two gestures.
                 let fresh = !self.scroll_phased
@@ -592,7 +601,11 @@ impl Gestures {
                 self.sheet_linger = false;
             }
             // Wheel pulls have no release on most desktops: idle releases.
-            if let Some(at) = self.wheel_pull_at {
+            // A finger resting on the glass has not let go: only its lift may
+            // reconnect, however long it pauses.
+            if let Some(at) = self.wheel_pull_at
+                && !self.scroll_touching
+            {
                 if now.duration_since(at).as_secs_f32() > 0.18 {
                     out.extend(self.release_pull(now));
                 } else {
@@ -1093,5 +1106,24 @@ mod tests {
         g.hits.push((Target::Message(7), Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)))));
         assert!(matches!(g.right_click(point(px(10.), px(10.))), Some(Action::Menu(Target::Message(7), _))));
         assert_eq!(g.right_click(point(px(200.), px(200.))), None);
+    }
+
+    #[test]
+    fn resting_finger_never_reconnects_until_it_lifts() {
+        let p = point(px(100.), px(200.));
+        let top = Scene { at_top: true, menus: true, ..Default::default() };
+        let now = Instant::now();
+        let mut g = configured(top, now);
+        g.note_scroll(p, TouchPhase::Started, now);
+        assert_eq!(g.wheel_at(p, 300., false, now), (None, true));
+        // The finger holds the pull open far longer than the wheel idle timeout.
+        for ms in [200, 600, 1500] {
+            let (actions, _) = g.tick_at(top, now + std::time::Duration::from_millis(ms));
+            assert!(actions.is_empty(), "paused finger reconnected after {ms}ms");
+            assert!(g.pull > 0. && g.refreshing.is_none());
+        }
+        let later = now + std::time::Duration::from_millis(1600);
+        g.note_scroll(p, TouchPhase::Ended, later);
+        assert_eq!(g.wheel_at(p, 0., true, later).0, Some(Action::Refresh));
     }
 }

@@ -87,6 +87,12 @@ impl State {
         self.target >= 1.
     }
 
+    #[cfg(test)]
+    pub(super) fn show_for_test(&mut self) {
+        self.progress = 1.;
+        self.target = 1.;
+    }
+
     /// Feed one pinch event. Returns true when the map became / stopped
     /// being the committed destination (for haptics).
     pub(super) fn pinch(&mut self, ev: &PinchEvent) -> bool {

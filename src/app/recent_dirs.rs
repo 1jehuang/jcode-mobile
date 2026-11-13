@@ -183,6 +183,8 @@ impl MobileApp {
             .min_h_0()
             .max_h(px(360.))
             .overflow_y_scroll()
+            // Only the live panel's list decides whether a pull may begin.
+            .when(std::ptr::eq(session, &self.session), |d| d.track_scroll(&self.suggestions_scroll))
             .flex()
             .flex_col()
             .gap(px(6.));

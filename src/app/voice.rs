@@ -238,6 +238,7 @@ impl MobileApp {
             && self.voice.recording.is_none()
             && !self.voice.starting
             && !self.drawer_open
+            && !self.map.visible()
             && !self.git_info.open
             && !self.model_picker
             && !self.dir_picker

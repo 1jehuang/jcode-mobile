@@ -172,7 +172,12 @@ impl MobileApp {
 
     fn scene(&self) -> Scene {
         let chat = self.screen == Screen::Chat;
-        let at_top = f(self.transcript_scroll.offset().y) >= -0.5;
+        // The start screen's suggestions scroll inside the pull area: a drag
+        // down must scroll them back before it can become a pull.
+        let at_top = f(self.transcript_scroll.offset().y) >= -0.5
+            && !(self.suggestions_shown && f(self.suggestions_scroll.offset().y) < -0.5);
+        // The pinch-out session map covers the chat and owns every touch.
+        let map = self.map.visible();
         // The sidebar is modal while visible, including while it slides. The
         // window-level gesture stack sees input in the capture phase, before the
         // drawer can stop it, so gate the transcript's pull-to-refresh and
@@ -182,11 +187,12 @@ impl MobileApp {
         Scene {
             pushed: self.screen == Screen::Settings,
             sheet_open: self.model_picker && chat,
-            at_top: at_top && !self.dir_picker && !drawer,
+            at_top: at_top && !self.dir_picker && !drawer && !map,
             // Voice has its own held/locked lifecycle, separate from reconnect.
             dictate: false,
             menus: chat
                 && !drawer
+                && !map
                 && !self.git_info.open
                 && !self.model_picker
                 && !self.dir_picker

@@ -60,6 +60,7 @@ impl MobileApp {
         self.drawer_open = false;
         self.drawer_drag = 0.;
         self.drawer_drag_last = None;
+        self.drawer_finger = false;
         self.drawer_last = std::time::Instant::now();
         cx.notify();
     }
@@ -115,7 +116,9 @@ impl MobileApp {
         let screen_w = self.device.map_or_else(|| f32::from(window.viewport_size().width), |(w, _)| w);
         let width = (screen_w * WIDTH_SHARE).min(MAX_WIDTH);
         // Finger-follow while dragging closed; a pause or lift settles it.
-        if let Some(last) = self.drawer_drag_last {
+        // A finger still on the drawer keeps holding it, however long it rests.
+        if self.drawer_finger {
+        } else if let Some(last) = self.drawer_drag_last {
             if last.elapsed() > crate::swipe::IDLE_END {
                 self.end_drawer_drag(width, cx);
             } else {
@@ -160,6 +163,21 @@ impl MobileApp {
                 // Consume every remaining wheel event, including at list edges and
                 // over fixed controls, so the transcript beneath cannot handle it.
                 cx.stop_propagation();
+                match ev.touch_phase {
+                    gpui::TouchPhase::Started => {
+                        this.drawer_phased = true;
+                        this.drawer_finger = true;
+                    }
+                    gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {
+                        // A lift with no drag still needs a frame to settle.
+                        if std::mem::take(&mut this.drawer_finger) { cx.notify(); }
+                    }
+                    gpui::TouchPhase::Moved => {}
+                }
+                // Momentum after the lift must not start dragging the drawer
+                // shut: the release already decided.
+                let coasting = this.drawer_phased && !this.drawer_finger
+                    && ev.touch_phase == gpui::TouchPhase::Moved;
                 if ev.touch_phase == gpui::TouchPhase::Cancelled {
                     if this.drawer_drag_last.take().is_some() {
                         this.drawer_t = (this.drawer_t + this.drawer_drag / width).clamp(0., 1.);
@@ -174,7 +192,7 @@ impl MobileApp {
                 let (dx, dy) = (f32::from(d.x), f32::from(d.y));
                 // Only a mostly-horizontal leftward drag moves the drawer;
                 // vertical drags keep scrolling the list.
-                if this.drawer_drag_last.is_some() || (dx < -4. && dx.abs() > dy.abs() * 1.5) {
+                if this.drawer_drag_last.is_some() || (!coasting && dx < -4. && dx.abs() > dy.abs() * 1.5) {
                     this.drawer_drag = (this.drawer_drag + dx).min(0.);
                     this.drawer_drag_last = Some(std::time::Instant::now());
                     // request_animation_frame panics outside render; notify suffices.

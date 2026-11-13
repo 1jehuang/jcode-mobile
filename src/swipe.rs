@@ -31,6 +31,12 @@ pub struct Swipe {
     /// `cancel` has no neighbor arguments. Reuse the last rendered geometry
     /// instead of turning an edge pull into a full-strength cancellation.
     panel_neighbors: Option<(bool, bool)>,
+    /// The platform reports touch phases (a phone, not a bare trackpad).
+    phased: bool,
+    /// A finger is on the glass. A pause is then not the end of the gesture.
+    finger: bool,
+    /// This finger's lift already navigated. Its momentum must not do so again.
+    spent: bool,
 }
 
 /// Rubber-band: direct at first, then increasingly resisted, like the desktop pull.
@@ -53,11 +59,53 @@ pub enum Release {
 }
 
 impl Swipe {
+    /// Record a scroll event's phase. Returns true when the event is fling
+    /// momentum arriving after the finger lifted.
+    pub fn touch_phase(&mut self, phase: gpui::TouchPhase) -> bool {
+        match phase {
+            gpui::TouchPhase::Started => {
+                self.phased = true;
+                self.finger = true;
+                self.spent = false;
+                false
+            }
+            gpui::TouchPhase::Moved => self.coasting(),
+            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {
+                let coasting = self.coasting();
+                self.finger = false;
+                coasting
+            }
+        }
+    }
+
+    pub fn coasting(&self) -> bool {
+        self.phased && !self.finger
+    }
+
+    pub fn finger_down(&self) -> bool {
+        self.finger
+    }
+
+    pub fn spent(&self) -> bool {
+        self.spent
+    }
+
+    pub fn mark_spent(&mut self) {
+        self.spent = true;
+    }
+
+    /// Forget all motion after navigating, keeping what is known about the
+    /// finger so trailing momentum is still recognized and ignored.
+    pub fn restart_spent(&mut self) {
+        *self = Self { phased: self.phased, finger: self.finger, spent: true, ..Default::default() };
+    }
+
     /// The virtual panel after the last tab offers creation, never at the
     /// opposite edge or while vertical scrolling. Use the same content-motion
     /// convention as tab navigation: leftward travel reveals the panel right.
     pub fn new_session_preview(&self, can_next: bool) -> Option<f32> {
-        (self.active && !can_next && self.dx < -COMMIT)
+        // Creating a session is deliberate: momentum never offers it.
+        (self.active && !self.coasting() && !can_next && self.dx < -COMMIT)
             .then(|| ((-self.dx - COMMIT) / (NEW_SESSION_COMMIT - COMMIT)).clamp(0.0, 1.0))
     }
 
@@ -99,9 +147,11 @@ impl Swipe {
 
     /// Feeds a scroll delta. Returns true when the gesture is horizontal and was consumed.
     pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> bool {
-        if self
-            .last_event
-            .is_some_and(|last| now.duration_since(last) > IDLE_END)
+        // A held finger may pause as long as it likes without starting over.
+        if !self.finger
+            && self
+                .last_event
+                .is_some_and(|last| now.duration_since(last) > IDLE_END)
         {
             self.dx = 0.0;
             self.dy = 0.0;
@@ -676,5 +726,39 @@ mod tests {
         } else {
             assert_eq!(before, after);
         }
+    }
+
+    #[test]
+    fn held_finger_pause_keeps_the_drag_and_momentum_is_recognized() {
+        let now = Instant::now();
+        let mut s = Swipe::default();
+        assert!(!s.touch_phase(gpui::TouchPhase::Started));
+        s.feed(-40., 0., now);
+        // A long pause with the finger down is still the same drag.
+        s.feed(-40., 0., now + IDLE_END * 5);
+        assert_eq!(s.dx, -80.);
+        s.feed(-1000., 0., now + IDLE_END * 6);
+        assert_eq!(s.new_session_preview(false), Some(1.));
+        assert!(!s.touch_phase(gpui::TouchPhase::Ended), "the lift itself is not momentum");
+        s.restart_spent();
+        assert!(s.spent() && s.coasting());
+        assert!(s.touch_phase(gpui::TouchPhase::Moved), "post-lift motion is momentum");
+        // Momentum alone can never offer a new session.
+        s.feed(-1000., 0., now + IDLE_END * 6);
+        assert_eq!(s.new_session_preview(false), None);
+        assert!(s.touch_phase(gpui::TouchPhase::Ended));
+        // The next finger starts clean.
+        assert!(!s.touch_phase(gpui::TouchPhase::Started));
+        assert!(!s.spent() && s.finger_down());
+    }
+
+    #[test]
+    fn unphased_trackpad_still_ends_on_idle() {
+        let now = Instant::now();
+        let mut s = Swipe::default();
+        s.feed(-40., 0., now);
+        s.feed(-40., 0., now + IDLE_END * 5);
+        assert_eq!(s.dx, -40.);
+        assert!(!s.coasting());
     }
 }

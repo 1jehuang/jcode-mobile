@@ -348,4 +348,38 @@ Third output line".into(),
             assert_eq!(parked.scroll.offset().y, px(-180.));
         }));
     }
+
+    #[gpui::test]
+    fn momentum_after_a_committed_swipe_does_not_swipe_again(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        let panel = cx.debug_bounds("panel-preview-0").unwrap();
+        let at = point(panel.right() - px(30.), panel.top() + px(100.));
+        let mut wheel = |cx: &mut VisualTestContext, phase, dx: f32| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: at,
+                delta: gpui::ScrollDelta::Pixels(point(px(dx), px(0.))),
+                modifiers: Modifiers::default(),
+                touch_phase: phase,
+            });
+            draw(cx);
+        };
+        wheel(cx, gpui::TouchPhase::Started, 0.);
+        wheel(cx, gpui::TouchPhase::Moved, 40.);
+        wheel(cx, gpui::TouchPhase::Ended, 0.);
+        view.read_with(cx, |app, _| assert_eq!(app.active_tab, 0));
+        // The fling that follows the lift, in both directions.
+        for dx in [300., -300., -300., -300.] {
+            wheel(cx, gpui::TouchPhase::Moved, dx);
+            view.read_with(cx, |app, _| {
+                assert!(!app.swipe.active && app.swipe.dx == 0., "momentum restarted a swipe");
+            });
+        }
+        wheel(cx, gpui::TouchPhase::Ended, 0.);
+        view.read_with(cx, |app, _| {
+            assert_eq!(app.active_tab, 0, "momentum switched tabs a second time");
+            assert_eq!(app.parked.len(), 1, "momentum opened a new session");
+        });
+    }
 }

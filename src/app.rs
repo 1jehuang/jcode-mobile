@@ -216,6 +216,12 @@ pub struct MobileApp {
     /// Drawer drag-to-close travel (negative px) and last drag event.
     drawer_drag: f32,
     drawer_drag_last: Option<std::time::Instant>,
+    /// Drawer touch phases seen, and whether a finger is on the drawer now.
+    drawer_phased: bool,
+    drawer_finger: bool,
+    /// Start-screen suggestions list, which scrolls inside the pull area.
+    suggestions_scroll: ScrollHandle,
+    suggestions_shown: bool,
     /// Drawer session search field.
     drawer_search: Entity<TextInput>,
     drawer_directory: sidebar::DirectorySelection,
@@ -429,6 +435,10 @@ impl MobileApp {
             drawer_insets: (0., 0.),
             drawer_drag: 0.,
             drawer_drag_last: None,
+            drawer_phased: false,
+            drawer_finger: false,
+            suggestions_scroll: ScrollHandle::new(),
+            suggestions_shown: false,
             drawer_search,
             drawer_directory: Default::default(),
             synced: Default::default(),
@@ -1081,6 +1091,7 @@ impl MobileApp {
         self.drawer_t = 0.;
         self.drawer_drag = 0.;
         self.drawer_drag_last = None;
+        self.drawer_finger = false;
         self.drawer_directory = Default::default();
         self.feel = Default::default();
         self.swipe = Default::default();
@@ -1591,18 +1602,26 @@ impl MobileApp {
     }
 
     fn end_swipe(&mut self, cx: &mut Context<Self>) {
+        self.end_swipe_with(true, cx);
+    }
+
+    fn end_swipe_with(&mut self, allow_new: bool, cx: &mut Context<Self>) {
         let width = self.content_width();
         let (prev, next) = self.tab_neighbors();
         let now = std::time::Instant::now();
-        let offer_new = self.account.is_some() && self.swipe.new_session_preview(next.is_some()) == Some(1.);
+        let offer_new = allow_new && self.account.is_some() && self.swipe.new_session_preview(next.is_some()) == Some(1.);
+        let mut navigated = offer_new;
         if let crate::swipe::Release::Switch(dir) = self.swipe.release(width, prev.is_some(), next.is_some(), now) {
             if let Some(id) = if dir < 0 { prev } else { next } {
                 self.focus_tab(id, cx);
+                navigated = true;
             }
         }
         if offer_new {
-            self.swipe = Default::default();
+            self.swipe.restart_spent();
             self.new_tab(cx);
+        } else if navigated {
+            self.swipe.mark_spent();
         }
         cx.notify();
     }
@@ -1611,9 +1630,15 @@ impl MobileApp {
     /// drag. Crossing their boundary must not lose movement or cancellation.
     fn panel_wheel(&mut self, ev: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
         let _perf = crate::perf::span("panel.scroll_input");
+        let coasting = self.swipe.touch_phase(ev.touch_phase);
         if ev.touch_phase == gpui::TouchPhase::Cancelled {
             self.swipe.cancel(self.content_width(), std::time::Instant::now());
             cx.notify();
+            return;
+        }
+        // One swipe moves one tab: the fling after a lift that already
+        // navigated must not carry on into the next tab or a new session.
+        if coasting && self.swipe.spent() {
             return;
         }
         let d = ev.delta.pixel_delta(px(20.));
@@ -1621,7 +1646,7 @@ impl MobileApp {
             cx.notify();
         }
         if ev.touch_phase == gpui::TouchPhase::Ended {
-            self.end_swipe(cx);
+            self.end_swipe_with(!coasting, cx);
         }
     }
 
@@ -1630,7 +1655,9 @@ impl MobileApp {
         let width = self.content_width();
         let now = std::time::Instant::now();
         // Trackpads without touch phases: a pause ends the gesture.
-        if self.swipe.active && self.swipe.last_event.is_some_and(|e| now.duration_since(e) > crate::swipe::IDLE_END) {
+        // A finger still on the glass decides by lifting, not by pausing.
+        if self.swipe.active && !self.swipe.finger_down()
+            && self.swipe.last_event.is_some_and(|e| now.duration_since(e) > crate::swipe::IDLE_END) {
             self.end_swipe(cx);
         }
         let (prev, next) = self.tab_neighbors();
@@ -1801,6 +1828,7 @@ impl MobileApp {
             self.ensure_recent_dirs();
         }
         let recent = if empty { self.render_recent_dirs(t, cx) } else { None };
+        self.suggestions_shown = recent.is_some();
         let body = if empty {
             // Desktop's fresh session: the question sits just above the composer,
             // with recent cloud dirs as quick nav in the space above it.
