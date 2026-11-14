@@ -39,38 +39,24 @@ impl MobileApp {
         self.cloud_machine.openai = OpenAiLogin::Starting;
         cx.notify();
         let start_account = account.clone();
+        let generation = self.auth_generation;
         let task = cx.background_spawn(async move { cloud_login::start(&start_account) });
         cx.spawn(async move |this, cx| {
-            let code = match task.await {
-                Ok(code) => code,
-                Err(e) => {
-                    this.update(cx, |this, cx| {
-                        haptics::play(Haptic::Error);
-                        this.cloud_machine.openai = OpenAiLogin::Failed(e);
-                        cx.notify();
-                    }).ok();
-                    return;
-                }
-            };
-            let url = code.url.clone();
-            this.update(cx, |this, cx| {
-                // The code must be typed on OpenAI's page; copy it so a paste works.
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.user_code.clone()));
-                this.cloud_machine.openai = OpenAiLogin::Code(code.user_code.clone());
-                let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                if !crate::web_auth::open(&url, dismissed) {
-                    cx.open_url(&url);
-                }
-                cx.notify();
-            }).ok();
+            let result = task.await;
+            let code = this.update(cx, |this, cx| {
+                this.complete_openai_start(&account, generation, result, cx)
+            }).ok().flatten();
+            let Some(code) = code else { return };
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
-                let still_waiting = this.update(cx, |this, _| matches!(this.cloud_machine.openai, OpenAiLogin::Code(_))).unwrap_or(false);
+                let still_waiting = this.update(cx, |this, _| {
+                    this.openai_waiting(&account, generation, &code.user_code)
+                }).unwrap_or(false);
                 if !still_waiting { return; }
-                if now_ms() > code.expires_at_ms + 30_000 {
+                if now_ms() > code.expires_at_ms.saturating_add(30_000) {
                     this.update(cx, |this, cx| {
-                        this.cloud_machine.openai = OpenAiLogin::Failed("The sign-in code expired. Try again.".into());
-                        cx.notify();
+                        this.complete_openai_status(&account, generation, &code.user_code,
+                            OpenAiLogin::Failed("The sign-in code expired. Try again.".into()), cx);
                     }).ok();
                     return;
                 }
@@ -82,15 +68,71 @@ impl MobileApp {
                     Ok(LoginStatus::Failed(reason)) => OpenAiLogin::Failed(reason),
                 };
                 this.update(cx, |this, cx| {
-                    let ok = next == OpenAiLogin::SignedIn;
-                    haptics::play(if ok { Haptic::Success } else { Haptic::Error });
-                    if ok { crate::web_auth::close(); }
-                    this.cloud_machine.openai = next;
-                    cx.notify();
+                    this.complete_openai_status(&account, generation, &code.user_code, next, cx);
                 }).ok();
                 return;
             }
         }).detach();
+    }
+
+    fn complete_openai_start(
+        &mut self,
+        expected: &Account,
+        generation: u64,
+        result: Result<cloud_login::DeviceCode, String>,
+        cx: &mut Context<Self>,
+    ) -> Option<cloud_login::DeviceCode> {
+        if generation != self.auth_generation
+            || !super::account_profile::same_account(self.account.as_ref(), expected)
+            || self.cloud_machine.openai != OpenAiLogin::Starting
+        {
+            return None;
+        }
+        match result {
+            Ok(code) => {
+                self.cloud_machine.openai = OpenAiLogin::Code(code.user_code.clone());
+                if !self.offline {
+                    // Native effects must be below the account ownership check.
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.user_code.clone()));
+                    let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    if !crate::web_auth::open(&code.url, dismissed) {
+                        cx.open_url(&code.url);
+                    }
+                }
+                cx.notify();
+                Some(code)
+            }
+            Err(error) => {
+                haptics::play(Haptic::Error);
+                self.cloud_machine.openai = OpenAiLogin::Failed(error);
+                cx.notify();
+                None
+            }
+        }
+    }
+
+    fn openai_waiting(&self, expected: &Account, generation: u64, code: &str) -> bool {
+        generation == self.auth_generation
+            && super::account_profile::same_account(self.account.as_ref(), expected)
+            && matches!(&self.cloud_machine.openai, OpenAiLogin::Code(current) if current == code)
+    }
+
+    fn complete_openai_status(
+        &mut self,
+        expected: &Account,
+        generation: u64,
+        code: &str,
+        next: OpenAiLogin,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.openai_waiting(expected, generation, code) {
+            return;
+        }
+        let ok = next == OpenAiLogin::SignedIn;
+        haptics::play(if ok { Haptic::Success } else { Haptic::Error });
+        if ok && !self.offline { crate::web_auth::close(); }
+        self.cloud_machine.openai = next;
+        cx.notify();
     }
 
     pub(super) fn ensure_computer_stats(&mut self, cx: &mut Context<Self>) {
@@ -399,6 +441,79 @@ fn setup_draft(existing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn openai_start_completion_cannot_restore_a_previous_login(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = super::super::account_coverage::mount(cx);
+        view.update(cx, |app, cx| {
+            let expected = super::super::account_coverage::account();
+            app.adopt_account(expected.clone(), cx);
+            app.cloud_machine.openai = OpenAiLogin::Starting;
+            let old_generation = app.auth_generation;
+            app.sign_out(cx);
+            let (_, feedback) = haptics::capture(|| {
+                app.complete_openai_start(&expected, old_generation, Err("old private failure".into()), cx);
+            });
+            assert!(feedback.is_empty(), "old login failure produced feedback after signout");
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Idle);
+            app.adopt_account(expected.clone(), cx);
+            app.cloud_machine.openai = OpenAiLogin::Starting;
+            let code = cloud_login::DeviceCode {
+                url: "https://auth.openai.com/codex/device".into(),
+                user_code: "TEST-1234".into(),
+                expires_at_ms: i64::MAX,
+            };
+            assert!(app.complete_openai_start(&expected, old_generation, Ok(code.clone()), cx).is_none());
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Starting);
+            let mut wrong_origin = expected.clone();
+            wrong_origin.api_base = "https://other-origin.invalid".into();
+            assert!(app.complete_openai_start(&wrong_origin, app.auth_generation, Ok(code.clone()), cx).is_none());
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Starting);
+            app.complete_openai_start(&expected, app.auth_generation, Err("current start failure".into()), cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Failed("current start failure".into()));
+            app.cloud_machine.openai = OpenAiLogin::Starting;
+            assert!(app.complete_openai_start(&expected, app.auth_generation, Ok(code.clone()), cx).is_some());
+            assert!(app.complete_openai_start(&expected, app.auth_generation, Err("duplicate error".into()), cx).is_none());
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Code(code.user_code));
+        });
+        super::super::account_coverage::draw(cx);
+    }
+
+    #[gpui::test]
+    fn openai_poll_completion_cannot_finish_a_replacement_accounts_flow(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = super::super::account_coverage::mount(cx);
+        view.update(cx, |app, cx| {
+            let expected = super::super::account_coverage::account();
+            app.adopt_account(expected.clone(), cx);
+            let old_generation = app.auth_generation;
+            app.cloud_machine.openai = OpenAiLogin::Code("OLD-CODE".into());
+            app.sign_out(cx);
+            let (_, feedback) = haptics::capture(|| {
+                app.complete_openai_status(&expected, old_generation, "OLD-CODE", OpenAiLogin::SignedIn, cx);
+            });
+            assert!(feedback.is_empty(), "stale approval produced feedback after signout");
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Idle);
+            app.adopt_account(expected.clone(), cx);
+            app.cloud_machine.openai = OpenAiLogin::Code("NEW-CODE".into());
+            assert!(!app.openai_waiting(&expected, old_generation, "NEW-CODE"));
+            app.complete_openai_status(&expected, old_generation, "NEW-CODE", OpenAiLogin::SignedIn, cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Code("NEW-CODE".into()));
+            app.complete_openai_status(&expected, app.auth_generation, "OLD-CODE", OpenAiLogin::SignedIn, cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Code("NEW-CODE".into()));
+            let mut wrong_origin = expected.clone();
+            wrong_origin.api_base = "https://other-origin.invalid".into();
+            assert!(!app.openai_waiting(&wrong_origin, app.auth_generation, "NEW-CODE"));
+            app.complete_openai_status(&wrong_origin, app.auth_generation, "NEW-CODE", OpenAiLogin::SignedIn, cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::Code("NEW-CODE".into()));
+            assert!(app.openai_waiting(&expected, app.auth_generation, "NEW-CODE"));
+            app.complete_openai_status(&expected, app.auth_generation, "NEW-CODE", OpenAiLogin::SignedIn, cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::SignedIn);
+            app.complete_openai_status(&expected, app.auth_generation, "NEW-CODE", OpenAiLogin::Failed("duplicate".into()), cx);
+            assert_eq!(app.cloud_machine.openai, OpenAiLogin::SignedIn);
+        });
+        super::super::account_coverage::draw(cx);
+    }
+
     #[test]
     fn computer_name_and_capacity_formatting() {
         assert_eq!(
