@@ -43,15 +43,20 @@ for abi in $ABIS; do
     # native Linux checks/tests still use hosted justrust by default.
     # Host linker acceleration must not replace the NDK linker, particularly
     # on ARM64 where Android requires Cortex-A53 workaround flags.
-    JUSTRUST_LINKER=off CARGO_TARGET_DIR="$ROOT/target" justrust build --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile-android --target "$target" "${args[@]}"
+    JUSTRUST_LINKER=off CARGO_TARGET_DIR="$ROOT/target" justrust build --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile --lib --target "$target" "${args[@]}"
     mkdir -p "$STAGE/apk/lib/$abi"
-    cp "$ROOT/target/$target/$PROFILE/libjcode_mobile_android.so" "$STAGE/apk/lib/$abi/"
-    "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$STAGE/apk/lib/$abi/libjcode_mobile_android.so"
+    cp "$ROOT/target/$target/$PROFILE/libjcode_mobile.so" "$STAGE/apk/lib/$abi/"
+    "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$STAGE/apk/lib/$abi/libjcode_mobile.so"
+    # The shared app must export NativeActivity glue, never the removed JNI UI adapter.
+    "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" --dyn-syms --wide "$STAGE/apk/lib/$abi/libjcode_mobile.so" > "$STAGE/symbols-$abi.txt"
+    grep -Eq 'GLOBAL.*DEFAULT.*ANativeActivity_onCreate$' "$STAGE/symbols-$abi.txt" || {
+        echo "Missing ANativeActivity_onCreate in shared GPUI app for $abi" >&2; exit 1;
+    }
     while read -r alignment; do
         (( alignment >= 16384 )) || { echo "Native library for $abi is not 16 KiB aligned. Check RUSTFLAGS overrides." >&2; exit 1; }
-    done < <("$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" --program-headers "$STAGE/apk/lib/$abi/libjcode_mobile_android.so" | awk '$1 == "LOAD" { print $NF }')
+    done < <("$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" --program-headers "$STAGE/apk/lib/$abi/libjcode_mobile.so" | awk '$1 == "LOAD" { print $NF }')
 done
-# The app uses framework widgets, so resource compilation is optional.
+# Compile only platform service helpers. All UI is rendered by shared GPUI.
 resource_args=()
 if [[ -d android/app/src/main/res ]] && find android/app/src/main/res -type f -print -quit | grep -q .; then
     "$TOOLS/aapt2" compile --dir android/app/src/main/res -o "$STAGE/resources.zip"
