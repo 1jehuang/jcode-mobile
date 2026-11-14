@@ -5,34 +5,34 @@
 mod android_services;
 
 mod app;
-mod scroll_follow;
-mod stream_reveal;
-mod perf;
 mod donut;
 mod donut_field;
+mod gestures;
+mod haptics;
+mod ios_ext;
+mod labels;
+mod markdown;
+mod media;
+mod notify;
+mod perf;
+mod scroll_follow;
+mod share;
 mod sim_keyboard;
+mod stream_reveal;
 mod swipe;
 mod system;
 mod tabs;
-mod markdown;
-mod notify;
 mod text_input;
 mod text_selection;
 mod theme;
-mod tool_summary;
 mod tool_output;
-mod labels;
-mod ios_ext;
-mod media;
-mod haptics;
-mod web_auth;
-mod gestures;
-mod share;
+mod tool_summary;
 mod voice_capture;
-mod voice_stream;
-mod voice_gesture;
-mod voice_visual;
 mod voice_demo;
+mod voice_gesture;
+mod voice_stream;
+mod voice_visual;
+mod web_auth;
 
 use std::borrow::Cow;
 
@@ -47,7 +47,9 @@ fn load_fonts(cx: &App) {
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf")),
     ];
-    cx.text_system().add_fonts(fonts).expect("load bundled fonts");
+    cx.text_system()
+        .add_fonts(fonts)
+        .expect("load bundled fonts");
 }
 
 /// Bundled SVG icons (shared with jcode-desktop's `assets/icons`).
@@ -57,18 +59,81 @@ impl gpui::AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         Ok(match path {
             "icons/cloud.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/cloud.svg"))),
-            "icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/git-branch.svg"))),
-            "icons/refresh.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/refresh.svg"))),
+            "icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!(
+                "../assets/icons/git-branch.svg"
+            ))),
+            "icons/refresh.svg" => {
+                Some(Cow::Borrowed(include_bytes!("../assets/icons/refresh.svg")))
+            }
             _ => None,
         })
     }
 
     fn list(&self, _path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
-        Ok(vec!["icons/cloud.svg".into(), "icons/git-branch.svg".into(), "icons/refresh.svg".into()])
+        Ok(vec![
+            "icons/cloud.svg".into(),
+            "icons/git-branch.svg".into(),
+            "icons/refresh.svg".into(),
+        ])
     }
 }
 
 pub fn run() {
+    run_with_application(gpui_platform::application());
+}
+
+/// Android's NativeActivity glue enters the exact same app and renderer.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: gpui_platform::android_activity::AndroidApp) {
+    android_logging::init();
+    log::info!("jcode-mobile: shared GPUI NativeActivity bootstrap");
+    run_with_application(gpui_platform::android_application(app));
+}
+
+#[cfg(target_os = "android")]
+mod android_logging {
+    use std::ffi::{CString, c_char, c_int};
+
+    #[link(name = "log")]
+    unsafe extern "C" {
+        fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+    }
+
+    struct Logger;
+    static LOGGER: Logger = Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+        fn log(&self, record: &log::Record) {
+            if !self.enabled(record.metadata()) {
+                return;
+            }
+            let priority = match record.level() {
+                log::Level::Error => 6,
+                log::Level::Warn => 5,
+                log::Level::Info => 4,
+                _ => 3,
+            };
+            let message = format!("{}: {}", record.target(), record.args()).replace('\0', " ");
+            if let Ok(message) = CString::new(message) {
+                // Both strings are NUL-terminated and live for this synchronous call.
+                unsafe {
+                    __android_log_write(priority, c"JcodeGPUI".as_ptr(), message.as_ptr());
+                }
+            }
+        }
+        fn flush(&self) {}
+    }
+    pub fn init() {
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    }
+}
+
+fn run_with_application(application: gpui::Application) {
     let _ = jcode_mobile_core::timing::process_start();
     // Open the opt-in local sink before input arrives, not on the first scroll.
     let _ = perf::start();
@@ -87,20 +152,28 @@ pub fn run() {
         if let Some(account) = &account
             && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
         {
-            jcode_mobile_core::timing::timed("app prewarm", || jcode_mobile_core::cloud::prewarm(account));
+            jcode_mobile_core::timing::timed("app prewarm", || {
+                jcode_mobile_core::cloud::prewarm(account)
+            });
         }
         if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref()) {
             log::warn!("jcode-mobile: crash upload failed: {e}");
         }
     });
-    let application = gpui_platform::application().with_assets(Assets);
+    let application = application.with_assets(Assets);
     // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
     application.on_open_urls(ios_ext::handle_urls);
     application.run(|cx: &mut App| {
-        jcode_mobile_core::timing::stage("app launched", jcode_mobile_core::timing::process_start().elapsed());
+        jcode_mobile_core::timing::stage(
+            "app launched",
+            jcode_mobile_core::timing::process_start().elapsed(),
+        );
         log::info!("jcode-mobile: launched");
         load_fonts(cx);
-        jcode_mobile_core::timing::stage("app fonts loaded", jcode_mobile_core::timing::process_start().elapsed());
+        jcode_mobile_core::timing::stage(
+            "app fonts loaded",
+            jcode_mobile_core::timing::process_start().elapsed(),
+        );
         log::info!("jcode-mobile: fonts loaded");
         app::init(cx);
         // JCODE_MOBILE_SIZE=WxH overrides the device (e.g. 375x667 for an SE).
@@ -111,8 +184,27 @@ pub fn run() {
                 Some((a.parse().ok()?, b.parse().ok()?))
             })
             .unwrap_or((390.0f32, 844.0f32));
-        let safe = if cfg!(target_os = "android") { SafeArea { top: 0.0, bottom: 0.0 } } else if h >= 800.0 { SafeArea { top: 47.0, bottom: 34.0 } } else { SafeArea { top: 20.0, bottom: 0.0 } };
-        let pad = if std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() { 0. } else { 40. };
+        let safe = if cfg!(target_os = "android") {
+            SafeArea {
+                top: 0.0,
+                bottom: 0.0,
+            }
+        } else if h >= 800.0 {
+            SafeArea {
+                top: 47.0,
+                bottom: 34.0,
+            }
+        } else {
+            SafeArea {
+                top: 20.0,
+                bottom: 0.0,
+            }
+        };
+        let pad = if std::env::var_os("JCODE_MOBILE_FRAMELESS").is_some() {
+            0.
+        } else {
+            40.
+        };
         let bounds = Bounds::centered(None, size(px(w + pad), px(h + pad)), cx);
         cx.open_window(
             WindowOptions {
@@ -120,27 +212,35 @@ pub fn run() {
                 app_id: Some("jcode-mobile".into()),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| {
-                // Desktop preview: the mouse acts as a finger, so drags go
-                // through gpui's touch recognizer exactly like on the phone
-                // (touch-phase pans, taps, long press). JCODE_MOBILE_MOUSE=1
-                // restores plain mouse input.
-                if !cfg!(any(target_os = "ios", target_os = "android")) && std::env::var_os("JCODE_MOBILE_MOUSE").is_none() {
-                    window.set_emulate_touch_from_mouse(true);
-                }
-                let mut app = MobileApp::new(safe, window, cx);
-                if !cfg!(any(target_os = "ios", target_os = "android")) {
-                    app.device = Some((w, h));
-                    if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref() && demo.starts_with("todos") {
-                        app.seed_todo_demo(demo == "todos-expanded");
+            |window, cx| {
+                cx.new(|cx| {
+                    // Desktop preview: the mouse acts as a finger, so drags go
+                    // through gpui's touch recognizer exactly like on the phone
+                    // (touch-phase pans, taps, long press). JCODE_MOBILE_MOUSE=1
+                    // restores plain mouse input.
+                    if !cfg!(any(target_os = "ios", target_os = "android"))
+                        && std::env::var_os("JCODE_MOBILE_MOUSE").is_none()
+                    {
+                        window.set_emulate_touch_from_mouse(true);
                     }
-                    if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref() && demo.starts_with("git") {
-                        app.seed_todo_demo(false);
-                        app.seed_git_demo(demo);
+                    let mut app = MobileApp::new(safe, window, cx);
+                    if !cfg!(any(target_os = "ios", target_os = "android")) {
+                        app.device = Some((w, h));
+                        if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref()
+                            && demo.starts_with("todos")
+                        {
+                            app.seed_todo_demo(demo == "todos-expanded");
+                        }
+                        if let Ok(demo) = std::env::var("JCODE_MOBILE_DEMO").as_deref()
+                            && demo.starts_with("git")
+                        {
+                            app.seed_todo_demo(false);
+                            app.seed_git_demo(demo);
+                        }
                     }
-                }
-                app
-            }),
+                    app
+                })
+            },
         )
         .expect("open window");
         // Dev hook: JCODE_MOBILE_OPEN_URL=jcode://new?text=hi simulates a deep link.
