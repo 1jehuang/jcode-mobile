@@ -1,6 +1,35 @@
 //! Drawn GPUI raw-touch campaigns. These do not claim native UIKit coverage.
 
 #[gpui::test]
+fn simulator_keyboard_long_draft_keeps_editor_and_send_visible(cx: &mut TestAppContext) {
+    let _scale = scale_fixture(1.6);
+    let (view, cx) = mount(cx);
+    let draft = "long editable draft with many wrapped words ".repeat(40);
+    for (width, height) in [(390., 844.), (320., 568.), (568., 320.)] {
+      for connected in [true, false] {
+        resize(&view, cx, width, height);
+        view.update(cx, |app, cx| {
+            app.session.phase = if connected { ConnectionPhase::Connected } else { ConnectionPhase::Disconnected };
+            app.session.session_id = Some("long-draft-fixture".into());
+            app.composer.update(cx, |input, cx| input.set_text(draft.clone(), cx));
+            cx.notify();
+        });
+        let composer = view.read_with(cx, |app, _| app.composer.clone());
+        cx.update(|window, cx| window.focus(&composer.focus_handle(cx), cx));
+        settle(&view, cx);
+        let keyboard = cx.debug_bounds("sim-keyboard").expect("keyboard shown");
+        let input = cx.debug_bounds("composer-input").expect("editor drawn");
+        let send = cx.debug_bounds("send").expect("send drawn");
+        assert!(input.top() >= px(68.) && input.bottom() <= keyboard.top(),
+            "long draft editor occluded at {width}x{height}: {input:?}, {keyboard:?}");
+        assert!(send.top() >= px(68.) && send.bottom() <= keyboard.top(),
+            "long draft send occluded at {width}x{height}: {send:?}, {keyboard:?}");
+        composer.read_with(cx, |input, _| assert_eq!(input.text(), draft));
+      }
+    }
+}
+
+#[gpui::test]
 fn simulator_keyboard_settings_narrow_save_preserves_draft(cx: &mut TestAppContext) {
     let _scale = scale_fixture(2.);
     let (view, cx) = mount(cx);

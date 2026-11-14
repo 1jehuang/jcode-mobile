@@ -2336,6 +2336,23 @@ impl MobileApp {
             && (!local || self.local_chat_ready(session));
         let has_text = !composer.read(cx).text().trim().is_empty();
         let focused = !preview && composer.read(cx).is_focused(window);
+        // A six-line draft must not grow through the software keyboard on
+        // compact phones. Keep the draft intact and let TextInput scroll its
+        // caret within a viewport-sized number of visible lines instead.
+        let height = self.device.map_or(f32::from(window.viewport_size().height), |(_, h)| h);
+        let (top, base) = if self.device.is_some() {
+            (self.safe.top, self.safe.bottom)
+        } else {
+            let safe = window.window_insets().safe_area;
+            (f32::from(safe.top), f32::from(safe.bottom))
+        };
+        let available = (height - top - base - self.kb_lift - 48.).max(0.);
+        let compact = self.keyboard_up && available < 140.;
+        let line_height = f32::from(crate::system::fs(20.));
+        let max_lines = ((available - 84.) / line_height).floor().clamp(1., 6.) as usize;
+        if composer.read(cx).max_lines != max_lines {
+            composer.update(cx, |input, cx| { input.max_lines = max_lines; cx.notify(); });
+        }
         let model_raw = session.model_name.clone();
         let model = crate::labels::pretty_model(model_raw.as_deref());
         let effort = session
@@ -2374,8 +2391,8 @@ impl MobileApp {
             .min_w_0()
             .gap(px(4.))
             .px(px(12.))
-            .pt(px(6.))
-            .pb(px(8.))
+            .pt(px(if compact { 2. } else { 6. }))
+            .pb(px(if compact { 2. } else { 8. }))
             .bg(t.background)
             .when_some(if preview || self.voice.auto_send || self.feel.voice_gesture.active() || self.feel.voice_gesture.pull > 0.5 {
                 None
