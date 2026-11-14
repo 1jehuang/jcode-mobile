@@ -752,6 +752,8 @@
     },
     {
       "controls": {
+        "id:literal:cloud-openai-code": 1,
+        "outline_button:literal:cloud-openai-login": 1,
         "outline_button:literal:inspect-cloud-machine": 1,
         "outline_button:literal:setup-cloud-github": 1
       },
@@ -769,15 +771,31 @@
           "kind": "platform_device_required",
           "note": "Cloud inspection SSH, GitHub auth setup and real credential storage are deliberately excluded and require approved integration steps.",
           "tests": []
+        },
+        {
+          "kind": "platform_device_required",
+          "note": "OpenAI device-code sign-in runs jcode login over the pinned inspection SSH and needs a real OpenAI approval. Command shape and result parsing are unit-tested in jcode-mobile-core cloud_login; the button route is not.",
+          "tests": []
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 2
+        "on_click": 3
       },
       "handler": false,
       "owner": "src/app/cloud_machine.rs::impl:MobileApp::render_cloud_machine",
       "renderer": true
+    },
+    {
+      "owner": "src/app/cloud_machine.rs::impl:MobileApp::render_computer_stats",
+      "renderer": true,
+      "handler": false,
+      "events": {},
+      "controls": {
+        "debug_selector:literal:cloud-computer-stats": 1,
+        "id:literal:cloud-computer-stats": 1
+      },
+      "coverage": [{ "kind": "gap", "tests": [], "note": "Display-only cloud machine stats card. Live values need the cloud inspection service. No interactions." }]
     },
     {
       "controls": {},
