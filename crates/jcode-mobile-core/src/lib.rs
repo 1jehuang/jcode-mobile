@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod apple;
 pub mod cloud;
+pub mod cloud_login;
 pub mod cloud_machine;
 pub mod cloud_ssh;
 mod cloud_direct;

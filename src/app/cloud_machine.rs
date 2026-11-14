@@ -3,6 +3,7 @@ use super::*;
 use crate::haptics::{self, Haptic};
 use gpui::svg;
 use jcode_mobile_core::cloud_machine::{self, MachineSnapshot};
+use jcode_mobile_core::cloud_login::{self, LoginStatus};
 
 #[derive(Default)]
 pub(super) struct MachineState {
@@ -11,11 +12,87 @@ pub(super) struct MachineState {
     error: Option<String>,
     generation: u64,
     auto_requested: bool,
+    openai: OpenAiLogin,
+}
+
+/// Phone-driven OpenAI sign-in for the cloud machine (device code).
+#[derive(Default, Clone, PartialEq, Debug)]
+pub(super) enum OpenAiLogin {
+    #[default]
+    Idle,
+    Starting,
+    /// Waiting for approval of this code.
+    Code(String),
+    SignedIn,
+    Failed(String),
 }
 
 const SETUP_PROMPT: &str = "Help me set up persistent GitHub authentication on this cloud machine. First inspect where my home directory is mounted and whether it survives machine restarts and replacement. Check whether GitHub CLI is installed and authenticated without printing tokens, private keys, credential files, or secret environment values. Prefer a browser/device authorization flow that I approve myself. Before storing credentials, explain whether a secure credential store exists or whether storage would be plaintext, and ask for my approval if plaintext storage is necessary. Do not copy credentials from another machine, request secrets in chat, or overwrite existing credentials. Once approved and authenticated, configure Git to use the GitHub CLI credential helper, verify access without printing secrets, and explain what survives a restart and how to revoke access.";
 
 impl MobileApp {
+    fn start_openai_login(&mut self, cx: &mut Context<Self>) {
+        if self.offline || matches!(self.cloud_machine.openai, OpenAiLogin::Starting | OpenAiLogin::Code(_)) {
+            return;
+        }
+        let Some(account) = self.account.clone() else { return };
+        haptics::play(Haptic::Light);
+        self.cloud_machine.openai = OpenAiLogin::Starting;
+        cx.notify();
+        let start_account = account.clone();
+        let task = cx.background_spawn(async move { cloud_login::start(&start_account) });
+        cx.spawn(async move |this, cx| {
+            let code = match task.await {
+                Ok(code) => code,
+                Err(e) => {
+                    this.update(cx, |this, cx| {
+                        haptics::play(Haptic::Error);
+                        this.cloud_machine.openai = OpenAiLogin::Failed(e);
+                        cx.notify();
+                    }).ok();
+                    return;
+                }
+            };
+            let url = code.url.clone();
+            this.update(cx, |this, cx| {
+                // The code must be typed on OpenAI's page; copy it so a paste works.
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.user_code.clone()));
+                this.cloud_machine.openai = OpenAiLogin::Code(code.user_code.clone());
+                let dismissed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                if !crate::web_auth::open(&url, dismissed) {
+                    cx.open_url(&url);
+                }
+                cx.notify();
+            }).ok();
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                let still_waiting = this.update(cx, |this, _| matches!(this.cloud_machine.openai, OpenAiLogin::Code(_))).unwrap_or(false);
+                if !still_waiting { return; }
+                if now_ms() > code.expires_at_ms + 30_000 {
+                    this.update(cx, |this, cx| {
+                        this.cloud_machine.openai = OpenAiLogin::Failed("The sign-in code expired. Try again.".into());
+                        cx.notify();
+                    }).ok();
+                    return;
+                }
+                let poll_account = account.clone();
+                let status = cx.background_spawn(async move { cloud_login::status(&poll_account) }).await;
+                let next = match status {
+                    Ok(LoginStatus::Waiting) | Err(_) => continue,
+                    Ok(LoginStatus::SignedIn) => OpenAiLogin::SignedIn,
+                    Ok(LoginStatus::Failed(reason)) => OpenAiLogin::Failed(reason),
+                };
+                this.update(cx, |this, cx| {
+                    let ok = next == OpenAiLogin::SignedIn;
+                    haptics::play(if ok { Haptic::Success } else { Haptic::Error });
+                    if ok { crate::web_auth::close(); }
+                    this.cloud_machine.openai = next;
+                    cx.notify();
+                }).ok();
+                return;
+            }
+        }).detach();
+    }
+
     pub(super) fn ensure_computer_stats(&mut self, cx: &mut Context<Self>) {
         if self.offline || self.account.is_none() || self.cloud_machine.auto_requested {
             return;
@@ -224,6 +301,28 @@ impl MobileApp {
         if let Some(error) = &state.error {
             section = section.child(label(error.clone(), t.error, 11.));
         }
+        let openai = &state.openai;
+        let busy = matches!(openai, OpenAiLogin::Starting | OpenAiLogin::Code(_));
+        section = section
+            .child(label("OpenAI sign-in", t.text_strong, 12.))
+            .child(outline_button(
+                "cloud-openai-login",
+                match openai {
+                    OpenAiLogin::Starting => "Getting a sign-in code…",
+                    OpenAiLogin::Code(_) => "Waiting for approval…",
+                    _ => "Sign cloud machine in to OpenAI",
+                },
+                self.account.is_some() && !busy,
+                t,
+            ).on_click(cx.listener(|this, _, _, cx| this.start_openai_login(cx))));
+        section = match openai {
+            OpenAiLogin::Code(code) => section
+                .child(div().id("cloud-openai-code").text_size(crate::system::fs(22.)).text_color(t.text_strong).child(code.clone()))
+                .child(label("Enter this code on the OpenAI page (it's on your clipboard). This screen updates when you approve.", t.text_muted, 11.)),
+            OpenAiLogin::SignedIn => section.child(label("Signed in. Your cloud sessions can use OpenAI again.", t.text_muted, 11.)),
+            OpenAiLogin::Failed(reason) => section.child(label(reason.clone(), t.error, 11.)),
+            _ => section.child(label("Use this when cloud sessions report an expired or missing OpenAI login. Tokens stay on the cloud machine.", t.text_muted, 11.)),
+        };
         section
             .child(label("For persistent access, credentials must be saved on the cloud machine, not just your phone or laptop. GitHub CLI can fall back to plaintext storage when no keyring is available. Never paste tokens or private keys into chat.", t.text_muted, 11.))
             .child(outline_button("setup-cloud-github", "Draft GitHub setup request", self.account.is_some(), t)
@@ -240,6 +339,13 @@ impl MobileApp {
             .child(label("Opens a draft for you to review and send. It does not install tools or change credentials automatically.", t.text_muted, 11.))
             .into_any_element()
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn computer_title(email: Option<&str>) -> String {

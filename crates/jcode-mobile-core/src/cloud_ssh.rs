@@ -543,6 +543,11 @@ impl CloudSsh {
         self.inspect_bounded(crate::git_info::inspection_command(working_dir)?)
     }
 
+    /// Run a fixed command built inside this crate (see `cloud_login`).
+    pub(crate) fn run_builtin(&self, command: String) -> std::result::Result<Vec<u8>, String> {
+        self.inspect_bounded(command)
+    }
+
     // Only built-in inspection builders may supply commands.
     fn inspect_bounded(&self, command: String) -> std::result::Result<Vec<u8>, String> {
         let (reply, result) = mpsc::channel();
