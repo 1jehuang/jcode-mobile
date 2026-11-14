@@ -1,5 +1,15 @@
 # TestFlight release record
 
+## Build 1794629010, prepared November 13, 2026 (Pacific)
+
+- **Prepared and signed only. Not uploaded or submitted.** Upload/public distribution remains gated on the coordinator's final acceptance authorization.
+- Exact mobile source: `04f570517debba10a14af1b42949356d3445ecf3`, fetched from `origin/main` onto the managed VM with a fast-forward. Tracked source was clean. Unrelated VM Python bytecode was preserved.
+- Shared voice source: `1e62fbf0da21a018beab0d066e28b67499909360`, clean tracked source at `/home/ec2-user/jcode`, explicitly selected with `JCODE_SRC` as in the prior verified release.
+- `scripts/cloud-ios-build.sh` completed at `2026-11-14T04:04:57Z` (November 13, 20:04 Pacific). Apple cross-build receipt `20261114-040331960-16` passed in 80.2 seconds. This uses the managed VM's Apple SDK/linker, not local workstation compilation. Tests are tracked separately by the coordinator and are not implied by this build.
+- ZIP CRC clean. App, bridge, Live Activity and share extension all carry build `1794629010`. Distribution signing completed, and `rcodesign verify` found no problems for all four Mach-O executables. The verifier warns that its checks are incomplete and potentially misleading, so this is not proof of Apple acceptance.
+- IPA SHA-256: `08d8fe4df1bb4b315a0fd28985dad2980d06309dbe294710658f458a921e992a`. Unstripped binary SHA-256: `bd5468c6f17a4426282ccffc0d0c58ec6898e2c376e0f51189a77729d06c39b7`.
+- Exact IPA, unstripped binary, source provenance, build log, bundle/CRC/hash verification and executable signature verification archived locally under `~/.appstoreconnect/builds/1794629010/` and on the VM under `~/.local/share/jcode-mobile-build/state/.appstoreconnect/builds/1794629010/`. Local downloaded IPA hash matches the VM artifact.
+
 ## Build 1794621085, submitted November 13, 2026 (Pacific)
 
 - Version 1.0, source `6f91b68`, including live computer session chat, notification routing, richer Live Activity progress, and synced-session UI coverage. Source committed and pushed to `origin/main` before building.
