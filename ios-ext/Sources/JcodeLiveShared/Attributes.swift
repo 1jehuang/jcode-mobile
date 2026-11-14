@@ -14,6 +14,15 @@ public struct JcodeAgentsAttributes: ActivityAttributes {
         /// "running", "waiting" or "error".
         public var state: String
         public var detail: String
+        /// Where it runs ("Cloud", "XPS 14"). Older hosts omit it.
+        public var origin: String?
+        /// Unix seconds the current state began. Older hosts omit it.
+        public var since: Int?
+
+        public var sinceDate: Date? {
+            guard let since, since > 0 else { return nil }
+            return Date(timeIntervalSince1970: TimeInterval(since))
+        }
     }
 
     public struct ContentState: Codable, Hashable {

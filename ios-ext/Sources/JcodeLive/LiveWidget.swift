@@ -87,12 +87,34 @@ struct Row: View {
                 .foregroundColor(stateColor(item.state))
                 .frame(width: 16)
                 .accessibilityLabel(JcodeActivityText.label(item.state))
-            Text(item.title).font(compact ? .caption : .subheadline).foregroundColor(.white).lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.title).font(compact ? .caption : .subheadline).foregroundColor(.white).lineLimit(1)
+                if !compact, !subline.isEmpty {
+                    Text(subline).font(.caption2).foregroundColor(.gray).lineLimit(1)
+                }
+            }
             Spacer(minLength: 4)
-            Text(item.detail.isEmpty ? JcodeActivityText.label(item.state) : item.detail)
-                .font(.caption).foregroundColor(.gray).lineLimit(1)
+            if let origin = item.origin, !origin.isEmpty {
+                Text(origin)
+                    .font(.caption2.weight(.medium))
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.white.opacity(0.14)))
+                    .lineLimit(1)
+            }
+            if item.state == "running", let start = item.sinceDate {
+                // Ticks on the Lock Screen without any push.
+                Text(timerInterval: start...Date.distantFuture, countsDown: false)
+                    .font(.caption.monospacedDigit()).foregroundColor(stateColor(item.state))
+                    .frame(maxWidth: 52, alignment: .trailing)
+            } else if compact || item.detail.isEmpty {
+                Text(JcodeActivityText.label(item.state)).font(.caption).foregroundColor(stateColor(item.state)).lineLimit(1)
+            }
         }
     }
+
+    /// Second line: what it is doing now. The trailing slot carries the state.
+    private var subline: String { item.detail }
 }
 
 @available(iOS 16.2, *)

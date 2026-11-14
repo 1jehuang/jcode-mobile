@@ -28,6 +28,12 @@ pub struct AgentItem {
     pub state: AgentState,
     #[serde(default)]
     pub detail: String,
+    /// Where it runs ("Cloud", "XPS 14"), when the host reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Unix seconds the current state began, for a live timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
 }
 
 /// `JcodeAgentsAttributes.ContentState`.
@@ -80,8 +86,10 @@ pub fn merge(server: Option<&AgentsState>, local: &[LocalAgent], now: i64) -> Ag
         }
         let prev = out.items.iter().position(|i| i.id == l.id);
         let prev_state = prev.map(|i| out.items[i].state);
+        let mut kept = (None, None);
         if let Some(i) = prev {
-            out.items.remove(i);
+            let old = out.items.remove(i);
+            kept = (old.origin, old.since.filter(|_| Some(old.state) == l.state));
         }
         if let Some(s) = prev_state {
             dec(&mut out, s);
@@ -96,6 +104,8 @@ pub fn merge(server: Option<&AgentsState>, local: &[LocalAgent], now: i64) -> Ag
                 title: l.title.clone(),
                 state: s,
                 detail: l.detail.clone(),
+                origin: kept.0,
+                since: kept.1,
             });
         }
     }
@@ -235,10 +245,24 @@ mod tests {
     use super::*;
 
     fn item(id: &str, s: AgentState) -> AgentItem {
-        AgentItem { id: id.into(), title: id.into(), state: s, detail: String::new() }
+        AgentItem { id: id.into(), title: id.into(), state: s, detail: String::new(), origin: None, since: None }
     }
     fn local(id: &str, s: Option<AgentState>) -> LocalAgent {
         LocalAgent { id: id.into(), title: id.into(), state: s, detail: String::new() }
+    }
+
+    #[test]
+    fn local_override_keeps_origin_and_same_state_start() {
+        let mut a = item("a", AgentState::Running);
+        a.origin = Some("Cloud".into());
+        a.since = Some(100);
+        let srv = AgentsState { running: 1, items: vec![a], ..Default::default() };
+        let m = merge(Some(&srv), &[local("a", Some(AgentState::Running))], 1);
+        assert_eq!((m.items[0].origin.as_deref(), m.items[0].since), (Some("Cloud"), Some(100)));
+        let m = merge(Some(&srv), &[local("a", Some(AgentState::Waiting))], 1);
+        assert_eq!((m.items[0].origin.as_deref(), m.items[0].since), (Some("Cloud"), None));
+        let json = serde_json::to_value(&m.items[0]).unwrap();
+        assert!(json.get("since").is_none());
     }
 
     #[test]
