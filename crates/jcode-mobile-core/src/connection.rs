@@ -184,6 +184,7 @@ fn error_event(kind: &ErrorKind) -> &'static str {
         ErrorKind::UnexpectedReply => "connection error unexpected reply",
         ErrorKind::Harness(_) => "connection error harness",
         ErrorKind::Transport => "connection error transport",
+        ErrorKind::Protocol => "connection error protocol",
         ErrorKind::LaunchFailed => "connection error launch failed",
         ErrorKind::JcodeNotFound => "connection error jcode not found",
         ErrorKind::StartupFailed => "connection error startup failed",
@@ -731,7 +732,7 @@ mod tests {
     #[test]
     fn error_diagnostics_use_only_kind_and_preserve_retry_policy() {
         let private = "private server address and user content";
-        for kind in [ErrorKind::Timeout, ErrorKind::Transport, ErrorKind::Disconnected] {
+        for kind in [ErrorKind::Timeout, ErrorKind::Transport, ErrorKind::Protocol, ErrorKind::Disconnected] {
             let label = error_event(&kind);
             assert!(label.starts_with("connection error "));
             assert!(!label.contains(private));

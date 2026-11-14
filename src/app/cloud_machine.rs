@@ -126,7 +126,7 @@ impl MobileApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                if this.account.as_ref() != Some(&expected)
+                if !super::account_profile::same_account(this.account.as_ref(), &expected)
                     || this.cloud_machine.generation != generation { return; }
                 this.cloud_machine.loading = false;
                 match result {
@@ -171,7 +171,10 @@ impl MobileApp {
                     )
                     .child(
                         label(
-                            computer_title(self.account.as_ref().and_then(|a| a.email.as_deref())),
+                            computer_title(
+                                self.account.as_ref().and_then(|a| a.given_name.as_deref()),
+                                self.account.as_ref().and_then(|a| a.name.as_deref()),
+                            ),
                             t.text_muted,
                             12.,
                         )
@@ -348,11 +351,19 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn computer_title(email: Option<&str>) -> String {
-    let name = email
-        .and_then(|email| email.split('@').next())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+fn computer_title(given_name: Option<&str>, full_name: Option<&str>) -> String {
+    fn valid(value: &str) -> bool {
+        !value.is_empty()
+            && value.chars().count() <= 128
+            && !value.contains('@')
+            && !value.chars().any(char::is_control)
+    }
+    let name = given_name.map(str::trim).filter(|s| valid(s)).or_else(|| {
+        full_name
+            .map(str::trim)
+            .filter(|s| valid(s))
+            .and_then(|s| s.split_whitespace().next())
+    });
     name.map(|name| format!("{name}'s Jcode computer"))
         .unwrap_or_else(|| "Your Jcode computer".into())
 }
@@ -391,11 +402,35 @@ mod tests {
     #[test]
     fn computer_name_and_capacity_formatting() {
         assert_eq!(
-            computer_title(Some("jeremy@example.test")),
-            "jeremy's Jcode computer"
+            computer_title(Some("Jeremy"), Some("Jeremy Huang")),
+            "Jeremy's Jcode computer"
         );
-        assert_eq!(computer_title(None), "Your Jcode computer");
-        assert_eq!(computer_title(Some("@example.test")), "Your Jcode computer");
+        assert_eq!(
+            computer_title(None, Some("Jeremy Huang")),
+            "Jeremy's Jcode computer"
+        );
+        assert_eq!(
+            computer_title(Some("  Mary Jane  "), None),
+            "Mary Jane's Jcode computer"
+        );
+        assert_eq!(
+            computer_title(Some("Élodie"), None),
+            "Élodie's Jcode computer"
+        );
+        assert_eq!(computer_title(Some("李明"), None), "李明's Jcode computer");
+        for (given, full) in [
+            (None, None),
+            (Some("  "), None),
+            (Some("jeremy@example.test"), None),
+            (None, Some("jeremy@example.test")),
+            (Some("bad\nname"), None),
+        ] {
+            assert_eq!(computer_title(given, full), "Your Jcode computer");
+        }
+        assert_eq!(
+            computer_title(Some("bad\nname"), Some("Jeremy Huang")),
+            "Jeremy's Jcode computer"
+        );
         assert_eq!(gib(8 * 1024 * 1024 * 1024), "8.0 GiB");
         assert_eq!(
             capacity(4 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024),
@@ -483,6 +518,8 @@ mod tests {
         });
         view.update(cx, |app, cx| {
             app.account = Some(Account {
+                given_name: None,
+                name: None,
                 api_key: "fixture-not-a-real-key".into(),
                 api_base: "http://127.0.0.1:9".into(),
                 email: Some("fixture@example.test".into()),

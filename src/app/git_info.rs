@@ -739,7 +739,7 @@ impl MobileApp {
         result: Result<GitSnapshot, String>,
         cx: &mut Context<Self>,
     ) {
-        if self.account.as_ref() != Some(expected)
+        if !super::account_profile::same_account(self.account.as_ref(), expected)
             || self.git_info.generation != generation
             || &self.git_context() != context
         {

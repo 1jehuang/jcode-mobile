@@ -26,6 +26,7 @@ mod recent_dirs;
 mod default_dir;
 mod sidebar;
 mod synced_sessions;
+mod account_profile;
 mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
@@ -111,6 +112,7 @@ pub struct MobileApp {
     pub device: Option<(f32, f32)>,
     store: AccountStore,
     account: Option<Account>,
+    account_profile_requested: bool,
     connection: Option<Connection>,
     session: SessionState,
     // Sign-in form: email, then the 6-digit code.
@@ -356,6 +358,7 @@ impl MobileApp {
             device: None,
             store,
             account: None,
+            account_profile_requested: false,
             connection: None,
             session: SessionState::default(),
             email,
@@ -685,6 +688,7 @@ impl MobileApp {
         }
         self.session = SessionState::default();
         self.account = Some(account);
+        self.account_profile_requested = false;
         self.synced = Default::default();
         self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
         self.register_push(cx);
@@ -705,6 +709,7 @@ impl MobileApp {
     fn start_connection_target(&mut self, resume: Option<String>, working_dir: Option<String>, fork_from: Option<String>, cx: &mut Context<Self>) {
         self.cancel_voice(cx);
         if self.offline { return; }
+        self.ensure_account_profile(cx);
         let Some(account) = self.account.clone() else { return };
         let working_dir = self.new_session_dir(resume.as_deref(), working_dir, fork_from.as_deref());
         if working_dir.is_some() && self.session.working_dir.is_none() {
@@ -1047,7 +1052,7 @@ impl MobileApp {
     }
 
     fn complete_account_deletion(&mut self, expected: &Account, generation: u64, result: Result<(), String>, cx: &mut Context<Self>) {
-        if generation != self.auth_generation || self.account.as_ref() != Some(expected) || self.delete_step != 2 { return; }
+        if generation != self.auth_generation || !account_profile::same_account(self.account.as_ref(), expected) || self.delete_step != 2 { return; }
         self.delete_step = 0;
         match result {
             Ok(()) => self.sign_out(cx),
@@ -1075,7 +1080,7 @@ impl MobileApp {
                 cx.spawn(async move |this, cx| {
                     let result = task.await;
                     this.update(cx, |this, cx| {
-                        if result.is_err() && generation == this.auth_generation && this.account.as_ref() == Some(&expected) && this.delete_step == 2 {
+                        if result.is_err() && generation == this.auth_generation && account_profile::same_account(this.account.as_ref(), &expected) && this.delete_step == 2 {
                             haptics::play(Haptic::Error);
                         }
                         this.complete_account_deletion(&expected, generation, result, cx);
@@ -1137,6 +1142,7 @@ impl MobileApp {
             self.store.clear();
         }
         self.account = None;
+        self.account_profile_requested = false;
         self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
         self.synced = Default::default();
         self.transfer_input.update(cx, |input, cx| input.set_text("", cx));

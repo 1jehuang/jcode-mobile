@@ -19,7 +19,8 @@ struct WarmTarget<T> {
 
 impl<T: Clone> WarmTarget<T> {
     fn for_account(&self, account: &Account, now: Instant) -> Option<T> {
-        (self.account == *account && self.expires > now).then(|| self.ssh.clone())
+        (self.account.api_key == account.api_key && self.account.api_base == account.api_base && self.expires > now)
+            .then(|| self.ssh.clone())
     }
 }
 
@@ -707,6 +708,10 @@ mod tests {
         let now = Instant::now();
         let entry = WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL };
         assert_eq!(entry.for_account(&account, now), Some(7));
+        let mut profile_updated = account.clone();
+        profile_updated.given_name = Some("Jeremy".into());
+        profile_updated.name = Some("Jeremy Huang".into());
+        assert_eq!(entry.for_account(&profile_updated, now), Some(7));
         assert_eq!(entry.for_account(&account, now + TARGET_TTL), None);
         let mut other = account.clone();
         other.api_key = "key-b".into();
