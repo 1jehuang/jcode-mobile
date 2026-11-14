@@ -231,7 +231,14 @@ impl TextInput {
     }
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            // Composer drafts may contain code whose line breaks are semantic.
+            // Single-line fields still flatten paste, including CRLF and old-Mac CR.
+            if self.max_lines > 1 {
+                self.replace_text_in_range(None, &text, window, cx);
+            } else {
+                let text = text.replace("\r\n", "\n").replace(['\r', '\n'], " ");
+                self.replace_text_in_range(None, &text, window, cx);
+            }
         }
     }
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -278,7 +285,7 @@ impl TextInput {
     }
 
     fn last_line_height(&self) -> Option<Pixels> {
-        self.last_layout.as_ref().map(|_| px(LINE_HEIGHT))
+        self.last_layout.as_ref().map(|_| crate::system::fs(LINE_HEIGHT))
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -461,7 +468,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let _ = bounds;
         let line = self.last_layout.as_ref()?;
-        let lh = px(LINE_HEIGHT);
+        let lh = crate::system::fs(LINE_HEIGHT);
         let range = self.range_from_utf16(&range_utf16);
         let a = line.position_for_index(range.start, lh)?;
         let b = line.position_for_index(range.end, lh).unwrap_or(a);
@@ -541,7 +548,7 @@ impl Element for TextElement {
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        let lh = px(LINE_HEIGHT);
+        let lh = crate::system::fs(LINE_HEIGHT);
         let input = self.input.read(cx);
         if input.max_lines <= 1 {
             style.size.height = lh.into();
@@ -647,7 +654,7 @@ impl Element for TextElement {
             None => vec![run],
         };
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let lh = px(LINE_HEIGHT);
+        let lh = crate::system::fs(LINE_HEIGHT);
         let wrap = (input.max_lines > 1).then_some(bounds.size.width);
         let line = window
             .text_system()
@@ -734,7 +741,7 @@ impl Element for TextElement {
             }
             line.paint(
                 origin,
-                px(LINE_HEIGHT),
+                crate::system::fs(LINE_HEIGHT),
                 gpui::TextAlign::Left,
                 None,
                 window,
@@ -1355,6 +1362,53 @@ mod ios_keyboard_tests {
             with_handler(cx, |t, w, cx| t.text_for_range(2..3, &mut adj, w, cx)).as_deref(),
             Some("日")
         );
+    }
+
+    #[gpui::test]
+    fn multiline_clipboard_paste_preserves_code_and_unicode_selection(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        input.update(cx, |t, _| t.max_lines = 6);
+        insert_text(cx, "😀 replace tail");
+        with_handler(cx, |t, w, cx| {
+            t.set_selected_text_range(3..10, w, cx);
+            cx.write_to_clipboard(ClipboardItem::new_string("if ready:\n    run()\n\n# 日本語".into()));
+            t.paste(&Paste, w, cx);
+        });
+        assert_eq!(text(&input, cx), "😀 if ready:\n    run()\n\n# 日本語 tail");
+        with_handler(cx, |t, w, cx| {
+            t.select_all_text(cx);
+            t.copy(&Copy, w, cx);
+            assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(),
+                Some("😀 if ready:\n    run()\n\n# 日本語 tail"));
+        });
+    }
+
+    #[gpui::test]
+    fn single_line_clipboard_paste_normalizes_all_line_endings(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        with_handler(cx, |t, w, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("one\r\ntwo\rthree\nfour".into()));
+            t.paste(&Paste, w, cx);
+        });
+        assert_eq!(text(&input, cx), "one two three four");
+    }
+
+    #[gpui::test]
+    fn dynamic_type_editor_layout_matches_scaled_line_height(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        cx.update(|_, cx| { crate::system::refresh(cx); });
+        input.update(cx, |t, _| t.max_lines = 6);
+        cx.simulate_resize(size(px(180.), px(600.)));
+        insert_text(cx, "large text must wrap over multiple visible lines without overlapping glyphs");
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        input.read_with(cx, |t, _| {
+            let line = t.last_layout.as_ref().expect("input shaped");
+            let count = line.wrap_boundaries().len() + 1;
+            assert!(count > 1, "fixture must wrap");
+            assert_eq!(t.last_line_height(), Some(crate::system::fs(LINE_HEIGHT)));
+            assert_eq!(t.last_bounds.expect("input laid out").size.height,
+                crate::system::fs(LINE_HEIGHT) * count.min(6) as f32);
+        });
     }
 
     #[gpui::test]
