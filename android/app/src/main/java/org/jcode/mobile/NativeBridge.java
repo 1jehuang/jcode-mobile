@@ -6,7 +6,9 @@ public final class NativeBridge {
     static {
         String error = null;
         try { System.loadLibrary("jcode_mobile_android"); }
-        catch (UnsatisfiedLinkError | SecurityException e) { error = e.getMessage(); }
+        catch (UnsatisfiedLinkError | SecurityException e) {
+            error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        }
         LOAD_ERROR = error;
     }
     private NativeBridge() {}

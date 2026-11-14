@@ -37,18 +37,22 @@ public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private TextView status, heading, empty;
     private EditText composer;
-    private Button send, connect, refresh;
+    private Button send, connect, refresh, cloud;
+    private String loginState = "signed_out";
+    private boolean loginBusy;
+    private static String loginEmail = "";
     private LinearLayout transcript;
     private ScrollView scroll;
     private ListView sessionList;
     private ArrayAdapter<String> sessionAdapter;
     private final ArrayList<String> sessionIds = new ArrayList<>();
-    private boolean demo, resumed, destroyed, inFlight, connected;
-    private String selected = "", renderedMessages = "", pendingText = "";
+    private boolean demo, resumed, destroyed, inFlight, connected, dialogOpen;
+    private String selected = "", renderedMessages = "", renderedSessions = "", pendingText = "";
     private DemoState demoState;
+    private AlertDialog activeDialog;
     private final Runnable poller = new Runnable() {
         @Override public void run() {
-            if (!resumed || destroyed) return;
+            if (!resumed || destroyed || dialogOpen) return;
             if (!inFlight) request("poll", new JSONObject(), false);
             else main.postDelayed(this, 500);
         }
@@ -58,8 +62,8 @@ public final class MainActivity extends Activity {
         super.onCreate(saved);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         preferences = getSharedPreferences("connection", MODE_PRIVATE);
-        demo = getIntent().getBooleanExtra("demo", false)
-                || "true".equalsIgnoreCase(getIntent().getStringExtra("demo"));
+        Object demoExtra = getIntent().getExtras() == null ? null : getIntent().getExtras().get("demo");
+        demo = Boolean.TRUE.equals(demoExtra) || "true".equalsIgnoreCase(String.valueOf(demoExtra));
         if (saved != null) demo = saved.getBoolean("demo", demo);
         demoState = new DemoState();
         if (saved != null && demo) demoState.restore(saved.getString("demo_state"));
@@ -71,6 +75,7 @@ public final class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root = column();
         root.setBackgroundColor(BACKGROUND);
+        root.setFitsSystemWindows(true);
         root.setPadding(dp(16), dp(12), dp(16), dp(8));
         setContentView(root);
         LinearLayout toolbar = row();
@@ -91,8 +96,11 @@ public final class MainActivity extends Activity {
         });
         refresh = button("Refresh");
         refresh.setOnClickListener(v -> request("sessions", new JSONObject(), true));
-        actions.addView(connect);
-        actions.addView(refresh);
+        actions.addView(connect, new LinearLayout.LayoutParams(0, -2, 1));
+        actions.addView(refresh, new LinearLayout.LayoutParams(0, -2, 1));
+        cloud = button("Cloud sign in");
+        cloud.setOnClickListener(v -> showCloud());
+        actions.addView(cloud, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(actions);
         TextView sessionsLabel = label("SESSIONS", 12, MUTED);
         root.addView(sessionsLabel);
@@ -209,12 +217,14 @@ public final class MainActivity extends Activity {
                 }
                 else {
                     applySnapshot(result);
+                    if (action.equals("logout") && result.optBoolean("ok", true)) loginEmail = "";
+                    if (action.equals("start_login") && result.optBoolean("ok", true) && loginState.equals("code_sent") && !loginBusy) main.post(this::showCloud);
                     if (action.equals("send") && result.optBoolean("ok", true)) {
                         if (composer.getText().toString().equals(pendingText)) composer.setText("");
                     }
                 }
                 updateControls();
-                if (resumed && (demo || NativeBridge.isAvailable())) main.postDelayed(poller, 1000);
+                if (resumed && !dialogOpen && (demo || NativeBridge.isAvailable())) main.postDelayed(poller, 1000);
             });
         });
     }
@@ -222,15 +232,25 @@ public final class MainActivity extends Activity {
     private void applySnapshot(JSONObject response) {
         JSONObject state = response.optJSONObject("state");
         if (state == null) state = response;
+        String previousLoginState = loginState;
+        loginState = state.optString("login_state", loginState);
+        loginBusy = state.optBoolean("login_busy", false);
+        if (!loginState.equals(previousLoginState) && resumed
+                && (loginState.equals("code_sent") || (loginState.equals("signed_in") && previousLoginState.equals("code_sent")))) main.post(this::showCloud);
         String phase = state.optString("status", "Disconnected");
         connected = state.optBoolean("connected", phase.equalsIgnoreCase("connected") || phase.equalsIgnoreCase("ready") || phase.equalsIgnoreCase("demo"));
         String error = response.optString("error", "");
+        String loginError = nullableString(state, "login_error");
+        if (!loginError.isEmpty()) error = loginError;
         if (error.equals("null")) error = "";
         status.setText(!response.optBoolean("ok", true) || !error.isEmpty() ? "Error: " + (error.isEmpty() ? "Request failed" : error) : (demo ? "DEMO · " : "") + phase + (state.optBoolean("is_processing", false) ? " · Working…" : ""));
+        if (loginBusy && error.isEmpty()) status.setText("Cloud sign-in in progress…");
         if (state.has("selected_session_id")) selected = nullableString(state, "selected_session_id");
         else if (state.has("session_id")) selected = nullableString(state, "session_id");
         JSONArray sessions = state.optJSONArray("sessions");
-        if (sessions != null) {
+        if (sessions != null && !(selected + sessions.toString()).equals(renderedSessions)) {
+            renderedSessions = selected + sessions.toString();
+            sessionAdapter.setNotifyOnChange(false);
             sessionAdapter.clear();
             sessionIds.clear();
             int checked = -1;
@@ -246,6 +266,7 @@ public final class MainActivity extends Activity {
                 sessionIds.add(id);
                 sessionAdapter.add(title + (detail.isEmpty() ? "" : "\n" + detail));
             }
+            sessionAdapter.notifyDataSetChanged();
             sessionList.clearChoices();
             if (checked >= 0) sessionList.setItemChecked(checked, true);
         }
@@ -287,8 +308,62 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void showCloud() {
+        if (inFlight || destroyed || !resumed || dialogOpen) return;
+        if (loginBusy) {
+            present(new AlertDialog.Builder(this).setTitle("Cloud sign-in in progress")
+                .setMessage("You can wait for sign-in to finish, or cancel and clear the in-memory account.")
+                .setPositiveButton("Keep waiting", null)
+                .setNegativeButton("Cancel sign-in", (dialog, which) -> { demo = false; request("logout", new JSONObject(), true); }).create());
+            return;
+        }
+        if (loginState.equals("signed_in")) {
+            present(new AlertDialog.Builder(this).setTitle("Jcode Cloud")
+                .setMessage("Your account is signed in for this app process. Connect to your cloud workspace, or sign out to remove the in-memory account.")
+                .setPositiveButton("Connect cloud", (dialog, which) -> { demo = false; request("connect_cloud", new JSONObject(), true); })
+                .setNeutralButton("Sign out", (dialog, which) -> { demo = false; request("logout", new JSONObject(), true); })
+                .setNegativeButton("Cancel", null).create());
+            return;
+        }
+        boolean codeStep = loginState.equals("code_sent");
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(codeStep ? "Email verification code" : "Email address");
+        input.setInputType(codeStep ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        if (codeStep) input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(6)});
+        if (!codeStep) input.setText(loginEmail);
+        LinearLayout panel = column();
+        panel.setPadding(dp(20), dp(8), dp(20), dp(8));
+        TextView explanation = new TextView(this);
+        explanation.setText(codeStep ? "Enter the code sent to " + (loginEmail.isEmpty() ? "your email" : loginEmail) + ". Credentials stay in memory only." : "Sign in to Jcode Cloud with an email verification code. This will leave demo mode if enabled.");
+        panel.addView(explanation);
+        panel.addView(input);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(codeStep ? "Verify email" : "Sign in to Jcode Cloud").setView(panel)
+            .setPositiveButton(codeStep ? "Verify" : "Send code", null)
+            .setNeutralButton(codeStep ? "Resend code" : "Cancel", (d, which) -> {
+                if (codeStep && !loginEmail.isEmpty()) {
+                    JSONObject args = new JSONObject(); put(args, "email", loginEmail);
+                    demo = false; request("start_login", args, true);
+                }
+            }).setNegativeButton(codeStep ? "Cancel" : "Not now", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String value = input.getText().toString().trim();
+            if (value.isEmpty() || (codeStep && !value.matches("[0-9]{6}")) || (!codeStep && (!value.contains("@") || value.endsWith("@")))) {
+                input.setError(codeStep ? "Enter the six-digit verification code" : "Enter a valid email address");
+                return;
+            }
+            JSONObject args = new JSONObject();
+            put(args, codeStep ? "code" : "email", value);
+            if (!codeStep) loginEmail = value;
+            demo = false;
+            dialog.dismiss();
+            request(codeStep ? "verify_login" : "start_login", args, true);
+        }));
+        present(dialog);
+    }
+
     private void showSettings() {
-        if (inFlight) return;
+        if (inFlight || dialogOpen) return;
         LinearLayout panel = column();
         panel.setPadding(dp(20), dp(8), dp(20), dp(8));
         EditText endpoint = new EditText(this);
@@ -306,7 +381,7 @@ public final class MainActivity extends Activity {
         TextView note = new TextView(this);
         note.setText("Use a forwarded Jcode TCP socket. Endpoint is saved locally, token is held in memory only. This core currently rejects nonempty tokens. Demo mode never contacts a server.");
         panel.addView(note);
-        new AlertDialog.Builder(this).setTitle("Connection settings").setView(panel)
+        present(new AlertDialog.Builder(this).setTitle("Connection settings").setView(panel)
             .setPositiveButton("Save & connect", (dialog, which) -> {
                 preferences.edit().putString("endpoint", endpoint.getText().toString().trim()).apply();
                 accessToken = token.getText().toString();
@@ -318,7 +393,19 @@ public final class MainActivity extends Activity {
                 selected = "";
                 renderedMessages = "";
                 request("status", new JSONObject(), false);
-            }).setNegativeButton("Cancel", null).show();
+            }).setNegativeButton("Cancel", null).create());
+    }
+
+    private void present(AlertDialog dialog) {
+        dialogOpen = true;
+        activeDialog = dialog;
+        main.removeCallbacks(poller);
+        dialog.setOnDismissListener(ignored -> {
+            dialogOpen = false;
+            activeDialog = null;
+            if (resumed && !destroyed && !inFlight) main.postDelayed(poller, 1000);
+        });
+        dialog.show();
     }
 
     private static String accessToken = "";
@@ -326,6 +413,8 @@ public final class MainActivity extends Activity {
         send.setEnabled(!inFlight && connected && !selected.isEmpty());
         connect.setEnabled(!inFlight);
         refresh.setEnabled(!inFlight);
+        cloud.setEnabled(!inFlight);
+        cloud.setText(loginBusy ? "Cancel login" : loginState.equals("signed_in") ? "Cloud account" : "Cloud sign in");
         sessionList.setEnabled(!inFlight);
         connect.setText(connected ? "Disconnect" : "Connect");
     }
@@ -333,7 +422,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         resumed = true;
         main.removeCallbacks(poller);
-        if (!inFlight) request("status", new JSONObject(), false);
+        if (!inFlight) request("wake", new JSONObject(), false);
         else main.postDelayed(poller, 1000);
     }
     @Override protected void onPause() {
@@ -349,6 +438,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onDestroy() {
         destroyed = true;
+        if (activeDialog != null) activeDialog.dismiss();
         main.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
