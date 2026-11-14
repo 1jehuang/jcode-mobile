@@ -1,6 +1,9 @@
 //! Synced browsing, live computer chat and explicit cloud continuation.
 #[path = "synced_chat.rs"]
 mod chat;
+#[cfg(test)]
+#[path = "synced_account_isolation_tests.rs"]
+mod account_isolation_tests;
 use super::a11y::A11yExt as _;
 use super::{MobileApp, Screen};
 use crate::haptics::{self, Haptic};
@@ -543,6 +546,7 @@ impl MobileApp {
         };
         self.synced.loading = true;
         self.synced.error = None;
+        let generation = self.auth_generation;
         let request_account = account.clone();
         let task = cx.background_spawn(async move {
             Ok::<_, String>((
@@ -553,31 +557,7 @@ impl MobileApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                if !same_account(this.account.as_ref(), &account) {
-                    return;
-                }
-                this.synced.loading = false;
-                match result {
-                    Ok((sessions, commands)) => {
-                        this.synced.replace_sessions(sessions);
-                        this.synced.commands = commands;
-                        this.synced.uncertain_submission = false;
-                        if let Some(command) = this
-                            .synced
-                            .commands
-                            .iter()
-                            .find(|c| {
-                                c.kind == "transfer"
-                                    && matches!(c.status.as_str(), "queued" | "running")
-                            })
-                            .cloned()
-                        {
-                            this.poll_transfer(command, account.clone(), cx);
-                        }
-                    }
-                    Err(e) => this.synced.error = Some(e),
-                }
-                cx.notify();
+                this.complete_synced_refresh(&account, generation, result, cx);
             })
             .ok();
         })
@@ -619,6 +599,7 @@ impl MobileApp {
             return;
         }
         self.synced.submitting = true;
+        let generation = self.auth_generation;
         haptics::play(Haptic::Light);
         self.synced.error = None;
         let request_account = account.clone();
@@ -629,30 +610,121 @@ impl MobileApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
-                if !same_account(this.account.as_ref(), &account) {
-                    return;
-                }
-                this.synced.submitting = false;
-                match result {
-                    Ok(command) => {
-                        this.transfer_input
-                            .update(cx, |input, cx| input.set_text("", cx));
-                        this.synced.commands.insert(0, command.clone());
-                        this.poll_transfer(command, account, cx);
-                    }
-                    Err(e) => {
-                        // A lost response may have enqueued successfully. Reconcile before retrying.
-                        haptics::play(Haptic::Error);
-                        this.synced.uncertain_submission = true;
-                        this.synced.error = Some(format!("{e}. Refresh sessions before retrying."));
-                        this.refresh_synced_sessions(cx);
-                    }
-                }
-                cx.notify();
+                this.complete_synced_transfer(&account, generation, result, cx);
             })
             .ok();
         })
         .detach();
+    }
+
+    fn synced_request_current(&self, account: &Account, generation: u64) -> bool {
+        generation == self.auth_generation && same_account(self.account.as_ref(), account)
+    }
+
+    fn complete_synced_refresh(
+        &mut self,
+        account: &Account,
+        generation: u64,
+        result: Result<(Vec<SyncedSession>, Vec<Command>), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.synced_request_current(account, generation) { return; }
+        self.synced.loading = false;
+        match result {
+            Ok((sessions, commands)) => {
+                self.synced.replace_sessions(sessions);
+                self.synced.commands = commands;
+                self.synced.uncertain_submission = false;
+                if let Some(command) = self.synced.commands.iter().find(|c| {
+                    c.kind == "transfer" && matches!(c.status.as_str(), "queued" | "running")
+                }).cloned() {
+                    self.poll_transfer(command, account.clone(), cx);
+                }
+            }
+            Err(error) => self.synced.error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn complete_synced_transfer(
+        &mut self,
+        account: &Account,
+        generation: u64,
+        result: Result<Command, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.synced_request_current(account, generation) { return; }
+        self.synced.submitting = false;
+        match result {
+            Ok(command) => {
+                self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
+                self.synced.commands.insert(0, command.clone());
+                self.poll_transfer(command, account.clone(), cx);
+            }
+            Err(error) => {
+                // A lost response may have enqueued successfully. Reconcile before retrying.
+                haptics::play(Haptic::Error);
+                self.synced.uncertain_submission = true;
+                self.synced.error = Some(format!("{error}. Refresh sessions before retrying."));
+                self.refresh_synced_sessions(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn complete_transfer_poll(
+        &mut self,
+        account: &Account,
+        generation: u64,
+        id: &str,
+        source: &str,
+        result: Result<Command, String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.synced_request_current(account, generation)
+            || self.synced.polling.as_deref() != Some(id)
+        {
+            return true;
+        }
+        let result = match result {
+            Ok(command) => {
+                self.synced.commands.retain(|c| c.command_id != command.command_id);
+                self.synced.commands.insert(0, command.clone());
+                command.destination(source)
+            }
+            Err(error) => {
+                self.synced.error = Some(format!("Waiting for cloud: {error}"));
+                cx.notify();
+                return false;
+            }
+        };
+        match result {
+            Ok(None) => {
+                self.synced.error = None;
+                cx.notify();
+                false
+            }
+            Ok(Some(destination)) => {
+                self.synced.polling = None;
+                self.synced.error = None;
+                if self.drawer_open && self.synced.selected.as_deref() == Some(source) {
+                    self.synced.selected = None;
+                    self.screen = Screen::Chat;
+                    self.drawer_open_session(destination, cx);
+                } else {
+                    haptics::play(Haptic::Success);
+                }
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                self.synced.polling = None;
+                haptics::play(Haptic::Error);
+                self.synced.error = Some(error);
+                cx.notify();
+                true
+            }
+        }
     }
 
     fn poll_transfer(&mut self, command: Command, account: Account, cx: &mut Context<Self>) {
@@ -667,6 +739,7 @@ impl MobileApp {
         };
         let id = command.command_id;
         self.synced.polling = Some(id.clone());
+        let generation = self.auth_generation;
         cx.spawn(async move |this, cx| {
             // Polling resumes from the account's command list after reopening the app.
             for _ in 0..1800 {
@@ -675,7 +748,7 @@ impl MobileApp {
                     .await;
                 let active = this
                     .update(cx, |this, _| {
-                        same_account(this.account.as_ref(), &account)
+                        this.synced_request_current(&account, generation)
                             && this.synced.polling.as_deref() == Some(&id)
                     })
                     .unwrap_or(false);
@@ -689,53 +762,7 @@ impl MobileApp {
                     .await;
                 let stop = this
                     .update(cx, |this, cx| {
-                        if !same_account(this.account.as_ref(), &account) {
-                            return true;
-                        }
-                        let result = match result {
-                            Ok(command) => {
-                                this.synced
-                                    .commands
-                                    .retain(|c| c.command_id != command.command_id);
-                                this.synced.commands.insert(0, command.clone());
-                                command.destination(&source)
-                            }
-                            Err(e) => {
-                                this.synced.error = Some(format!("Waiting for cloud: {e}"));
-                                cx.notify();
-                                return false;
-                            }
-                        };
-                        match result {
-                            Ok(None) => {
-                                this.synced.error = None;
-                                cx.notify();
-                                false
-                            }
-                            Ok(Some(destination)) => {
-                                this.synced.polling = None;
-                                this.synced.error = None;
-                                // Do not steal focus if the user has left the continuation sheet.
-                                if this.drawer_open
-                                    && this.synced.selected.as_deref() == Some(&source)
-                                {
-                                    this.synced.selected = None;
-                                    this.screen = Screen::Chat;
-                                    this.drawer_open_session(destination, cx);
-                                } else {
-                                    haptics::play(Haptic::Success);
-                                }
-                                cx.notify();
-                                true
-                            }
-                            Err(e) => {
-                                this.synced.polling = None;
-                                haptics::play(Haptic::Error);
-                                this.synced.error = Some(e);
-                                cx.notify();
-                                true
-                            }
-                        }
+                        this.complete_transfer_poll(&account, generation, &id, &source, result, cx)
                     })
                     .unwrap_or(true);
                 if stop {
@@ -743,7 +770,9 @@ impl MobileApp {
                 }
             }
             this.update(cx, |this, cx| {
-                if same_account(this.account.as_ref(), &account) {
+                if this.synced_request_current(&account, generation)
+                    && this.synced.polling.as_deref() == Some(&id)
+                {
                     this.synced.polling = None;
                     this.synced.error = Some(
                         "Cloud continuation is still pending. Refresh to check its status.".into(),

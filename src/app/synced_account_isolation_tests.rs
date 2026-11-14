@@ -1,0 +1,160 @@
+//! Same-credential reauthentication must not revive a previous login's requests.
+//! Actual production completion handlers are injected, never HTTP or SSH.
+use super::super::account_coverage::{account, draw, mount};
+use super::*;
+use gpui::TestAppContext;
+
+fn command() -> Command {
+    serde_json::from_value(serde_json::json!({
+        "command_id": "same-poll", "kind": "transfer", "session_id": "local-work",
+        "status": "done", "result_session_id": "old-login-destination"
+    }))
+    .unwrap()
+}
+
+#[gpui::test]
+fn same_account_aba_refresh_cannot_replace_new_login_inventory(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        let old = app.auth_generation;
+        app.sign_out(cx);
+        app.adopt_account(expected.clone(), cx);
+        app.synced = State::fixture();
+        app.synced.loading = true;
+        app.synced.uncertain_submission = true;
+        app.complete_synced_refresh(&expected, old, Ok((vec![], vec![])), cx);
+        assert!(
+            app.synced.loading,
+            "old refresh cleared replacement login's pending request"
+        );
+        assert!(
+            !app.synced.sessions.is_empty(),
+            "old refresh replaced new login inventory"
+        );
+        assert!(app.synced.uncertain_submission);
+        app.complete_synced_refresh(&expected, old, Err("old refresh error".into()), cx);
+        assert!(app.synced.error.is_none());
+        app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![])), cx);
+        assert!(!app.synced.loading && !app.synced.uncertain_submission);
+        assert!(app.synced.sessions.is_empty());
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn same_account_aba_transfer_cannot_clear_new_login_draft_or_install_old_command(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        let old = app.auth_generation;
+        app.sign_out(cx);
+        app.adopt_account(expected.clone(), cx);
+        app.synced = State::fixture();
+        app.synced.submitting = true;
+        app.transfer_input.update(cx, |input, cx| {
+            input.set_text("new login continuation draft", cx)
+        });
+        app.complete_synced_transfer(&expected, old, Ok(command()), cx);
+        assert_eq!(
+            app.transfer_input.read(cx).text(),
+            "new login continuation draft",
+            "old transfer erased new login draft"
+        );
+        assert!(app.synced.submitting);
+        assert!(
+            !app.synced
+                .commands
+                .iter()
+                .any(|c| c.command_id == "same-poll")
+        );
+        let (_, feedback) = haptics::capture(|| {
+            app.complete_synced_transfer(&expected, old, Err("old transfer failure".into()), cx);
+        });
+        assert!(feedback.is_empty());
+        assert!(!app.synced.uncertain_submission && app.synced.error.is_none());
+        app.complete_synced_transfer(&expected, app.auth_generation, Ok(command()), cx);
+        assert!(!app.synced.submitting);
+        assert!(app.transfer_input.read(cx).text().is_empty());
+        assert!(
+            app.synced
+                .commands
+                .iter()
+                .any(|c| c.command_id == "same-poll")
+        );
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn same_account_aba_poll_cannot_finish_or_navigate_replacement_login(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        let old = app.auth_generation;
+        app.sign_out(cx);
+        app.adopt_account(expected.clone(), cx);
+        app.synced = State::fixture();
+        // Reusing the very same command id must not revive the previous loop.
+        app.synced.polling = Some("same-poll".into());
+        app.drawer_open = true;
+        let tab = app.active_tab;
+        let (_, feedback) = haptics::capture(|| {
+            assert!(app.complete_transfer_poll(
+                &expected,
+                old,
+                "same-poll",
+                "local-work",
+                Ok(command()),
+                cx
+            ));
+        });
+        assert_eq!(
+            app.active_tab, tab,
+            "old poll navigated to previous login's destination"
+        );
+        assert_eq!(app.synced.polling.as_deref(), Some("same-poll"));
+        assert_eq!(app.synced.selected.as_deref(), Some("local-work"));
+        assert!(feedback.is_empty());
+        assert!(app.complete_transfer_poll(
+            &expected,
+            old,
+            "same-poll",
+            "local-work",
+            Err("late poll failure".into()),
+            cx
+        ));
+        assert!(app.synced.error.is_none());
+        app.drawer_open = false;
+        assert!(app.complete_transfer_poll(
+            &expected,
+            app.auth_generation,
+            "retired-poll",
+            "local-work",
+            Ok(command()),
+            cx
+        ));
+        assert_eq!(app.synced.polling.as_deref(), Some("same-poll"));
+        assert!(app.complete_transfer_poll(
+            &expected,
+            app.auth_generation,
+            "same-poll",
+            "local-work",
+            Ok(command()),
+            cx
+        ));
+        assert!(app.synced.polling.is_none());
+        assert!(
+            app.synced
+                .commands
+                .iter()
+                .any(|c| c.command_id == "same-poll")
+        );
+    });
+    draw(cx);
+}
