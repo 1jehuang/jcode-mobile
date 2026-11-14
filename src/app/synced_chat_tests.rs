@@ -239,3 +239,187 @@ fn local_composer_hides_cloud_controls_and_stop_button(cx: &mut gpui::TestAppCon
     assert!(cx.debug_bounds("stop").is_none());
     assert!(cx.debug_bounds("send").is_some());
 }
+
+#[gpui::test]
+fn drawn_terminal_submission_across_tabs_does_not_wait_for_another_ack(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::app::navigation_coverage::{mount, tap};
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.composer
+            .update(cx, |input, cx| input.set_text("Cloud draft", cx));
+        app.open_local_chat(live(), Some("Submitted locally".into()), cx);
+        app.apply_local_poll(app.active_tab, snapshot(true, false, "Existing"), None);
+        app.synced.chats.get_mut(&app.active_tab).unwrap().submitting = true;
+        cx.notify();
+    });
+    tap(cx, "tab-0");
+    view.update(cx, |app, cx| {
+        assert_eq!(app.active_tab, 0);
+        let account = app.account.clone().unwrap();
+        app.complete_local_submission(
+            1,
+            &account,
+            app.auth_generation,
+            "Submitted locally",
+            Ok(command("done")),
+            cx,
+        );
+        assert_eq!(app.composer.read(cx).text(), "Cloud draft");
+    });
+    tap(cx, "tab-1");
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.composer.read(cx).text(), "");
+        assert!(
+            app.local_chat_ready(&app.session),
+            "a terminal POST acknowledgement must not need a second poll acknowledgement"
+        );
+        assert!(app.synced.chats[&1].pending.is_none());
+    });
+}
+
+#[gpui::test]
+fn drawn_delivery_ack_preserves_poll_outage_until_recovery(cx: &mut gpui::TestAppContext) {
+    use crate::app::navigation_coverage::{draw, mount, tap};
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), Some("Keep uncertain draft".into()), cx);
+        let tab = app.active_tab;
+        app.apply_local_poll(tab, snapshot(true, false, "Last good answer"), None);
+        let account = app.account.clone().unwrap();
+        app.complete_local_submission(
+            tab,
+            &account,
+            app.auth_generation,
+            "Keep uncertain draft",
+            Err("response lost".into()),
+            cx,
+        );
+        app.apply_local_poll(tab, Err("fixture connection refused".into()), None);
+        cx.notify();
+    });
+    tap(cx, "local-delivery-checked");
+    view.read_with(cx, |app, cx| {
+        assert!(!app.local_delivery_uncertain(&app.session));
+        assert_eq!(app.session.phase, ConnectionPhase::Disconnected);
+        assert_eq!(app.composer.read(cx).text(), "Keep uncertain draft");
+        assert_eq!(app.session.transcript[1].text, "Last good answer");
+        assert_eq!(
+            app.session.error_banner.as_deref(),
+            Some("Computer sync unavailable: fixture connection refused")
+        );
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("local-delivery-checked").is_none());
+    assert!(cx.debug_bounds("composer-connection-status").is_some());
+    // A stale/offline snapshot still cannot send. Only a live recovery clears
+    // the outage and reconnects, without changing the retained draft or rows.
+    view.update(cx, |app, cx| {
+        let tab = app.active_tab;
+        app.apply_local_poll(tab, snapshot(false, false, "Last good answer"), None);
+        assert!(!app.local_chat_ready(&app.session));
+        app.apply_local_poll(tab, snapshot(true, false, "Recovered answer"), None);
+        assert!(app.local_chat_ready(&app.session));
+        assert!(app.session.error_banner.is_none());
+        assert_eq!(app.composer.read(cx).text(), "Keep uncertain draft");
+        assert_eq!(app.session.transcript[1].text, "Recovered answer");
+        cx.notify();
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("composer-connection-status").is_none());
+}
+
+#[gpui::test]
+fn drawn_delivery_ack_keeps_computer_offline_explanation(cx: &mut gpui::TestAppContext) {
+    use crate::app::navigation_coverage::{mount, tap};
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), Some("Still my draft".into()), cx);
+        let tab = app.active_tab;
+        let account = app.account.clone().unwrap();
+        app.complete_local_submission(
+            tab,
+            &account,
+            app.auth_generation,
+            "Still my draft",
+            Err("response lost".into()),
+            cx,
+        );
+        app.apply_local_poll(tab, snapshot(false, false, "Offline answer"), None);
+        cx.notify();
+    });
+    tap(cx, "local-delivery-checked");
+    view.read_with(cx, |app, cx| {
+        assert!(!app.local_delivery_uncertain(&app.session));
+        assert!(!app.local_chat_ready(&app.session));
+        assert_eq!(app.composer.read(cx).text(), "Still my draft");
+        assert_eq!(
+            app.session.error_banner.as_deref(),
+            Some("Computer is offline. Open this session in jcode there to send messages.")
+        );
+    });
+}
+
+#[gpui::test]
+fn drawn_parked_pending_send_keeps_new_draft_and_replaces_transcript_in_order(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::app::navigation_coverage::{mount, tap};
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), Some("Submitted draft".into()), cx);
+        app.apply_local_poll(app.active_tab, snapshot(true, false, "Existing"), None);
+        app.synced.chats.get_mut(&app.active_tab).unwrap().submitting = true;
+        // Typing is allowed while the submission response is in flight.
+        app.composer
+            .update(cx, |input, cx| input.set_text("New follow-up draft", cx));
+        cx.notify();
+    });
+    tap(cx, "tab-0");
+    view.update(cx, |app, cx| {
+        app.composer
+            .update(cx, |input, cx| input.set_text("Unrelated cloud draft", cx));
+        let account = app.account.clone().unwrap();
+        app.complete_local_submission(
+            1,
+            &account,
+            app.auth_generation,
+            "Submitted draft",
+            Ok(command("queued")),
+            cx,
+        );
+        assert!(app.synced.chats[&1].pending.is_some());
+        app.apply_local_poll(
+            1,
+            snapshot(true, true, "Partial"),
+            Some(Ok(command("running"))),
+        );
+        assert!(app.synced.chats[&1].pending.is_some());
+        app.apply_local_poll(
+            1,
+            snapshot(true, false, "Rewritten final"),
+            Some(Ok(command("done"))),
+        );
+        assert_eq!(app.composer.read(cx).text(), "Unrelated cloud draft");
+        assert!(app.session.transcript.is_empty());
+        cx.notify();
+    });
+    tap(cx, "tab-1");
+    view.read_with(cx, |app, cx| {
+        assert_eq!(app.composer.read(cx).text(), "New follow-up draft");
+        assert!(app.local_chat_ready(&app.session));
+        assert!(!app.session.is_processing);
+        assert!(app.synced.chats[&1].pending.is_none());
+        assert_eq!(
+            app.session
+                .transcript
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec![0, 3, 8]
+        );
+        assert_eq!(app.session.transcript[1].text, "Rewritten final");
+    });
+}

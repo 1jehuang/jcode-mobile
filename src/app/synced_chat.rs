@@ -7,6 +7,10 @@ use jcode_mobile_core::{
 };
 use std::time::Duration;
 
+const DELIVERY_UNCERTAIN: &str = "Delivery is uncertain. Check the computer before sending again. This message will not be retried automatically.";
+const COMPUTER_OFFLINE: &str =
+    "Computer is offline. Open this session in jcode there to send messages.";
+
 #[cfg(test)]
 #[path = "synced_chat_tests.rs"]
 mod tests;
@@ -35,7 +39,14 @@ impl MobileApp {
     pub(in crate::app) fn acknowledge_local_delivery(&mut self, cx: &mut Context<Self>) {
         if let Some(chat) = self.synced.chats.get_mut(&self.active_tab) {
             chat.uncertain = false;
-            self.session.error_banner = None;
+            // A newer poll may have replaced the uncertainty warning with a
+            // connectivity error. Checking delivery does not resolve that error.
+            if self.session.error_banner.as_deref().is_some_and(|error| {
+                error == DELIVERY_UNCERTAIN || error.starts_with("Message delivery uncertain: ")
+            }) {
+                self.session.error_banner =
+                    (!chat.session.live).then(|| COMPUTER_OFFLINE.to_owned());
+            }
             cx.notify();
         }
     }
@@ -106,6 +117,15 @@ impl MobileApp {
 
     pub(in crate::app) fn is_local_chat(&self) -> bool {
         self.synced.chats.contains_key(&self.active_tab)
+    }
+
+    pub(in crate::app) fn local_chat_host(&self) -> Option<&str> {
+        self.synced
+            .chats
+            .get(&self.active_tab)?
+            .session
+            .host
+            .as_deref()
     }
 
     pub(in crate::app) fn open_local_chat(
@@ -311,9 +331,9 @@ impl MobileApp {
                     state.is_processing = busy;
                     state.transcript = synced_transcript_entries(transcript.messages);
                     state.error_banner = error.or_else(|| if uncertain {
-                        Some("Delivery is uncertain. Check the computer before sending again. This message will not be retried automatically.".into())
+                        Some(DELIVERY_UNCERTAIN.into())
                     } else if !live {
-                        Some("Computer is offline. Open this session in jcode there to send messages.".into())
+                        Some(COMPUTER_OFFLINE.into())
                     } else { None });
                 }
             }
@@ -382,12 +402,14 @@ impl MobileApp {
         let chat = self.synced.chats.get_mut(&tab).unwrap();
         chat.submitting = false;
         let result = result.and_then(|command| {
-            command.message_complete(&chat.session.session_id)?;
-            Ok(command)
+            let complete = command.message_complete(&chat.session.session_id)?;
+            Ok((command, complete))
         });
         match result {
-            Ok(command) => {
-                chat.pending = Some(command.command_id);
+            Ok((command, complete)) => {
+                // POST may already return a terminal acknowledgement. Only
+                // queued/running commands need another status poll.
+                chat.pending = (!complete).then_some(command.command_id);
                 if self.active_tab == tab {
                     if self.composer.read(cx).text().trim() == submitted {
                         self.composer.update(cx, |input, cx| input.set_text("", cx));
