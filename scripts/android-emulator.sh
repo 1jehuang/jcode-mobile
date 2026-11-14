@@ -35,9 +35,5 @@ done
 "$ADB" -s "$ANDROID_SERIAL" shell input keyevent KEYCODE_WAKEUP
 "$ADB" -s "$ANDROID_SERIAL" shell wm dismiss-keyguard
 "$ADB" -s "$ANDROID_SERIAL" install -r "$APK"
-if [[ "${ANDROID_DEMO:-0}" == 1 ]]; then
-    "$ADB" -s "$ANDROID_SERIAL" shell am start -W -n org.jcode.mobile/.JcodeActivity --es demo true
-else
-    "$ADB" -s "$ANDROID_SERIAL" shell am start -W -n org.jcode.mobile/.JcodeActivity
-fi
+"$ADB" -s "$ANDROID_SERIAL" shell am start -W -n org.jcode.mobile/.JcodeActivity
 echo "Running on $ANDROID_SERIAL. Smoke test: ANDROID_SERIAL=$ANDROID_SERIAL python3 scripts/android-smoke.py"

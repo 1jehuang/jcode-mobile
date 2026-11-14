@@ -79,7 +79,7 @@ impl gpui::AssetSource for Assets {
 }
 
 pub fn run() {
-    run_with_application(gpui_platform::application());
+    run_with_application(gpui_platform::application);
 }
 
 /// Android's NativeActivity glue enters the exact same app and renderer.
@@ -88,7 +88,7 @@ pub fn run() {
 fn android_main(app: gpui_platform::android_activity::AndroidApp) {
     android_logging::init();
     log::info!("jcode-mobile: shared GPUI NativeActivity bootstrap");
-    run_with_application(gpui_platform::android_application(app));
+    run_with_application(|| gpui_platform::android_application(app));
 }
 
 #[cfg(target_os = "android")]
@@ -133,7 +133,7 @@ mod android_logging {
     }
 }
 
-fn run_with_application(application: gpui::Application) {
+fn run_with_application(make_application: impl FnOnce() -> gpui::Application) {
     let _ = jcode_mobile_core::timing::process_start();
     // Open the opt-in local sink before input arrives, not on the first scroll.
     let _ = perf::start();
@@ -160,7 +160,7 @@ fn run_with_application(application: gpui::Application) {
             log::warn!("jcode-mobile: crash upload failed: {e}");
         }
     });
-    let application = application.with_assets(Assets);
+    let application = make_application().with_assets(Assets);
     // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
     application.on_open_urls(ios_ext::handle_urls);
     application.run(|cx: &mut App| {
