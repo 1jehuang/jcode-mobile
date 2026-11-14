@@ -22,7 +22,7 @@ All Rust compilation used hosted justrust. Downloaded hosted-built executables r
 
 - Hosted workspace test check passed, receipt `20261113-195935604-2022437`.
 - Hosted all-workspace test artifact compilation passed, receipt `20261113-200145490-2028110`.
-- Hosted workspace/all-target clippy passed, receipt `20261113-200923597-2051682`, with existing warnings remaining.
+- Hosted workspace/all-target clippy passed, receipt `20261113-200923597-2051682`, and passed again on final production source under `20261113-204645602-2197610`, with existing warnings remaining.
 - Core runtime: 123 passed, 3 ignored.
 - App matrix completed: dark/light appearance, text scales 1.0/1.6, Reduce Motion off/on. All eight full cells passed, each reporting 426 passed and 11 ignored. The four normal cells preceded the final inset fix, whose production branch changes only reduced-motion behavior. All four reduced cells were rerun after the final fix, with 426 passed each (112.22, 107.24, 105.88, and 110.45 seconds).
 - Extended raw-touch corpus seeds 42 through 49, 256 cases per seed: 2,048 cases, 3,056 contacts, 9,192 events, passed.
@@ -36,4 +36,4 @@ Private evidence is under `~/.jcode/scratch/mobile-sweep-20261114/`, including m
 
 ## Release candidate
 
-Prepared build `1794629010` from source `04f5705` is superseded and must not be uploaded because the later Reduce Motion product fix is not included. Final signed build `1794631199` was rebuilt from exact source `04058c1758d0207e8a6275a39c05ce5af609ad01` with shared voice source `1e62fbf0da21a018beab0d066e28b67499909360`. IPA SHA-256: `3cbba297ca2d373437cc98d508f540732ab3801127ff2b288fe5f25cebc783d5`. Root authorized upload/public distribution at `2026-11-14T04:45:36Z` after the final matrix passed. See `TESTFLIGHT.md` for Apple distribution evidence.
+Prepared build `1794629010` from source `04f5705` is superseded and must not be uploaded because the later Reduce Motion product fix is not included. Final signed build `1794631199` was rebuilt from exact source `04058c1758d0207e8a6275a39c05ce5af609ad01` with shared voice source `1e62fbf0da21a018beab0d066e28b67499909360`. IPA SHA-256: `3cbba297ca2d373437cc98d508f540732ab3801127ff2b288fe5f25cebc783d5`. Root authorized upload/public distribution at `2026-11-14T04:45:36Z` after the final matrix passed. Independent read-only Apple checks at `04:48:18Z` confirmed processing `VALID`, internal and external `IN_BETA_TESTING`, and automatic notifications enabled for build ID `a877dd9b-6ae2-4d03-a4bf-30dd74ab0e94`. At `04:48:28Z`, the enabled Public Beta group's build list contained this exact build. See `TESTFLIGHT.md` for additional Apple distribution evidence.
