@@ -8,6 +8,8 @@
 - IPA SHA-256: `8958f4bf501bdf719a6d1c0169677d73e0b7538f6e46c4b9a191e95af911c39c`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794621085/`.
 - Apple upload `COMPLETE`. Apple build ID `9d9b480b-0edb-4ae9-b226-a4df83988ca2`. Added to Public Beta with updated test notes, submission returned `WAITING_FOR_REVIEW` at approximately 18:03 Pacific (`2026-11-14T02:03:33Z`). This records submission, not approval.
 - Follow-up at 18:04 Pacific confirmed external and internal `IN_BETA_TESTING`, with automatic notifications enabled. The build is available for external testing.
+- Independent release verification at 18:06 Pacific (`2026-11-14T02:06Z`): Apple reported processing `VALID`, external and internal `IN_BETA_TESTING`, automatic notifications enabled, and build `1794621085` present in the Public Beta group's build list. The archived IPA SHA-256 matches the value above, its app and extension build numbers agree, and the archived Mach-O binary contains the live-local transport's `On your computer`, `Computer sync unavailable`, and `Message delivery uncertain` strings. Feature commits `b0781f6` and `d1d69ff` are ancestors of release source `6f91b68`; no duplicate upload was needed.
+- Recovered hosted validation: workspace/test compilation passed (`20261113-180454274-1195229`), core mobile-sync tests passed 15 with one ignored benchmark (`20261113-180518339-1197228`), and all nine actual live-chat GPUI tests passed (`20261113-180545433-1200045`, filter `synced_sessions::chat::tests`). Validated HEAD `7efcaec` differs from release source `6f91b68` only in this release record, not application code. No local compilation was used.
 
 ## Public beta: build 1794498559 submitted November 13, 2026 (Pacific)
 
