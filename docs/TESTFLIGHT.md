@@ -1,5 +1,14 @@
 # TestFlight release record
 
+## Build 1794694215, prepared November 14, 2026 (Pacific)
+
+- **Built, signed and verified only. Not uploaded or submitted.** Source-freeze authorization received at `2026-11-14T22:06:58Z`. Upload and public distribution require separate explicit coordinator matrix-green authorization for this candidate.
+- Exact frozen mobile source: `2142e7adc666cd31147132b7f5ca2e776e26bead` (`fix: preserve multiline editing in compact local chat layouts`), verified pushed before fast-forwarding the managed VM to that exact SHA. Shared voice source: `1e62fbf0da21a018beab0d066e28b67499909360` through `JCODE_SRC=/home/ec2-user/jcode`. Both tracked source trees were clean before and after building. Unrelated local source edits and VM Python bytecode were preserved.
+- Managed-VM `scripts/cloud-ios-build.sh` completed at `2026-11-14T22:11:21Z`. Apple cross-build receipt `20261114-221028810-15` passed in 46.9 seconds. No workstation compilation or worktree. Coordinator acceptance tests remain separately owned and are not implied by this build.
+- ZIP CRC clean. App, bridge, Live Activity and share extension have the four expected bundle IDs and build `1794694215`. Three embedded provisioning profiles are present. Distribution signing completed. `rcodesign verify` found no problems in all four executables, subject to its incomplete and potentially misleading verification warning, not proof of Apple acceptance.
+- IPA SHA-256: `ea6ba66721908d4091e0d590ba8479d123faf2a0de2ab607db9e2b1bf90298d7`. Unstripped binary SHA-256: `ec673378baec8852a709d147f435d79a654165c248bb0ccde4423cebf1a73cd3`. Downloaded hashes match VM artifacts.
+- Exact IPA, unstripped binary, complete build log and source provenance archived locally under `~/.appstoreconnect/builds/1794694215/` and on the VM under `~/.local/share/jcode-mobile-build/state/.appstoreconnect/builds/1794694215/`. Local archive also preserves compiler receipt, artifact checks and signature-verification log. No Apple upload or public availability is claimed.
+
 ## Build 1794631199, public November 13, 2026 (Pacific)
 
 - **Public Beta available.** Coordinator explicitly authorized upload and public distribution at `2026-11-14T04:45:36Z` after the final matrix passed. Supersedes prepared build `1794629010`, which was not uploaded and must not be uploaded.
