@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/jcode-mobile-core"]
+members = [".", "crates/jcode-mobile-core", "crates/jcode-mobile-android"]
 resolver = "2"
 
 [workspace.package]
