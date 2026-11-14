@@ -39,7 +39,7 @@ public final class AndroidServices {
     private File cameraFile;
     private AudioRecord recorder;
     private volatile boolean foreground;
-    private final Object accountLock = new Object();
+    private static final Object ACCOUNT_LOCK = new Object();
     private static final String ACCOUNT_KEY = "jcode.accounts.aes-gcm.v1";
     private static final int MAX_ACCOUNT = 1024 * 1024;
     public AndroidServices(Activity activity) { this.activity = activity; nativeInit(); }
@@ -93,7 +93,11 @@ public final class AndroidServices {
         });
     }
 
-    private AtomicFile accountFile() { return new AtomicFile(new File(activity.getNoBackupFilesDir(), "accounts.aesgcm")); }
+    private AtomicFile accountFile() throws IOException {
+        File directory = activity.getNoBackupFilesDir();
+        if (directory == null || !directory.isDirectory()) throw new IOException("Private encrypted account storage is unavailable");
+        return new AtomicFile(new File(directory, "accounts.aesgcm"));
+    }
     private SecretKey accountKey(boolean create) throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
@@ -107,7 +111,7 @@ public final class AndroidServices {
     }
     private byte[] accountAad() { return (activity.getPackageName() + ":accounts:v1").getBytes(java.nio.charset.StandardCharsets.UTF_8); }
     public byte[] accountRead() throws Exception {
-        synchronized (accountLock) {
+        synchronized (ACCOUNT_LOCK) {
             AtomicFile file = accountFile();
             if (!file.getBaseFile().exists() && !new File(file.getBaseFile().getPath() + ".bak").exists()) return null;
             byte[] blob;
@@ -128,7 +132,7 @@ public final class AndroidServices {
     }
     public void accountWrite(byte[] plain) throws Exception {
         if (plain == null || plain.length == 0 || plain.length > MAX_ACCOUNT) throw new IOException("Invalid account data size");
-        synchronized (accountLock) {
+        synchronized (ACCOUNT_LOCK) {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, accountKey(true));
             cipher.updateAAD(accountAad());
@@ -147,9 +151,10 @@ public final class AndroidServices {
         }
     }
     public void accountClear() throws Exception {
-        synchronized (accountLock) {
+        synchronized (ACCOUNT_LOCK) {
             KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
             if (store.containsAlias(ACCOUNT_KEY)) store.deleteEntry(ACCOUNT_KEY);
+            if (store.containsAlias(ACCOUNT_KEY)) throw new java.security.KeyStoreException("Cannot remove account encryption key");
             AtomicFile file = accountFile(); file.delete();
             if (file.getBaseFile().exists() || new File(file.getBaseFile().getPath() + ".bak").exists()) throw new IOException("Cannot remove encrypted account data");
         }
@@ -188,7 +193,9 @@ public final class AndroidServices {
                     values.put(MediaStore.Images.Media.IS_PENDING, 1);
                     cameraUri = activity.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
                 } else {
-                    File directory = new File(activity.getCacheDir(), "camera");
+                    File cache = activity.getCacheDir();
+                    if (cache == null) return false;
+                    File directory = new File(cache, "camera");
                     if (!directory.isDirectory() && !directory.mkdirs()) return false;
                     cameraFile = File.createTempFile("camera-", ".jpg", directory);
                     cameraUri = new Uri.Builder().scheme("content").authority(activity.getPackageName() + ".attachments").appendPath(cameraFile.getName()).build();
@@ -329,14 +336,20 @@ public final class AndroidServices {
         });
     }
     public boolean clearNotifications(String unused) {
-        ((NotificationManager)activity.getSystemService(Context.NOTIFICATION_SERVICE)).cancelAll(); return true;
+        NotificationManager manager = (NotificationManager)activity.getSystemService(Context.NOTIFICATION_SERVICE);
+        for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications()) {
+            if ("turns".equals(notification.getTag())) manager.cancel("turns", notification.getId());
+        }
+        return true;
     }
     public boolean syncLive(String headline) {
         return ui(() -> {
             NotificationManager manager = (NotificationManager)activity.getSystemService(Context.NOTIFICATION_SERVICE);
             if (headline.isEmpty()) { manager.cancel("agents", 1); return true; }
             if (!manager.areNotificationsEnabled()) return false;
-            manager.createNotificationChannel(new NotificationChannel("jcode-agents", "Active agents", NotificationManager.IMPORTANCE_LOW));
+            NotificationChannel channel = new NotificationChannel("jcode-agents", "Active agents", NotificationManager.IMPORTANCE_LOW);
+            channel.setShowBadge(false);
+            manager.createNotificationChannel(channel);
             Intent open = new Intent(activity, activity.getClass()).setAction(Intent.ACTION_MAIN).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
             PendingIntent pending = PendingIntent.getActivity(activity, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             Notification notification = new Notification.Builder(activity, "jcode-agents").setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("jcode agents").setContentText(headline).setStyle(new Notification.BigTextStyle().bigText(headline)).setOngoing(true).setOnlyAlertOnce(true).setContentIntent(pending).build();
@@ -358,7 +371,7 @@ public final class AndroidServices {
             PendingIntent replyPending = PendingIntent.getActivity(activity, session.hashCode(), reply, PendingIntent.FLAG_UPDATE_CURRENT | mutable);
             Notification.Action action = new Notification.Action.Builder(android.R.drawable.ic_menu_send, "Reply", replyPending).addRemoteInput(new RemoteInput.Builder("reply").setLabel("Message jcode").build()).build();
             Notification notification = new Notification.Builder(activity, "jcode-turns").setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle(info.optString("title", "jcode")).setContentText(info.optString("body")).setStyle(new Notification.BigTextStyle().bigText(info.optString("body"))).setContentIntent(pending).addAction(action).setAutoCancel(true).build();
-            manager.notify(session.hashCode(), notification); return true;
+            manager.notify("turns", session.hashCode(), notification); return true;
         });
     }
     public boolean indexSessions(String json) {
@@ -385,7 +398,9 @@ public final class AndroidServices {
         private File file(Uri uri) throws FileNotFoundException {
             String name = uri.getLastPathSegment();
             if (uri.getPathSegments().size() != 1 || name == null || !name.matches("camera-[0-9]+\\.jpg")) throw new FileNotFoundException("Invalid camera URI");
-            File directory = new File(getContext().getCacheDir(), "camera");
+            File cache = getContext().getCacheDir();
+            if (cache == null) throw new FileNotFoundException("Camera cache unavailable");
+            File directory = new File(cache, "camera");
             File result = new File(directory, name);
             try {
                 if (!result.getCanonicalFile().getParentFile().equals(directory.getCanonicalFile())) throw new FileNotFoundException("Invalid camera path");
