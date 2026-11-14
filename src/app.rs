@@ -2926,6 +2926,7 @@ impl Render for MobileApp {
         let dt = now.duration_since(self.inset_last).as_secs_f32().min(0.05);
         self.inset_last = now;
         let shown = match self.inset_anim {
+            _ if crate::system::reduce_motion() => bottom,
             None => bottom,
             Some(v) => {
                 let next = v + (bottom - v) * (1. - (-dt * 16.).exp());

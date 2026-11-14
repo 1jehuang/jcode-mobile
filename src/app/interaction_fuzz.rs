@@ -480,6 +480,9 @@ fn raw_touch_chat_outside_tap_releases_composer_focus(cx: &mut TestAppContext) {
         install_surface(&view, cx, Surface::Keyboard);
         let composer = view.read_with(cx, |app, _| app.composer.clone());
         composer.update(cx, |input, cx| input.set_text(DRAFT, cx));
+        // Begin with a fully presented keyboard, not a load-dependent partial
+        // opening inset. Focus still comes from install_surface above.
+        view.update(cx, |app, cx| { app.inset_anim = None; cx.notify(); });
         draw(cx);
         cx.update(|window, cx| {
             assert!(composer.read(cx).is_focused(window), "fixture not focused")
@@ -500,13 +503,39 @@ fn raw_touch_chat_outside_tap_releases_composer_focus(cx: &mut TestAppContext) {
         view.read_with(cx, |app, cx| {
             assert!(!app.keyboard_up);
             assert_eq!(composer.read(cx).text(), DRAFT);
+            if crate::system::reduce_motion() {
+                assert_eq!(app.kb_lift, 0., "Reduce Motion must dismiss the keyboard inset in the first frame");
+                assert_eq!(app.inset_anim, Some(app.safe.bottom));
+            }
         });
+        if !crate::system::reduce_motion() {
+            // Normal motion intentionally animates dismissal. Measure the next
+            // intentional tap only after that animation's final layout.
+            view.update(cx, |app, cx| { app.inset_anim = None; cx.notify(); });
+            draw(cx);
+        }
         let bounds = cx.debug_bounds("composer-input").expect("composer visible");
+        // Reproduce a slow frame between measuring the target and dispatching
+        // the contact, without sleeping or depending on machine load.
+        if crate::system::reduce_motion() {
+            view.update(cx, |app, _| {
+                app.inset_last = std::time::Instant::now() - std::time::Duration::from_millis(50);
+            });
+        }
         tap(cx, 2, bounds.center());
         cx.update(|window, cx| {
             assert!(composer.read(cx).is_focused(window));
             assert_eq!(composer.read(cx).text(), DRAFT);
         });
+        if crate::system::reduce_motion() {
+            view.read_with(cx, |app, _| {
+                let height = crate::sim_keyboard::height_for_viewport(dimensions.0, dimensions.1);
+                assert!(app.keyboard_up);
+                assert_eq!(app.kb_lift, height - app.safe.bottom,
+                    "Reduce Motion must also present the keyboard inset immediately");
+                assert_eq!(app.inset_anim, Some(height));
+            });
+        }
     });
 }
 
