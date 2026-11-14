@@ -21,10 +21,19 @@ pub(super) struct LocalChat {
     pending: Option<String>,
     uncertain: bool,
     delivery_error: Option<String>,
+    poll_generation: u64,
 }
 
 impl MobileApp {
     pub(in crate::app) fn forget_local_chat(&mut self, tab: u64) {
+        if let Some(chat) = self.synced.chats.get_mut(&tab) {
+            // Closing UI is not a delivery acknowledgement. Keep unresolved
+            // commands account-scoped so reopening cannot issue duplicates.
+            chat.poll_generation = chat.poll_generation.wrapping_add(1);
+            if chat.submitting || chat.pending.is_some() || chat.uncertain {
+                return;
+            }
+        }
         self.synced.chats.remove(&tab);
     }
 
@@ -150,11 +159,17 @@ impl MobileApp {
                 self.focus_tab(tab, cx);
             }
         } else {
-            self.synced
+            let retained = self
+                .synced
                 .chats
-                .retain(|tab, _| self.tab_order.contains(tab));
-            let tab = self.next_tab;
-            self.next_tab += 1;
+                .iter()
+                .find(|(_, chat)| chat.session.session_id == session.session_id)
+                .map(|(tab, _)| *tab);
+            let tab = retained.unwrap_or_else(|| {
+                let tab = self.next_tab;
+                self.next_tab += 1;
+                tab
+            });
             self.tab_order.push(tab);
             self.park_active(cx);
             self.active_tab = tab;
@@ -164,16 +179,14 @@ impl MobileApp {
             self.session.session_id = Some(session.session_id.clone());
             self.session.session_title = Some(session.label().to_owned());
             self.session.phase = ConnectionPhase::Connecting;
-            self.synced.chats.insert(
-                tab,
-                LocalChat {
-                    session,
-                    submitting: false,
-                    pending: None,
-                    uncertain: false,
-                    delivery_error: None,
-                },
-            );
+            self.synced.chats.entry(tab).or_insert_with(|| LocalChat {
+                session,
+                submitting: false,
+                pending: None,
+                uncertain: false,
+                delivery_error: None,
+                poll_generation: 0,
+            });
             self.poll_local_chat(tab, cx);
         }
         // A notification reply is a draft, never an automatic command.
@@ -221,6 +234,11 @@ impl MobileApp {
             return;
         };
         let generation = self.auth_generation;
+        let Some(chat) = self.synced.chats.get_mut(&tab) else {
+            return;
+        };
+        chat.poll_generation = chat.poll_generation.wrapping_add(1);
+        let poll_generation = chat.poll_generation;
         cx.spawn(async move |this, cx| {
             loop {
                 let state = this
@@ -229,6 +247,9 @@ impl MobileApp {
                             return None;
                         }
                         let chat = this.synced.chats.get(&tab)?;
+                        if chat.poll_generation != poll_generation {
+                            return None;
+                        }
                         Some((
                             chat.session.session_id.clone(),
                             chat.pending.clone(),
@@ -254,7 +275,9 @@ impl MobileApp {
                         .await;
                     let keep = this
                         .update(cx, |this, cx| {
-                            if !this.local_chat_current(tab, &account, generation) {
+                            if !this.local_chat_current(tab, &account, generation)
+                                || this.synced.chats[&tab].poll_generation != poll_generation
+                            {
                                 return false;
                             }
                             this.apply_local_poll(tab, result.0, result.1);
@@ -330,11 +353,15 @@ impl MobileApp {
                     state.session_title = title;
                     state.is_processing = busy;
                     state.transcript = synced_transcript_entries(transcript.messages);
-                    state.error_banner = error.or_else(|| if uncertain {
-                        Some(DELIVERY_UNCERTAIN.into())
-                    } else if !live {
-                        Some(COMPUTER_OFFLINE.into())
-                    } else { None });
+                    state.error_banner = error.or_else(|| {
+                        if uncertain {
+                            Some(DELIVERY_UNCERTAIN.into())
+                        } else if !live {
+                            Some(COMPUTER_OFFLINE.into())
+                        } else {
+                            None
+                        }
+                    });
                 }
             }
             Err(e) => {
@@ -396,7 +423,12 @@ impl MobileApp {
         result: Result<Command, String>,
         cx: &mut Context<Self>,
     ) {
-        if !self.local_chat_current(tab, account, generation) {
+        // A POST already in flight still owns its retained delivery record
+        // after tab closure. Account changes remain a hard fence.
+        if self.auth_generation != generation
+            || !same_account(self.account.as_ref(), account)
+            || !self.synced.chats.contains_key(&tab)
+        {
             return;
         }
         let chat = self.synced.chats.get_mut(&tab).unwrap();
