@@ -11,7 +11,6 @@ import argparse
 import json
 import socketserver
 import threading
-import time
 
 VERSION = 1
 MAX_FRAME = 256 * 1024
@@ -26,19 +25,20 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         self.lock = threading.RLock()
         self.delay = delay
         self.sessions = {
-            "fixture-android": {
-                "session_id": "fixture-android",
+            "s1": {
+                "session_id": "s1",
                 "title": "Android SDK fixture",
                 "status": "idle",
             },
-            "fixture-second": {
-                "session_id": "fixture-second",
+            "s2": {
+                "session_id": "s2",
                 "title": "Second fixture session",
                 "status": "idle",
             },
         }
+        self.models = {sid: "fixture-not-a-live-model" for sid in self.sessions}
         self.history = {
-            sid: [{"role": "assistant", "content": "Local test fixture. No live model is connected."}]
+            sid: [{"role": "assistant", "content": "earlier"}]
             for sid in self.sessions
         }
 
@@ -51,6 +51,8 @@ class Handler(socketserver.StreamRequestHandler):
     def setup(self):
         super().setup()
         self.session_id = None
+        self.write_lock = threading.Lock()
+        self.active_cancel = None
         self.hello = False
         self.request.settimeout(60)
 
@@ -58,8 +60,9 @@ class Handler(socketserver.StreamRequestHandler):
         frame = {"v": VERSION, "ev": event, **fields}
         if reply_to is not None:
             frame["reply_to"] = reply_to
-        self.wfile.write((json.dumps(frame, separators=(",", ":")) + "\n").encode())
-        self.wfile.flush()
+        with self.write_lock:
+            self.wfile.write((json.dumps(frame, separators=(",", ":")) + "\n").encode())
+            self.wfile.flush()
 
     def error(self, reply_to, code, message):
         self.event("error", reply_to, code=code, message=message)
@@ -81,6 +84,9 @@ class Handler(socketserver.StreamRequestHandler):
                 self.dispatch(frame)
         except (OSError, ValueError, TypeError):
             return
+        finally:
+            if self.active_cancel is not None:
+                self.active_cancel.set()
 
     def dispatch(self, frame):
         request_id = frame.get("id")
@@ -105,7 +111,7 @@ class Handler(socketserver.StreamRequestHandler):
                 sessions = [dict(item) for item in self.server.sessions.values()]
             self.event("sessions", request_id, sessions=sessions)
         elif action in ("create_session", "attach_session"):
-            sid = frame.get("session_id") if action == "attach_session" else "fixture-android"
+            sid = frame.get("session_id") if action == "attach_session" else "s1"
             with self.server.lock:
                 session = self.server.sessions.get(sid)
                 if session is not None:
@@ -116,7 +122,7 @@ class Handler(socketserver.StreamRequestHandler):
             self.session_id = sid
             self.event("attached", request_id, session=session)
             self.event("runtime_info", session_id=sid, provider="local-fixture",
-                       model="fixture-not-a-live-model", routes=[])
+                       model=self.server.models[sid], routes=[])
         elif action == "get_history":
             sid = self.valid_session(frame, request_id)
             if sid is not None:
@@ -127,19 +133,31 @@ class Handler(socketserver.StreamRequestHandler):
             sid = self.valid_session(frame, request_id)
             if sid is not None:
                 self.event("models", request_id, session_id=sid,
-                           models=["fixture-not-a-live-model"], current="fixture-not-a-live-model")
+                           models=["fixture-not-a-live-model", "fixture-alternate"], current=self.server.models[sid])
         elif action == "get_runtime_info":
             sid = self.valid_session(frame, request_id)
             if sid is not None:
                 self.event("runtime_info", request_id, session_id=sid,
-                           provider="local-fixture", model="fixture-not-a-live-model", routes=[])
+                           provider="local-fixture", model=self.server.models[sid], routes=[])
+        elif action == "set_model":
+            sid = self.valid_session(frame, request_id)
+            if sid is not None:
+                model = frame.get("model")
+                if model not in ("fixture-not-a-live-model", "fixture-alternate"):
+                    self.error(request_id, "invalid_request", "Unknown fixture model")
+                    return
+                with self.server.lock:
+                    self.server.models[sid] = model
+                self.event("ok", request_id)
+                self.event("model_info", session_id=sid, provider="local-fixture", model=model)
         elif action == "send_message":
             self.send_message(frame, request_id)
         elif action == "cancel":
             sid = self.valid_session(frame, request_id)
             if sid is not None:
+                if self.active_cancel is not None:
+                    self.active_cancel.set()
                 self.event("ok", request_id)
-                self.event("turn_done", session_id=sid)
         else:
             self.error(request_id, "unknown_request", "Unsupported local fixture request")
 
@@ -158,20 +176,37 @@ class Handler(socketserver.StreamRequestHandler):
         if not isinstance(text, str) or not text.strip():
             self.error(request_id, "invalid_request", "Fixture needs a nonempty message")
             return
-        response = "Local SDK fixture response: your message reached the harness transport. No live model was called."
         with self.server.lock:
+            if self.server.sessions[sid]["status"] != "idle":
+                self.error(request_id, "invalid_request", "Fixture turn is already running")
+                return
             self.server.history[sid].append({"role": "user", "content": text})
             self.server.sessions[sid]["status"] = "processing"
+        cancel = threading.Event()
+        self.active_cancel = cancel
         self.event("message_accepted", request_id, session_id=sid)
-        for part in ("Local SDK fixture response: ", "your message reached the harness transport. ", "No live model was called."):
-            if self.server.delay:
-                time.sleep(self.server.delay)
-            self.event("text_delta", session_id=sid, text=part, message_id="fixture-reply")
-        self.event("text_done", session_id=sid, message_id="fixture-reply")
-        with self.server.lock:
-            self.server.history[sid].append({"role": "assistant", "content": response})
-            self.server.sessions[sid]["status"] = "idle"
-        self.event("turn_done", session_id=sid)
+        threading.Thread(target=self.stream_reply, args=(sid, cancel, f"fixture-{request_id}"), daemon=True).start()
+
+    def stream_reply(self, sid, cancel, message_id):
+        parts = []
+        try:
+            for part in ("actual ", "streamed ", "reply"):
+                if cancel.wait(self.server.delay):
+                    break
+                self.event("text_delta", session_id=sid, text=part, message_id=message_id)
+                parts.append(part)
+            self.event("text_done", session_id=sid, message_id=message_id)
+        except (OSError, ValueError):
+            pass
+        finally:
+            with self.server.lock:
+                if parts:
+                    self.server.history[sid].append({"role": "assistant", "content": "".join(parts)})
+                self.server.sessions[sid]["status"] = "idle"
+            try:
+                self.event("turn_done", session_id=sid)
+            except (OSError, ValueError):
+                pass
 
 
 def main():

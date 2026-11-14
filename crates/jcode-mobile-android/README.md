@@ -26,6 +26,8 @@ Requests are JSON objects with an `action`:
 | `connect_cloud` | optional `session_id` | Connect through the shared core's authenticated, host-key-pinned native SSH |
 | `logout` | none | Stop connection, discard account/pending login, clear transcript |
 | `wake` | none | Ask shared connection to probe liveness/retry immediately |
+| `cancel` | none | Cancel generation in the connected session |
+| `set_model` | `model` | Ask the shared SDK to change model, updated by server events |
 
 Normal responses have this shape:
 
@@ -41,6 +43,7 @@ Normal responses have this shape:
   "selected_session_id": "session-id",
   "session_title": "Session title",
   "model": "model-name",
+  "models": ["model-name", "another-model"],
   "is_processing": false,
   "sessions": [
     {"id":"session-id", "session_id":"session-id", "title":"Session title", "status":"idle"}
@@ -119,9 +122,12 @@ adb reverse tcp:7644 tcp:7644
 ```
 
 Connect to `tcp://127.0.0.1:7644` with an empty token. This is a **local SDK
-protocol test fixture, not a live model**, and the transcript says so explicitly.
+protocol test fixture, not a live model**. The session title and model metadata
+identify the fixture. Stable instrumentation data: session IDs `s1` and `s2`,
+initial assistant history `earlier`, completed streamed answer `actual streamed reply`.
 It supports SDK hello, sessions, attach/create, history, model/runtime metadata,
-ping/wake, prompts, streamed text and turn completion. Two named sessions allow
+ping/wake, prompts, streamed text, cancellation, model switching and turn completion.
+Models are `fixture-not-a-live-model` and `fixture-alternate`. Two named sessions allow
 selection testing. It retains history in memory across reconnects. No request
 payloads are logged and its default listener is host loopback only.
 

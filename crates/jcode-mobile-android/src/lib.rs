@@ -31,6 +31,7 @@ struct Command {
     text: Option<String>,
     email: Option<String>,
     code: Option<String>,
+    model: Option<String>,
 }
 
 #[derive(Clone)]
@@ -295,6 +296,32 @@ impl Bridge {
                     connection.wake();
                 }
             }
+            "cancel" | "set_model" => {
+                if self.demo {
+                    return Err("Offline demo has no running model");
+                }
+                if self.state.phase != ConnectionPhase::Connected || self.state.session_id.is_none()
+                {
+                    return Err("Wait for a connected session first");
+                }
+                let connection = self
+                    .connection
+                    .as_ref()
+                    .ok_or("Connect to a server first")?;
+                if command.action == "cancel" {
+                    connection.send(|id| Request::Cancel { id });
+                } else {
+                    let model = command
+                        .model
+                        .filter(|s| {
+                            !s.trim().is_empty()
+                                && s.len() <= 512
+                                && !s.chars().any(char::is_control)
+                        })
+                        .ok_or("A valid model is required")?;
+                    connection.send(|id| Request::SetModel { id, model });
+                }
+            }
             "start_login" => {
                 let email = command
                     .email
@@ -478,7 +505,7 @@ impl Bridge {
         };
         json!({"ok":error.is_none(),"error":error.or(self.login_error).or(state_error),"status":status,"offline_demo":self.demo,
             "sessions":sessions,"selected_session_id":self.state.session_id,"messages":messages,
-            "is_processing":self.state.is_processing,"session_title":self.state.session_title,"model":self.state.model_name,
+            "is_processing":self.state.is_processing,"session_title":self.state.session_title,"model":self.state.model_name,"models":self.state.available_models,
             "login_state":login_state,"login_busy":self.login_task.is_some(),"login_error":self.login_error})
     }
 }
@@ -657,7 +684,7 @@ mod tests {
             std::process::Command::new("python3")
                 .arg("-u")
                 .arg(script)
-                .args(["--port", "0", "--delay", "0.01"])
+                .args(["--port", "0", "--delay", "0.2"])
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .expect("python3 is required for the emulator fixture test"),
@@ -681,7 +708,7 @@ mod tests {
                 && s["messages"].as_array().unwrap().len() == 1
                 && s["model"] == "fixture-not-a-live-model"
         });
-        assert_eq!(initial["selected_session_id"], "fixture-android");
+        assert_eq!(initial["selected_session_id"], "s1");
         assert_eq!(
             request(
                 &mut bridge,
@@ -691,23 +718,54 @@ mod tests {
         );
         let reply = poll_until(&mut bridge, |s| {
             s["is_processing"] == false
-                && s["messages"].as_array().unwrap().iter().any(|m| {
-                    m["text"]
-                        .as_str()
-                        .unwrap()
-                        .contains("No live model was called")
-                })
+                && s["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["text"] == "actual streamed reply")
         });
         assert_eq!(reply["messages"].as_array().unwrap().len(), 3);
         assert_eq!(reply["error"], Value::Null);
+        poll_until(&mut bridge, |s| {
+            s["models"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("fixture-alternate"))
+        });
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"set_model","model":"fixture-alternate"})
+            )["ok"],
+            true
+        );
+        poll_until(&mut bridge, |s| s["model"] == "fixture-alternate");
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"send","text":"cancel this turn"})
+            )["ok"],
+            true
+        );
+        poll_until(&mut bridge, |s| {
+            s["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .is_some_and(|m| m["role"] == "assistant" && m["streaming"] == true)
+        });
+        assert_eq!(request(&mut bridge, json!({"action":"cancel"}))["ok"], true);
+        let cancelled = poll_until(&mut bridge, |s| s["is_processing"] == false);
+        assert_ne!(
+            cancelled["messages"].as_array().unwrap().last().unwrap()["text"],
+            "actual streamed reply"
+        );
         request(&mut bridge, json!({"action":"wake"}));
         request(
             &mut bridge,
-            json!({"action":"select_session","session_id":"fixture-second"}),
+            json!({"action":"select_session","session_id":"s2"}),
         );
-        poll_until(&mut bridge, |s| {
-            s["selected_session_id"] == "fixture-second"
-        });
+        poll_until(&mut bridge, |s| s["selected_session_id"] == "s2");
         request(&mut bridge, json!({"action":"disconnect"}));
     }
 
