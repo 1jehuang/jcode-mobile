@@ -2030,7 +2030,7 @@ impl MobileApp {
                 Mark::Done => c(135, 150, 145), Mark::Cancelled => c(145, 130, 135),
                 Mark::Active | Mark::SelfActive => c(170, 190, 220), _ => c(155, 170, 195),
             };
-            let note = x.external_blocker.as_ref().filter(|_| !m.finished()).map(|b| b.reason.clone())
+            let note = x.requires_user_auth.as_ref().filter(|_| !m.finished()).map(|b| b.reason.clone())
                 .or_else(|| (!x.blocked_by.is_empty() && !m.finished()).then(|| format!("after {}", x.blocked_by.join(", "))));
             div().flex().items_start().gap(px(8.)).min_w_0()
                 .child(label(g, gc, 13.).flex_none().w(px(14.)))
