@@ -8,7 +8,7 @@
 //! Threads instead of async keep the core runtime-free, which matters for the
 //! iOS target where GPUI owns the main loop.
 
-use crate::session::{ConnectionOutput, ConnectionPhase};
+use crate::session::{ConnectionOutput, ConnectionPhase, SessionImage};
 use jcode_sdk::{ApiEvent, ConnectOptions, ErrorKind, JcodeClient, Transport};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -69,8 +69,11 @@ impl Config {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Message { id: u64, content: String },
+    /// A prompt with attached photos. Base64 encoding happens on the wire.
+    MessageWithImages { id: u64, content: String, images: Vec<SessionImage> },
     Cancel { id: u64 },
     SoftInterrupt { id: u64, content: String, urgent: bool },
+    SoftInterruptWithImages { id: u64, content: String, images: Vec<SessionImage>, urgent: bool },
     CancelSoftInterrupts { id: u64 },
     Ping { id: u64 },
     GetHistory { id: u64 },
@@ -535,7 +538,9 @@ fn session_loop(
             if matches!(
                 request,
                 Request::Message { .. }
+                    | Request::MessageWithImages { .. }
                     | Request::SoftInterrupt { .. }
+                    | Request::SoftInterruptWithImages { .. }
                     | Request::Clear { .. }
                     | Request::Compact { .. }
                     | Request::GetHistory { .. }
@@ -656,9 +661,9 @@ impl Request {
     /// Stable label for timing logs. Never includes user content.
     pub fn name(&self) -> &'static str {
         match self {
-            Request::Message { .. } => "message",
+            Request::Message { .. } | Request::MessageWithImages { .. } => "message",
             Request::Cancel { .. } => "cancel",
-            Request::SoftInterrupt { .. } => "soft_interrupt",
+            Request::SoftInterrupt { .. } | Request::SoftInterruptWithImages { .. } => "soft_interrupt",
             Request::CancelSoftInterrupts { .. } => "cancel_soft_interrupts",
             Request::Ping { .. } => "ping",
             Request::GetHistory { .. } => "history",
@@ -678,9 +683,22 @@ fn execute(client: &JcodeClient, sid: &str, request: Request) -> Option<ApiEvent
     use jcode_sdk::ApiRequest as A;
     let s = || sid.to_string();
     // User-authored input must never vanish silently when the link drops.
-    let user_input = matches!(request, Request::Message { .. } | Request::SoftInterrupt { .. });
+    let user_input = matches!(
+        request,
+        Request::Message { .. }
+            | Request::MessageWithImages { .. }
+            | Request::SoftInterrupt { .. }
+            | Request::SoftInterruptWithImages { .. }
+    );
+    let wire = |images: Vec<SessionImage>| images.iter().map(SessionImage::wire).collect::<Vec<_>>();
     let result = match request {
         Request::Message { content, .. } => client.send_message(sid, &content, vec![], None).map(|_| None),
+        Request::MessageWithImages { content, images, .. } => {
+            client.send_message(sid, &content, wire(images), None).map(|_| None)
+        }
+        Request::SoftInterruptWithImages { id, content, images, urgent } => client
+            .soft_interrupt_with_id(sid, &content, wire(images), urgent, Some(&format!("ios-{id}")))
+            .map(|_| None),
         Request::SoftInterrupt { id, content, urgent } => client
             .soft_interrupt_with_id(sid, &content, vec![], urgent, Some(&format!("ios-{id}")))
             .map(|_| None),

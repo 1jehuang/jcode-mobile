@@ -33,7 +33,7 @@ pub use credentials::{CredentialStore, FileCredentialStore, ServerCredential};
 pub use prefs::{Prefs, PrefsStore};
 pub use gateway::{Gateway, PairPayload, PairResponse, parse_pair_uri};
 pub use session::{
-    ConnectionOutput, ConnectionPhase, LocalIntent, Role, SessionState, ToolCall, ToolStatus,
+    ConnectionOutput, ConnectionPhase, LocalIntent, Role, SessionImage, SessionState, ToolCall, ToolStatus,
     TranscriptEntry,
 };
 pub use jcode_sdk::ApiEvent;

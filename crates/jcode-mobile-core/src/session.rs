@@ -138,6 +138,49 @@ enum AssistantPhase {
     Tools,
 }
 
+/// A photo attached to a user prompt: encoded bytes plus their media type.
+/// `id` is a content hash, stable across clones, for UI decode caches.
+#[derive(Clone, PartialEq)]
+pub struct SessionImage {
+    pub id: u64,
+    pub media_type: String,
+    pub bytes: std::sync::Arc<Vec<u8>>,
+}
+
+impl std::fmt::Debug for SessionImage {
+    // Never print photo contents into logs or assertion output.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SessionImage({}, {} bytes)", self.media_type, self.bytes.len())
+    }
+}
+
+/// Largest attachment accepted or decoded, to bound memory on the phone.
+pub const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+
+impl SessionImage {
+    pub fn new(media_type: impl Into<String>, bytes: Vec<u8>) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hash);
+        Self { id: hash.finish(), media_type: media_type.into(), bytes: std::sync::Arc::new(bytes) }
+    }
+
+    /// `(media type, base64)` as the harness API carries images.
+    pub fn wire(&self) -> (String, String) {
+        use base64::Engine as _;
+        (self.media_type.clone(), base64::engine::general_purpose::STANDARD.encode(&*self.bytes))
+    }
+
+    fn from_wire(media_type: &str, data: &str) -> Option<Self> {
+        use base64::Engine as _;
+        if data.len() / 4 * 3 > MAX_IMAGE_BYTES {
+            return None;
+        }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()?;
+        Some(Self::new(media_type, bytes))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEntry {
     pub id: u64,
@@ -209,6 +252,8 @@ pub struct Notice {
 pub struct SessionState {
     pub phase: ConnectionPhase,
     pub transcript: Vec<TranscriptEntry>,
+    /// Photos attached to user prompts, keyed by transcript entry id.
+    pub images: HashMap<u64, Vec<SessionImage>>,
     pub session_id: Option<String>,
     pub session_title: Option<String>,
     pub all_sessions: Vec<String>,
@@ -252,6 +297,7 @@ impl Default for SessionState {
         Self {
             phase: ConnectionPhase::Disconnected,
             transcript: vec![],
+            images: HashMap::new(),
             session_id: None,
             session_title: None,
             all_sessions: vec![],
@@ -299,6 +345,21 @@ impl SessionState {
         self.session_titles.get(session_id).map(String::as_str)
     }
 
+    /// Photos sent with the newest user prompt. Call right after the
+    /// `UserSentMessage` / `UserQueuedInterrupt` intent that created it.
+    pub fn attach_images_to_last_prompt(&mut self, images: Vec<SessionImage>) {
+        if images.is_empty() {
+            return;
+        }
+        if let Some(e) = self.transcript.iter().rev().find(|e| e.role == Role::User) {
+            self.images.insert(e.id, images);
+        }
+    }
+
+    pub fn images_for(&self, entry: u64) -> &[SessionImage] {
+        self.images.get(&entry).map_or(&[], Vec::as_slice)
+    }
+
     pub fn has_pending_interrupts(&self) -> bool {
         !self.pending_interrupts.is_empty()
     }
@@ -341,6 +402,9 @@ impl SessionState {
                 self.pending_interrupts.push(text);
             }
             LocalIntent::CancelledQueuedInterrupts => {
+                for e in self.transcript.iter().filter(|e| e.is_queued) {
+                    self.images.remove(&e.id);
+                }
                 self.transcript.retain(|e| !e.is_queued);
                 self.pending_interrupts.clear();
             }
@@ -348,6 +412,7 @@ impl SessionState {
             LocalIntent::DismissNotice(id) => self.notices.retain(|n| n.id != id),
             LocalIntent::ClearedConversation => {
                 self.transcript.clear();
+                self.images.clear();
                 self.is_processing = false;
                 self.is_reasoning = false;
                 self.error_banner = None;
@@ -446,7 +511,7 @@ impl SessionState {
                     }
                 }
             }
-            History { session_id, messages, .. } => self.apply_history(session_id, messages),
+            History { session_id, messages, images } => self.apply_history(session_id, messages, images),
             TextDelta { text, .. } => {
                 self.is_processing = true;
                 self.with_streaming_assistant(AssistantPhase::Text, |e| e.text.push_str(&text))
@@ -624,7 +689,7 @@ impl SessionState {
         }
     }
 
-    fn apply_history(&mut self, session_id: String, messages: Vec<HistoryMessage>) {
+    fn apply_history(&mut self, session_id: String, messages: Vec<HistoryMessage>, images: Vec<jcode_sdk::api::RenderedImage>) {
         self.session_id = Some(session_id);
         self.pending_interrupts.clear();
 
@@ -644,6 +709,19 @@ impl SessionState {
             })
             .count();
         let tail: Vec<_> = self.transcript.split_off(self.transcript.len() - tail_len);
+        let mut local_images = std::mem::take(&mut self.images);
+        // The server anchors a prompt's photos to its 0-based prompt ordinal.
+        let mut anchored: HashMap<usize, Vec<SessionImage>> = HashMap::new();
+        for image in &images {
+            if let Some(jcode_sdk::api::RenderedImageAnchor::UserPrompt { ordinal }) = image.anchor
+                && let Some(decoded) = SessionImage::from_wire(&image.media_type, &image.data)
+            {
+                anchored.entry(ordinal).or_default().push(decoded);
+            }
+        }
+        // Optimistic prompts the snapshot now contains. Their photos carry over
+        // when the snapshot has none (cached history, or a server omitting them).
+        let mut confirmed: Vec<(String, Vec<SessionImage>)> = Vec::new();
         let history_user: HashSet<&str> =
             messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
         let history_assistant: HashSet<&str> =
@@ -658,7 +736,13 @@ impl SessionState {
                     .then_some(e)
             })
             .filter(|e| match e.role {
-                Role::User => !history_user.contains(e.text.as_str()),
+                Role::User => {
+                    let keep = !history_user.contains(e.text.as_str());
+                    if !keep && let Some(photos) = local_images.remove(&e.id) {
+                        confirmed.push((e.text.clone(), photos));
+                    }
+                    keep
+                }
                 // A settled live message the snapshot already stored.
                 _ => e.is_streaming
                     || !e.tool_calls.is_empty()
@@ -668,6 +752,7 @@ impl SessionState {
             .collect();
 
         let mut transcript: Vec<TranscriptEntry> = Vec::with_capacity(messages.len() + tail.len());
+        let mut prompt_ordinal = 0usize;
         for m in messages {
             // Tool rows rebuild the cards a live client saw. Consecutive calls
             // share one entry, matching how live tool events group.
@@ -706,9 +791,29 @@ impl SessionState {
             };
             let mut entry = self.entry(role, text);
             entry.reasoning = reasoning;
+            if role == Role::User {
+                if let Some(photos) = anchored.remove(&prompt_ordinal) {
+                    self.images.insert(entry.id, photos);
+                }
+                prompt_ordinal += 1;
+            }
             transcript.push(entry);
         }
+        for (text, photos) in confirmed {
+            if let Some(e) = transcript
+                .iter()
+                .rev()
+                .find(|e| e.role == Role::User && e.text == text && !self.images.contains_key(&e.id))
+            {
+                self.images.insert(e.id, photos);
+            }
+        }
         self.history_len = transcript.len();
+        for e in &tail {
+            if let Some(photos) = local_images.remove(&e.id) {
+                self.images.insert(e.id, photos);
+            }
+        }
         transcript.extend(tail);
         self.transcript = transcript;
     }
@@ -1338,5 +1443,64 @@ mod tests {
         ev(&mut s, E::TextReplace { session_id: sid(), text: String::new(), message_id: None });
         s.apply(ConnectionOutput::Phase(ConnectionPhase::Reconnecting { attempt: 1 }));
         assert!(s.transcript.is_empty());
+    }
+
+    fn photo(tag: u8) -> SessionImage {
+        SessionImage::new("image/jpeg", vec![0xff, 0xd8, tag])
+    }
+
+    fn rendered(ordinal: usize, image: &SessionImage) -> jcode_sdk::api::RenderedImage {
+        let (media_type, data) = image.wire();
+        serde_json::from_value(serde_json::json!({
+            "media_type": media_type, "data": data, "label": null,
+            "source": {"kind": "user_input"},
+            "anchor": {"kind": "user_prompt", "ordinal": ordinal},
+        })).unwrap()
+    }
+
+    #[test]
+    fn sent_photos_stay_on_their_prompt_across_history_snapshots() {
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserSentMessage("look".into()));
+        s.attach_images_to_last_prompt(vec![photo(1), photo(2)]);
+        let local = s.transcript[0].id;
+        assert_eq!(s.images_for(local).len(), 2);
+        // A snapshot that has not stored the prompt yet keeps the optimistic row.
+        ev(&mut s, E::History { session_id: sid(), messages: vec![hm("user", "earlier")], images: vec![] });
+        assert_eq!(s.transcript[1].id, local);
+        assert_eq!(s.images_for(local), [photo(1), photo(2)]);
+        // A snapshot without image payloads must not lose what was just sent.
+        ev(&mut s, E::History { session_id: sid(), messages: vec![hm("user", "earlier"), hm("user", "look")], images: vec![] });
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.images_for(s.transcript[1].id), [photo(1), photo(2)]);
+        assert_eq!(s.images.len(), 1);
+    }
+
+    #[test]
+    fn history_photos_attach_by_prompt_ordinal_and_skip_bad_payloads() {
+        let mut s = SessionState::default();
+        let mut bad = rendered(0, &photo(9));
+        bad.data = "not base64!".into();
+        ev(&mut s, E::History {
+            session_id: sid(),
+            messages: vec![hm("user", "first"), hm("assistant", "ok"), hm("user", ""), hm("user", "second")],
+            images: vec![bad, rendered(1, &photo(3)), rendered(1, &photo(4))],
+        });
+        assert!(s.images_for(s.transcript[0].id).is_empty());
+        assert_eq!(s.images_for(s.transcript[2].id), [photo(3), photo(4)]);
+        s.apply_intent(LocalIntent::ClearedConversation);
+        assert!(s.images.is_empty());
+    }
+
+    #[test]
+    fn cancelled_queued_prompt_drops_its_photos_and_debug_hides_bytes() {
+        let mut s = SessionState::default();
+        s.apply_intent(LocalIntent::UserQueuedInterrupt("later".into()));
+        s.attach_images_to_last_prompt(vec![photo(5)]);
+        assert_eq!(s.images.len(), 1);
+        s.apply_intent(LocalIntent::CancelledQueuedInterrupts);
+        assert!(s.images.is_empty());
+        assert_eq!(format!("{:?}", photo(5)), "SessionImage(image/jpeg, 3 bytes)");
+        assert_eq!(photo(5).wire(), ("image/jpeg".into(), "/9gF".into()));
     }
 }
