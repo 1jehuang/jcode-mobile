@@ -40,7 +40,10 @@ static VISIBLE: Mutex<Option<String>> = Mutex::new(None);
 static REMOTE_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn emit(event: PushEvent) {
-    if let Some(tx) = TX.lock().unwrap().as_ref() {
+    // Keep the receiver-installation lock through queuing. In Rust 2024 an
+    // if-let temporary guard would otherwise be dropped before the else arm.
+    let installed = TX.lock().unwrap();
+    if let Some(tx) = installed.as_ref() {
         let _ = tx.unbounded_send(event);
     } else {
         let mut pending = PENDING.lock().unwrap();

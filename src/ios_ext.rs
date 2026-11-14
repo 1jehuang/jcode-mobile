@@ -47,7 +47,10 @@ pub fn handle_urls(urls: Vec<String>) {
     for url in urls {
         match parse(&url) {
             Some(link) => {
-                if let Some(tx) = TX.lock().unwrap().as_ref() {
+                // Retain TX while queueing so install cannot drain PENDING
+                // before this event reaches it (including Rust 2024).
+                let installed = TX.lock().unwrap();
+                if let Some(tx) = installed.as_ref() {
                     let _ = tx.unbounded_send(link);
                 } else {
                     let mut pending = PENDING.lock().unwrap();
