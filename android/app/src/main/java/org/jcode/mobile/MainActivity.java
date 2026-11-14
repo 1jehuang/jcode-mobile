@@ -37,7 +37,10 @@ public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private TextView status, heading, empty;
     private EditText composer;
-    private Button send, connect, refresh, cloud;
+    private Button send, connect, refresh, cloud, cancel, modelButton;
+    private boolean processing;
+    private String modelName = "";
+    private final ArrayList<String> models = new ArrayList<>();
     private String loginState = "signed_out";
     private boolean loginBusy;
     private static String loginEmail = "";
@@ -48,7 +51,6 @@ public final class MainActivity extends Activity {
     private final ArrayList<String> sessionIds = new ArrayList<>();
     private boolean demo, resumed, destroyed, inFlight, connected, dialogOpen;
     private String selected = "", renderedMessages = "", renderedSessions = "", pendingText = "";
-    private DemoState demoState;
     private AlertDialog activeDialog;
     private final Runnable poller = new Runnable() {
         @Override public void run() {
@@ -65,11 +67,9 @@ public final class MainActivity extends Activity {
         Object demoExtra = getIntent().getExtras() == null ? null : getIntent().getExtras().get("demo");
         demo = Boolean.TRUE.equals(demoExtra) || "true".equalsIgnoreCase(String.valueOf(demoExtra));
         if (saved != null) demo = saved.getBoolean("demo", demo);
-        demoState = new DemoState();
-        if (saved != null && demo) demoState.restore(saved.getString("demo_state"));
         buildUi();
         if (saved != null) composer.setText(saved.getString("draft", ""));
-        request("status", new JSONObject(), false);
+        request(demo && saved == null ? "demo" : "status", new JSONObject(), false);
     }
 
     private void buildUi() {
@@ -124,9 +124,21 @@ public final class MainActivity extends Activity {
             }
         });
         root.addView(sessionList, new LinearLayout.LayoutParams(-1, dp(142)));
+        LinearLayout conversationToolbar = row();
         heading = label("Conversation", 18, INK);
+        heading.setSingleLine(true);
+        heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.setPadding(0, dp(12), 0, dp(8));
-        root.addView(heading);
+        conversationToolbar.addView(heading, new LinearLayout.LayoutParams(0, -2, 1));
+        modelButton = button("Model");
+        modelButton.setContentDescription("Choose model");
+        modelButton.setOnClickListener(v -> showModels());
+        conversationToolbar.addView(modelButton);
+        cancel = button("Stop");
+        cancel.setContentDescription("Cancel generation");
+        cancel.setOnClickListener(v -> request("cancel", new JSONObject(), true));
+        conversationToolbar.addView(cancel);
+        root.addView(conversationToolbar);
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         transcript = column();
@@ -168,7 +180,7 @@ public final class MainActivity extends Activity {
 
     private void sendMessage() {
         String text = composer.getText().toString();
-        if (inFlight || !connected || selected.isEmpty() || text.trim().isEmpty()) return;
+        if (inFlight || processing || !connected || selected.isEmpty() || text.trim().isEmpty()) return;
         JSONObject args = new JSONObject();
         put(args, "text", text);
         pendingText = text;
@@ -191,18 +203,14 @@ public final class MainActivity extends Activity {
         updateControls();
         if (visible) status.setText(action.equals("connect") ? "Connecting… network setup may take a moment" : "Working…");
         put(args, "action", action);
-        final boolean demoRequest = demo;
         WORKER.execute(() -> {
             JSONObject response = null;
             String error = null;
             try {
-                if (demoRequest) response = demoState.request(args);
-                else {
-                    if (!NativeBridge.isAvailable()) throw new IllegalStateException("Native core unavailable. Install a build with the Rust library, or enable Demo mode in Settings.");
-                    String raw = NativeBridge.request(args.toString());
-                    if (raw == null || raw.trim().isEmpty()) throw new JSONException("Native bridge returned an empty response");
-                    response = new JSONObject(raw);
-                }
+                if (!NativeBridge.isAvailable()) throw new IllegalStateException("Native core unavailable. Install a build with the Rust library to connect or use demo mode.");
+                String raw = NativeBridge.request(args.toString());
+                if (raw == null || raw.trim().isEmpty()) throw new JSONException("Native bridge returned an empty response");
+                response = new JSONObject(raw);
             } catch (Exception | LinkageError e) {
                 error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             }
@@ -224,7 +232,7 @@ public final class MainActivity extends Activity {
                     }
                 }
                 updateControls();
-                if (resumed && !dialogOpen && (demo || NativeBridge.isAvailable())) main.postDelayed(poller, 1000);
+                if (resumed && !dialogOpen && NativeBridge.isAvailable()) main.postDelayed(poller, 1000);
             });
         });
     }
@@ -232,6 +240,7 @@ public final class MainActivity extends Activity {
     private void applySnapshot(JSONObject response) {
         JSONObject state = response.optJSONObject("state");
         if (state == null) state = response;
+        demo = state.optBoolean("offline_demo", false);
         String previousLoginState = loginState;
         loginState = state.optString("login_state", loginState);
         loginBusy = state.optBoolean("login_busy", false);
@@ -239,6 +248,16 @@ public final class MainActivity extends Activity {
                 && (loginState.equals("code_sent") || (loginState.equals("signed_in") && previousLoginState.equals("code_sent")))) main.post(this::showCloud);
         String phase = state.optString("status", "Disconnected");
         connected = state.optBoolean("connected", phase.equalsIgnoreCase("connected") || phase.equalsIgnoreCase("ready") || phase.equalsIgnoreCase("demo"));
+        processing = state.optBoolean("is_processing", false);
+        modelName = nullableString(state, "model");
+        JSONArray availableModels = state.optJSONArray("models");
+        if (availableModels != null) {
+            models.clear();
+            for (int i = 0; i < availableModels.length(); i++) {
+                String name = availableModels.optString(i, "");
+                if (!name.isEmpty() && !name.equals("null")) models.add(name);
+            }
+        }
         String error = response.optString("error", "");
         String loginError = nullableString(state, "login_error");
         if (!loginError.isEmpty()) error = loginError;
@@ -308,6 +327,21 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void showModels() {
+        if (inFlight || dialogOpen || !connected || processing) return;
+        if (models.isEmpty()) {
+            present(new AlertDialog.Builder(this).setTitle("Model").setMessage(modelName.isEmpty() ? "No models are available for this connection yet." : "Current model: " + modelName).setPositiveButton("OK", null).create());
+            return;
+        }
+        final String[] choices = models.toArray(new String[0]);
+        present(new AlertDialog.Builder(this).setTitle("Choose model")
+            .setSingleChoiceItems(choices, models.indexOf(modelName), (dialog, which) -> {
+                JSONObject args = new JSONObject(); put(args, "model", choices[which]);
+                dialog.dismiss();
+                request("set_model", args, true);
+            }).setNegativeButton("Cancel", null).create());
+    }
+
     private void showCloud() {
         if (inFlight || destroyed || !resumed || dialogOpen) return;
         if (loginBusy) {
@@ -367,6 +401,7 @@ public final class MainActivity extends Activity {
         LinearLayout panel = column();
         panel.setPadding(dp(20), dp(8), dp(20), dp(8));
         EditText endpoint = new EditText(this);
+        endpoint.setContentDescription("Server endpoint");
         endpoint.setHint("Server endpoint, e.g. tcp://10.0.2.2:7643");
         endpoint.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         endpoint.setSingleLine(true);
@@ -389,10 +424,9 @@ public final class MainActivity extends Activity {
                 connectSaved();
             })
             .setNeutralButton(demo ? "Exit demo" : "Demo mode", (dialog, which) -> {
-                demo = !demo;
                 selected = "";
                 renderedMessages = "";
-                request("status", new JSONObject(), false);
+                request(demo ? "disconnect" : "demo", new JSONObject(), false);
             }).setNegativeButton("Cancel", null).create());
     }
 
@@ -410,7 +444,10 @@ public final class MainActivity extends Activity {
 
     private static String accessToken = "";
     private void updateControls() {
-        send.setEnabled(!inFlight && connected && !selected.isEmpty());
+        send.setEnabled(!inFlight && connected && !selected.isEmpty() && !processing);
+        cancel.setVisibility(processing ? View.VISIBLE : View.GONE);
+        cancel.setEnabled(!inFlight && connected && processing);
+        modelButton.setEnabled(!inFlight && connected && !processing && !demo);
         connect.setEnabled(!inFlight);
         refresh.setEnabled(!inFlight);
         cloud.setEnabled(!inFlight);
@@ -433,7 +470,6 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle out) {
         out.putString("draft", composer.getText().toString());
         out.putBoolean("demo", demo);
-        out.putString("demo_state", demoState.snapshot().toString());
         super.onSaveInstanceState(out);
     }
     @Override protected void onDestroy() {
@@ -450,51 +486,4 @@ public final class MainActivity extends Activity {
     private static void put(JSONObject json, String key, Object value) { try { json.put(key, value); } catch (JSONException e) { throw new IllegalArgumentException(e); } }
     private static String nullableString(JSONObject json, String key) { return json.isNull(key) ? "" : json.optString(key, ""); }
 
-    /** Deterministic local fixture, independent of native library/network availability. */
-    private static final class DemoState {
-        private String selected = "demo-welcome";
-        private boolean connected = true;
-        private JSONArray welcome = new JSONArray(), review = new JSONArray();
-        DemoState() {
-            message(welcome, "assistant", "Welcome to Jcode for Android. This deterministic demo runs entirely on your device. Select a session or send a message to try the native chat interface.");
-            message(review, "user", "Review the Android client plan.");
-            message(review, "assistant", "The client uses standard Android views, a background JNI bridge, a session list, and a keyboard-friendly composer. No WebView is used.");
-        }
-        synchronized JSONObject request(JSONObject request) {
-            String action = request.optString("action");
-            if (action.equals("connect")) connected = true;
-            if (action.equals("disconnect")) connected = false;
-            if (action.equals("select_session")) selected = request.optString("session_id", selected);
-            if (action.equals("send")) {
-                JSONArray messages = selected.equals("demo-review") ? review : welcome;
-                String text = request.optString("text");
-                message(messages, "user", text);
-                message(messages, "assistant", "Demo received: " + text + "\n\nConnect a server in Settings to chat with your live Jcode sessions.");
-            }
-            return snapshot();
-        }
-        synchronized JSONObject snapshot() {
-            JSONObject out = new JSONObject();
-            put(out, "ok", true); put(out, "connected", connected); put(out, "status", connected ? "Demo ready" : "Disconnected");
-            put(out, "selected_session_id", selected);
-            JSONArray sessions = new JSONArray();
-            for (String[] fixture : new String[][]{{"demo-welcome", "Welcome to Jcode"}, {"demo-review", "Android client review"}}) {
-                JSONObject item = new JSONObject(); put(item, "session_id", fixture[0]); put(item, "title", fixture[1]); put(item, "status", "Offline demo"); sessions.put(item);
-            }
-            put(out, "sessions", sessions); put(out, "messages", selected.equals("demo-review") ? review : welcome);
-            put(out, "demo_welcome", welcome); put(out, "demo_review", review);
-            return out;
-        }
-        synchronized void restore(String raw) {
-            if (raw == null) return;
-            try {
-                JSONObject saved = new JSONObject(raw);
-                selected = saved.optString("selected_session_id", selected);
-                connected = saved.optBoolean("connected", true);
-                if (saved.optJSONArray("demo_welcome") != null) welcome = saved.getJSONArray("demo_welcome");
-                if (saved.optJSONArray("demo_review") != null) review = saved.getJSONArray("demo_review");
-            } catch (JSONException ignored) { /* A malformed saved fixture resets to its defaults. */ }
-        }
-        private static void message(JSONArray target, String role, String text) { JSONObject message = new JSONObject(); put(message, "role", role); put(message, "text", text); target.put(message); }
-    }
 }
