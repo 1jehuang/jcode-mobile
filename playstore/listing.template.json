@@ -1,0 +1,22 @@
+{
+  "status": "UNREVIEWED_TEMPLATE_NOT_FOR_UPLOAD",
+  "default_language": "en-US",
+  "title": "",
+  "short_description": "",
+  "full_description": "",
+  "support_email": "",
+  "support_website": "",
+  "privacy_policy_url": "",
+  "category": "",
+  "release_notes": "",
+  "icon_path": "",
+  "feature_graphic_path": "",
+  "phone_screenshot_paths": [],
+  "content_rating_questionnaire_reviewed": false,
+  "target_audience_reviewed": false,
+  "ads_declaration_reviewed": false,
+  "app_access_review_instructions": "",
+  "data_safety_review_evidence": "",
+  "account_deletion_requirements_reviewed": false,
+  "permission_purpose_review_evidence": ""
+}

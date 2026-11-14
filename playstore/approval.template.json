@@ -1,0 +1,17 @@
+{
+  "approved_by": "",
+  "validation_evidence": "",
+  "aab_sha256": "",
+  "package": "org.jcode.mobile",
+  "version_code": 1,
+  "track": "internal",
+  "emulator_validated": false,
+  "gpui_parity_validated": false,
+  "release_artifact_tested": false,
+  "native_16k_device_validated": false,
+  "metadata_reviewed": false,
+  "privacy_and_data_safety_reviewed": false,
+  "play_console_app_ready": false,
+  "upload_authorized": false,
+  "commit_authorized": false
+}
