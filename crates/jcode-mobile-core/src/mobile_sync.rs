@@ -8,6 +8,10 @@ use std::time::Instant;
 #[path = "mobile_sync_http_tests.rs"]
 mod http_tests;
 
+#[cfg(test)]
+#[path = "mobile_live_tests.rs"]
+mod live_tests;
+
 pub const SYNC_UNAVAILABLE: &str = "Synced sessions are not available on this server yet";
 
 fn agent() -> &'static ureq::Agent {
@@ -44,6 +48,10 @@ impl Drop for RequestTiming {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SyncedSession {
+    #[serde(default)]
+    pub live: bool,
+    #[serde(default)]
+    pub busy: bool,
     pub session_id: String,
     pub title: Option<String>,
     pub source: String,
@@ -147,6 +155,9 @@ pub fn transcript(account: &Account, id: &str) -> Result<SyncedTranscript, Strin
 }
 
 impl SyncedSession {
+    pub fn can_message(&self) -> bool {
+        self.source == "local" && self.live
+    }
     pub fn can_transfer(&self) -> bool {
         self.source == "local"
     }
@@ -166,6 +177,21 @@ pub struct Command {
 }
 
 impl Command {
+    /// Local completion never navigates or requires a new cloud session.
+    pub fn message_complete(&self, session: &str) -> Result<bool, String> {
+        if self.kind != "message" || self.session_id.as_deref() != Some(session) {
+            return Err("Message command returned a different session or kind".into());
+        }
+        match self.status.as_str() {
+            "done" => Ok(true),
+            "queued" | "running" => Ok(false),
+            "failed" => Err(self
+                .error
+                .clone()
+                .unwrap_or_else(|| "Computer message failed".into())),
+            _ => Err("Unknown message command status".into()),
+        }
+    }
     /// Never navigate to the original local transcript or a missing result.
     pub fn destination(&self, source: &str) -> Result<Option<String>, String> {
         match self.status.as_str() {
@@ -258,6 +284,28 @@ pub fn transfer(account: &Account, session: &SyncedSession, text: &str) -> Resul
     let body = serde_json::to_value(transfer_body(session, text)?).map_err(|e| e.to_string())?;
     let value = request(account, "transfer", "/mobile/commands", Some(body))?;
     serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())
+}
+
+pub fn message(account: &Account, session: &SyncedSession, text: &str) -> Result<Command, String> {
+    if !session.can_message() {
+        return Err("This session is not live on your computer".into());
+    }
+    transcript_path(&session.session_id)?;
+    if text.trim().is_empty() {
+        return Err("Enter a message".into());
+    }
+    let value = request(
+        account,
+        "message",
+        "/mobile/commands",
+        Some(serde_json::json!({
+            "kind": "message", "session_id": session.session_id, "text": text.trim()
+        })),
+    )?;
+    let command: Command =
+        serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())?;
+    command.message_complete(&session.session_id)?;
+    Ok(command)
 }
 
 pub fn command(account: &Account, id: &str) -> Result<Command, String> {
