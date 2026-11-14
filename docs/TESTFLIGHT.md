@@ -7,6 +7,18 @@
 - Repeat for future builds with `python3 scripts/asc_public_beta.py [VERSION]`. Later builds of version 1.0 usually clear beta review quickly.
 - App Store 1.0 (build 1793919915) has been `WAITING_FOR_REVIEW` since November 5.
 
+## Build 1794616894, uploaded November 13, 2026 (Pacific)
+
+- Source: `523382d` (clean tree). Changes since 1794600756:
+  - Settings → "Sign cloud machine in to OpenAI" (`da6ffe1`). It runs OpenAI device-code login on the cloud machine, copies the code to the clipboard and opens the approval page.
+  - A one-tap "Continue" action on finished-turn notifications (`db798e3`).
+  - Live Activity rows with an origin chip ("Cloud", "XPS 14") and a live run timer (`523382d`).
+- Shared `jcode-voice` from jcode `1e62fbf0d`, mounted via `JCODE_SRC=/home/ec2-user/jcode`. Built with `scripts/cloud-ios-build.sh` on the managed VM, reached over recovery SSH.
+- The cloud runtime was updated to `v0.99.1097-dev (1e62fbf0d)`, which adds `jcode login --device-code`. A real start against OpenAI returned a code with the JSON keys the app parses.
+- Tests: mobile workspace 503 passed and 1 failed. The failure was the coverage ledger, fixed in docs commit `0ed84b6` (only `docs/` changed). Worker 612 passed. jcode `agents_status` 6 passed.
+- ZIP test clean. Signed IPA SHA-256: `b47e9cf48d642b4b91d36e4e23831313b21cbd3edff19f859a33378b51a39228`, archived under `~/.appstoreconnect/builds/1794616894/`. Upload state `COMPLETE`. Not submitted to the public group.
+- Backend at upload time: production version `48106728-972a-455e-b8c0-cb95e88d6ea3`. The push payload carries `origin`, `repo` and `duration_secs`. Live items carry `origin` and `since`.
+
 ## Build 1794600756, uploaded November 13, 2026 (Pacific)
 
 - Source: `3887354` (clean tree). App changes since 1794498559: Google sign-in sheet (`ab6cd58`), gestures (`8af0a54`), pull to reconnect (`bef3f24`).
