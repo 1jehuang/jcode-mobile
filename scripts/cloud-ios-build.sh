@@ -24,6 +24,7 @@ sudo -n docker build -t jcode-mobile-ios:ubuntu24 - < scripts/cloud-ios.Dockerfi
 sudo -n docker run --rm --user "$(id -u):$(id -g)" \
   -e "BUILD_NUMBER=${BUILD_NUMBER:-$(date +%s)}" \
   -v "$ROOT:/workspace" \
+  -v "${IOS_BUILD_TARGET_DIR:-$ROOT/target}:/workspace/target" \
   -v "$JCODE_SRC:/jcode:ro" \
   -v "$STATE/state:/build-home" \
   -v "$STATE/bin:/build-home/.local/bin:ro" \
