@@ -78,9 +78,14 @@ public final class MainActivity extends Activity {
     private void buildUi() {
         LinearLayout root = column();
         root.setBackgroundColor(BACKGROUND);
-        root.setFitsSystemWindows(true);
         root.setPadding(dp(16), dp(12), dp(16), dp(8));
-        setContentView(root);
+        // Android 15 applies system fitting by replacing a view's padding. Keep
+        // that on an outer container so our content spacing survives unchanged.
+        android.widget.FrameLayout systemRoot = new android.widget.FrameLayout(this);
+        systemRoot.setBackgroundColor(BACKGROUND);
+        systemRoot.setFitsSystemWindows(true);
+        systemRoot.addView(root, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        setContentView(systemRoot);
         LinearLayout toolbar = row();
         TextView brand = label("Jcode", 26, INK);
         toolbar.addView(brand, new LinearLayout.LayoutParams(0, -2, 1));
