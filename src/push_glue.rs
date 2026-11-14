@@ -17,6 +17,47 @@ mod tests {
     use gpui::TestAppContext;
 
     #[gpui::test]
+    fn agents_completion_cannot_restore_an_old_account_live_activity(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(fixture_app);
+        view.update(cx, |app, cx| {
+            let expected = app.account.clone().unwrap();
+            let generation = app.auth_generation;
+            let private = agents::AgentsState {
+                running: 1,
+                items: vec![agents::AgentItem {
+                    id: "private-old-session".into(),
+                    title: "Confidential old account task".into(),
+                    state: agents::AgentState::Running,
+                    detail: "Private project path".into(),
+                    origin: None, since: None, plan: None,
+                    done: None, active: None, total: None,
+                }],
+                ..Default::default()
+            };
+            app.sign_out(cx);
+            app.complete_agents_status(&expected, generation, private.clone());
+            assert!(app.agents_status.is_none(), "stale response restored signed-out Live Activity");
+            app.adopt_account(expected.clone(), cx);
+            app.complete_agents_status(&expected, generation, private.clone());
+            assert!(app.agents_status.is_none(), "same credentials bypassed auth epoch ownership");
+            let mut wrong_origin = expected.clone();
+            wrong_origin.api_base = "https://different-control-plane.invalid".into();
+            app.complete_agents_status(&wrong_origin, app.auth_generation, private.clone());
+            assert!(app.agents_status.is_none(), "status crossed control-plane origin");
+            app.complete_agents_status(&expected, app.auth_generation, private.clone());
+            assert_eq!(app.agents_status.as_ref(), Some(&private));
+            app.live_tokens.push("old-account-live-token".into());
+            app.push_token = Some("device-token-kept-across-accounts".into());
+            app.sign_out(cx);
+            assert!(app.live_tokens.is_empty());
+            assert_eq!(app.push_token.as_deref(), Some("device-token-kept-across-accounts"));
+            assert!(app.agents_status.is_none(), "logout retained account status cache");
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    #[gpui::test]
     fn offline_token_and_foreground_are_local_only_even_with_account(cx: &mut TestAppContext) {
         cx.update(init);
         let (view, cx) = cx.add_window_view(fixture_app);
@@ -195,6 +236,8 @@ impl MobileApp {
             return;
         }
         let Some(account) = self.account.clone() else { return };
+        let expected = account.clone();
+        let generation = self.auth_generation;
         let task = cx.background_spawn(async move {
             jcode_mobile_core::timing::timed("agents status", || agents::fetch_status(&account))
         });
@@ -202,14 +245,30 @@ impl MobileApp {
             match task.await {
                 Ok(state) => {
                     let _ = this.update(cx, |this, _| {
-                        this.agents_status = Some(state);
-                        this.sync_live_activity();
+                        this.complete_agents_status(&expected, generation, state);
                     });
                 }
                 Err(e) => log::debug!("agents: status fetch failed: {e}"),
             }
         })
         .detach();
+    }
+
+    fn complete_agents_status(
+        &mut self,
+        expected: &jcode_mobile_core::Account,
+        generation: u64,
+        state: agents::AgentsState,
+    ) {
+        if generation != self.auth_generation
+            || !super::account_profile::same_account(self.account.as_ref(), expected)
+        {
+            return;
+        }
+        self.agents_status = Some(state);
+        if !self.offline {
+            self.sync_live_activity();
+        }
     }
 
     fn register_live_token(&mut self, kind: agents::LiveTokenKind, token: String, cx: &mut Context<Self>) {
@@ -261,11 +320,13 @@ impl MobileApp {
 
     /// Forget the token server-side (sign-out). Fire and forget.
     pub(super) fn unregister_push(&mut self, cx: &mut Context<Self>) {
+        // Local account data is always discarded, including in offline
+        // fixtures. Only native and service effects belong below the guard.
+        let live = std::mem::take(&mut self.live_tokens);
+        self.agents_status = None;
         if self.offline {
             return;
         }
-        let live = std::mem::take(&mut self.live_tokens);
-        self.agents_status = None;
         crate::ios_ext::sync_live(&agents::AgentsState::default());
         if let Some(account) = self.account.clone() {
             cx.background_spawn(async move {
