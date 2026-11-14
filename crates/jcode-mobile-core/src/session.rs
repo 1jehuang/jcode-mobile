@@ -149,6 +149,39 @@ pub struct TranscriptEntry {
     pub is_queued: bool,
 }
 
+/// Decode a synced snapshot without inventing metadata lost by desktop sync.
+/// Unlike harness history, sync flattens tool uses into prose and omits tool
+/// identities and reasoning blocks. Keep those summaries and result rows visible.
+pub fn synced_transcript_entries(
+    messages: Vec<crate::mobile_sync::SyncedMessage>,
+) -> Vec<TranscriptEntry> {
+    messages.into_iter().filter_map(|message| {
+        let role = match message.role.as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            "system" | "tool" => Role::System,
+            _ => return None,
+        };
+        if message.content.is_empty() {
+            return None;
+        }
+        let (text, reasoning) = match message.role.as_str() {
+            "assistant" => history_assistant_content(message.content),
+            "tool" => (format!("Tool result\n{}", message.content), String::new()),
+            _ => (message.content, String::new()),
+        };
+        Some(TranscriptEntry {
+            id: message.seq,
+            role,
+            text,
+            reasoning,
+            tool_calls: vec![],
+            is_streaming: false,
+            is_queued: false,
+        })
+    }).collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeKind {
     Info,
@@ -761,6 +794,46 @@ fn fill_name(t: &mut ToolCall, name: String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn synced_wire_preserves_flattened_tools_and_sequence_gaps() {
+        // Matches desktop wire_messages_keep_visible_text_and_skip_hidden:
+        // reasoning-only stored message 1 produces no wire row.
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":0,"role":"user","text":"hi"},
+            {"seq":2,"role":"assistant","text":"running\n\n🔧 bash: ls"},
+            {"seq":3,"role":"tool","text":"output\n… (truncated)"},
+            {"seq":8,"role":"system","text":"visible notice"}
+        ])).unwrap();
+        let entries = super::synced_transcript_entries(messages);
+        assert_eq!(entries.iter().map(|e| e.id).collect::<Vec<_>>(), [0, 2, 3, 8]);
+        assert_eq!(entries[1].text, "running\n\n🔧 bash: ls");
+        assert_eq!(entries[2].role, super::Role::System);
+        assert_eq!(entries[2].text, "Tool result\noutput\n… (truncated)");
+        assert!(entries.iter().all(|e| e.reasoning.is_empty() && e.tool_calls.is_empty()
+            && !e.is_streaming && !e.is_queued));
+    }
+
+    #[test]
+    fn synced_wire_uses_history_reasoning_decoder_only_for_assistants() {
+        let tagged = "*\u{2063}Think \\*carefully\\*\u{2063}*\n\n**Answer**";
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":1,"role":"assistant","text":tagged},
+            {"seq":2,"role":"user","text":tagged},
+            {"seq":3,"role":"system","text":tagged},
+            {"seq":4,"role":"assistant","text":"*ordinary emphasis*\nAnswer"},
+            {"seq":5,"role":"assistant","text":""},
+            {"seq":6,"role":"unknown","text":"not a system notice"}
+        ])).unwrap();
+        let entries = super::synced_transcript_entries(messages);
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].text, "**Answer**");
+        assert_eq!(entries[0].reasoning, "Think *carefully*");
+        assert_eq!(entries[1].text, tagged);
+        assert!(entries[1].reasoning.is_empty());
+        assert_eq!(entries[2].text, tagged);
+        assert_eq!(entries[3].text, "*ordinary emphasis*\nAnswer");
+    }
+
     use super::*;
     use ApiEvent as E;
 

@@ -3,7 +3,7 @@ use super::{MobileApp, same_account};
 use gpui::{AppContext, Context};
 use jcode_mobile_core::{
     mobile_sync::{self, Command, SyncedSession, SyncedTranscript},
-    session::{ConnectionPhase, Role, SessionState, TranscriptEntry},
+    session::{ConnectionPhase, SessionState, synced_transcript_entries},
 };
 use std::time::Duration;
 
@@ -250,7 +250,7 @@ impl MobileApp {
         .detach();
     }
 
-    fn apply_local_poll(
+    pub(in crate::app) fn apply_local_poll(
         &mut self,
         tab: u64,
         transcript: Result<SyncedTranscript, String>,
@@ -307,27 +307,7 @@ impl MobileApp {
                     };
                     state.session_title = title;
                     state.is_processing = busy;
-                    state.transcript = transcript
-                        .messages
-                        .into_iter()
-                        .map(|m| TranscriptEntry {
-                            id: m.seq,
-                            role: match m.role.as_str() {
-                                "user" => Role::User,
-                                "assistant" => Role::Assistant,
-                                _ => Role::System,
-                            },
-                            text: if m.role == "tool" {
-                                format!("Tool result\n{}", m.content)
-                            } else {
-                                m.content
-                            },
-                            reasoning: String::new(),
-                            tool_calls: vec![],
-                            is_streaming: false,
-                            is_queued: false,
-                        })
-                        .collect();
+                    state.transcript = synced_transcript_entries(transcript.messages);
                     state.error_banner = error.or_else(|| if uncertain {
                         Some("Delivery is uncertain. Check the computer before sending again. This message will not be retried automatically.".into())
                     } else if !live {

@@ -1,4 +1,5 @@
 use super::*;
+use jcode_mobile_core::session::Role;
 use crate::app::{self, lifecycle_coverage::fixture_app};
 
 #[path = "synced_chat_more_tests.rs"]
@@ -25,6 +26,30 @@ fn snapshot(live: bool, busy: bool, answer: &str) -> Result<SyncedTranscript, St
 
 fn command(status: &str) -> Command {
     serde_json::from_value(serde_json::json!({"command_id":"12345678-1234-1234-1234-123456789abc","kind":"message","session_id":"local-chat","status":status,"error": if status == "failed" { Some("Desktop rejected message") } else { None }})).unwrap()
+}
+
+#[gpui::test]
+fn polling_decodes_tagged_assistant_text_without_reinterpreting_tools(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(app::init);
+    let (view, cx) = cx.add_window_view(fixture_app);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), None, cx);
+        let tab = app.active_tab;
+        app.apply_local_poll(tab, snapshot(true, true,
+            "*\u{2063}Check \\*facts\\*\u{2063}*\n\n**Answer**\n\n🔧 bash: ls"), None);
+        let answer = &app.session.transcript[1];
+        assert_eq!(answer.id, 3);
+        assert_eq!(answer.reasoning, "Check *facts*");
+        assert_eq!(answer.text, "**Answer**\n\n🔧 bash: ls");
+        assert!(answer.tool_calls.is_empty());
+        assert_eq!(app.session.transcript[2].text, "Tool result\nTool output");
+        app.apply_local_poll(tab, snapshot(true, false, "Rewritten"), None);
+        assert_eq!(app.session.transcript.len(), 3);
+        assert_eq!(app.session.transcript[1].text, "Rewritten");
+        assert!(app.session.transcript[1].reasoning.is_empty());
+    });
 }
 
 #[gpui::test]
