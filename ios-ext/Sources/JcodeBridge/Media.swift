@@ -20,6 +20,8 @@ public typealias MediaCallback = @convention(c) (Int32, UnsafePointer<UInt8>?, I
 /// 48 MP capture would otherwise be tens of megabytes of base64.
 private let maxSide: CGFloat = 2048
 private let jpegQuality: CGFloat = 0.82
+// Four photos plus base64 and command metadata fit in the sync store's row.
+private let maxPhotoBytes = 240 * 1024
 
 private func topController() -> UIViewController? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -33,17 +35,26 @@ private func topController() -> UIViewController? {
 private func encode(_ image: UIImage) -> Data? {
     let size = image.size
     guard size.width > 0, size.height > 0 else { return nil }
-    let scale = min(1, maxSide / max(size.width, size.height))
-    let target = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
     let format = UIGraphicsImageRendererFormat.default()
     format.scale = 1
     format.opaque = true
-    let drawn = UIGraphicsImageRenderer(size: target, format: format).image { ctx in
-        UIColor.white.setFill()
-        ctx.fill(CGRect(origin: .zero, size: target))
-        image.draw(in: CGRect(origin: .zero, size: target))
+    var side = maxSide
+    for _ in 0..<8 {
+        let scale = min(1, side / max(size.width, size.height))
+        let target = CGSize(width: max(1, (size.width * scale).rounded()), height: max(1, (size.height * scale).rounded()))
+        let drawn = UIGraphicsImageRenderer(size: target, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: target))
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
+        for quality in [jpegQuality, 0.65, 0.48] {
+            if let data = drawn.jpegData(compressionQuality: quality), data.count <= maxPhotoBytes {
+                return data
+            }
+        }
+        side *= 0.75
     }
-    return drawn.jpegData(compressionQuality: jpegQuality)
+    return nil
 }
 
 private final class MediaSession: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate,

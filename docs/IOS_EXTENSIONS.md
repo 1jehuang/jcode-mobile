@@ -26,13 +26,16 @@ photos can be attached, removed from the draft, and sent with or without text.
 Camera permission is requested only when taking a photo. The library uses
 PHPicker, so it does not request access to the user's whole photo library.
 The Swift bridge in `Sources/JcodeBridge/Media.swift` normalizes orientation,
-scales the longest side to 2048 pixels and encodes JPEG at quality 0.82.
+scales the longest side to at most 2048 pixels and starts JPEG encoding at quality
+0.82, reducing quality or dimensions as needed to stay under 240 KiB per photo.
+Four photos fit within the computer-sync command payload budget.
 Rust copies the callback bytes immediately and sends them through the existing
 SDK image payload. Thumbnails are decoded off the UI thread.
 
 Draft photos stay with their tab. Sent photos are restored from cloud history
-prompt anchors and included when retrying a prompt. Computer-synced chats do
-not yet expose attachments because that submission endpoint is text-only.
+prompt anchors and included when retrying a cloud prompt. Computer-synced chats
+send the same selected photos through account-scoped mobile commands to the
+existing live computer session.
 `JCODE_MOBILE_ATTACH=/path/to/photo.jpg` supplies a desktop preview picker result.
 
 Device acceptance still required: allow/deny camera, capture/retake/cancel,

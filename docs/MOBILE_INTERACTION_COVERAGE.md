@@ -7,7 +7,8 @@ removing a draft photo, and sending a photo-only prompt. Synthetic callback
 tests cover late picker results remaining with their original tab and ignored
 results after sign-out. The ledger explicitly leaves native camera permission,
 capture, library selection, swipe dismissal and real model delivery as device
-acceptance gaps. Computer-synced chats remain text-only.
+acceptance gaps. Computer-synced photo submission also has HTTP contract and
+synthetic draft-ownership tests, which do not replace that device acceptance.
 
 `MOBILE_INTERACTION_COVERAGE.json` is the reviewed, machine-readable ledger.
 `src/app/coverage_inventory.rs` uses `syn` to follow the Rust module graph from

@@ -13,7 +13,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
@@ -35,7 +35,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
@@ -50,7 +50,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
@@ -79,7 +79,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
@@ -94,7 +94,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
@@ -109,7 +109,7 @@
     {
       "kind": "platform_device_required",
       "tests": [],
-      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Computer-synced message photo transport is tested separately from the native picker."
     }
   ]
 },
