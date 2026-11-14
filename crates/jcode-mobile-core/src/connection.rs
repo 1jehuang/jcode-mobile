@@ -276,14 +276,12 @@ const RUNTIME_INFO_FALLBACK: Duration = Duration::from_secs(8);
 /// Newest sessions fetched for the sidebar.
 const SESSION_LIST_LIMIT: u32 = 80;
 
-/// Attach the session to resume, or start a fresh one if it is gone.
+/// Resume exactly the requested session, or create one only for a fresh start.
 fn attach(client: &JcodeClient, resume: Option<&str>, working_dir: Option<String>) -> jcode_sdk::Result<jcode_sdk::SessionInfo> {
     if let Some(id) = resume {
-        match client.attach_session(id) {
-            Ok(s) => return Ok(s),
-            Err(e) if matches!(e.kind, ErrorKind::Harness(_)) => {}
-            Err(e) => return Err(e),
-        }
+        // A missing session can mean this is the wrong host. Never replace an
+        // explicit resume with a blank session, regardless of the attach error.
+        return client.attach_session(id);
     }
     client.create_session(working_dir)
 }
@@ -765,6 +763,61 @@ mod tests {
         // Round-trip through the real frame type so the fake stays honest.
         let frame: ServerFrame = serde_json::from_value(v).unwrap();
         writeln!(w, "{}", serde_json::to_string(&frame).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn attach_preserves_resume_errors_and_creates_only_for_fresh_sessions() {
+        for error in [Some("unknown_session"), Some("internal"), None] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (record, requests) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (s, _) = listener.accept().unwrap();
+                let mut w = s.try_clone().unwrap();
+                for line in BufReader::new(s).lines() {
+                    let Ok(line) = line else { break };
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    record.send(req.clone()).unwrap();
+                    let id = req["id"].as_u64();
+                    match req["req"].as_str().unwrap() {
+                        "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                        "attach_session" => {
+                            assert_eq!(req["session_id"], "missing-on-this-host");
+                            reply(&mut w, id, json!({"ev":"error","code":error.unwrap(),"message":"Cannot resume on this host"}));
+                        }
+                        "create_session" => {
+                            assert_eq!(req["working_dir"], "/fresh");
+                            reply(&mut w, id, json!({"ev":"attached","session":{"session_id":"fresh","status":"idle"}}));
+                        }
+                        other => panic!("Unexpected request: {other}"),
+                    }
+                }
+            });
+            let stream = TcpStream::connect(addr).unwrap();
+            let shutdown = stream.try_clone().unwrap();
+            let client = JcodeClient::connect_with(Box::new(Tcp(stream)), ConnectOptions {
+                ensure_runtime: false,
+                ..Default::default()
+            }).unwrap();
+            let result = attach(&client, error.map(|_| "missing-on-this-host"), Some("/fresh".into()));
+            if let Some(code) = error {
+                let failure = result.unwrap_err();
+                let expected = if code == "unknown_session" {
+                    jcode_sdk::api::ErrorCode::UnknownSession
+                } else {
+                    jcode_sdk::api::ErrorCode::Internal
+                };
+                assert_eq!(failure.kind, ErrorKind::Harness(expected));
+                assert_eq!(failure.message, "Cannot resume on this host");
+            } else {
+                assert_eq!(result.unwrap().session_id, "fresh");
+            }
+            shutdown.shutdown(std::net::Shutdown::Both).unwrap();
+            server.join().unwrap();
+            let requests: Vec<_> = requests.try_iter().collect();
+            assert_eq!(requests.iter().filter(|r| r["req"] == "create_session").count(), usize::from(error.is_none()));
+            assert_eq!(requests.iter().filter(|r| r["req"] == "attach_session").count(), usize::from(error.is_some()));
+        }
     }
 
     #[test]
