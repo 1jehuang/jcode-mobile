@@ -18,6 +18,41 @@ REQUIRED = ('emulator_validated', 'gpui_parity_validated', 'release_artifact_tes
             'play_console_app_ready', 'upload_authorized')
 
 
+PARITY_CHECKS = ('shared_gpui_native_renderer', 'no_legacy_java_ui', 'emulator_launch',
+                 'navigation_and_chat', 'keyboard_and_text_input', 'attachments_and_share',
+                 'voice_and_media', 'haptics', 'notifications_and_device_push',
+                 'authentication_and_deep_links', 'release_aab_install', 'native_16k_runtime')
+
+
+def parity_gate(report, approval):
+    evidence = approval.get('android_parity_evidence')
+    if not isinstance(evidence, dict):
+        raise ValueError('Missing structured Android GPUI parity evidence')
+    if evidence.get('aab_sha256') != report['aab_sha256'] or evidence.get('renderer') != 'shared_gpui_native':
+        raise ValueError('Android parity evidence must identify the exact AAB and shared native GPUI renderer')
+    if evidence.get('accepted_by_root') is not True or evidence.get('accepted_by') != approval.get('approved_by'):
+        raise ValueError('Android parity evidence requires coordinating root acceptance')
+    if not isinstance(evidence.get('source_revision'), str) or not evidence['source_revision'].strip():
+        raise ValueError('Android parity evidence requires a source revision')
+    checks = evidence.get('checks')
+    if not isinstance(checks, dict):
+        raise ValueError('Android parity evidence checks are missing')
+    for name in PARITY_CHECKS:
+        item = checks.get(name)
+        if not isinstance(item, dict) or item.get('status') != 'passed':
+            raise ValueError(f'Android GPUI parity check missing or incomplete: {name}')
+        path = item.get('evidence_path')
+        digest = item.get('evidence_sha256')
+        if not isinstance(path, str) or not isinstance(digest, str):
+            raise ValueError(f'Android GPUI parity evidence file/hash missing: {name}')
+        try:
+            payload = Path(path).read_bytes()
+        except OSError:
+            raise ValueError(f'Android GPUI parity evidence file unavailable: {name}') from None
+        if not payload or hashlib.sha256(payload).hexdigest() != digest:
+            raise ValueError(f'Android GPUI parity evidence empty or changed: {name}')
+
+
 def gate(report, approval, commit=False):
     for field in REQUIRED + (('commit_authorized',) if commit else ()):
         if approval.get(field) is not True:
@@ -27,6 +62,7 @@ def gate(report, approval, commit=False):
             raise ValueError(f'Root approval {field} does not match validated artifact')
     if approval.get('track') != 'internal' or not approval.get('approved_by') or not approval.get('validation_evidence'):
         raise ValueError('Root must name approver, validation evidence, and internal track')
+    parity_gate(report, approval)
 
 
 def session():

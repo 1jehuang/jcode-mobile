@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Network-free regression tests for release safety gates and API workflow."""
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -21,6 +22,58 @@ class ReleaseTests(unittest.TestCase):
         self.report = {'aab_sha256': publish.hashlib.sha256(self.payload).hexdigest(), 'package': 'org.jcode.mobile', 'version_code': 2, 'version_name': 'test'}
         self.approval = {key: True for key in publish.REQUIRED}
         self.approval.update(self.report, track='internal', approved_by='test-root', validation_evidence='synthetic-test')
+        self.evidence_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.evidence_dir.cleanup)
+        evidence_file = Path(self.evidence_dir.name) / 'synthetic-evidence.txt'
+        evidence_file.write_bytes(b'SYNTHETIC ONLY: not actual Android acceptance')
+        item = {'status': 'passed', 'evidence_path': str(evidence_file), 'evidence_sha256': publish.hashlib.sha256(evidence_file.read_bytes()).hexdigest()}
+        self.approval['android_parity_evidence'] = {
+            'aab_sha256': self.report['aab_sha256'], 'renderer': 'shared_gpui_native',
+            'source_revision': 'synthetic-revision', 'accepted_by_root': True, 'accepted_by': 'test-root',
+            'checks': {key: dict(item) for key in publish.PARITY_CHECKS},
+        }
+
+    def test_parity_evidence_missing_rejected(self):
+        approval = dict(self.approval)
+        del approval['android_parity_evidence']
+        with self.assertRaisesRegex(ValueError, 'structured Android GPUI'):
+            publish.gate(self.report, approval)
+
+    def test_every_parity_check_must_pass(self):
+        for key in publish.PARITY_CHECKS:
+            for status in (None, 'not_tested', 'blocked', 'failed', 'skipped'):
+                approval = copy.deepcopy(self.approval)
+                approval['android_parity_evidence']['checks'][key]['status'] = status
+                with self.subTest(check=key, status=status), self.assertRaisesRegex(ValueError, 'missing or incomplete'):
+                    publish.gate(self.report, approval)
+
+    def test_missing_parity_check_rejected(self):
+        for key in publish.PARITY_CHECKS:
+            approval = copy.deepcopy(self.approval)
+            del approval['android_parity_evidence']['checks'][key]
+            with self.subTest(check=key), self.assertRaises(ValueError):
+                publish.gate(self.report, approval)
+
+    def test_parity_identity_and_root_acceptance_required(self):
+        for key, value in [('aab_sha256', 'wrong'), ('renderer', 'java_shell'), ('source_revision', ''), ('accepted_by_root', False), ('accepted_by', 'not-root')]:
+            approval = copy.deepcopy(self.approval)
+            approval['android_parity_evidence'][key] = value
+            with self.subTest(field=key), self.assertRaises(ValueError):
+                publish.gate(self.report, approval)
+
+    def test_missing_or_changed_parity_file_rejected(self):
+        for key, value in [('evidence_path', '/nonexistent/acceptance-report'), ('evidence_sha256', 'wrong')]:
+            approval = copy.deepcopy(self.approval)
+            approval['android_parity_evidence']['checks']['shared_gpui_native_renderer'][key] = value
+            with self.subTest(field=key), self.assertRaises(ValueError):
+                publish.gate(self.report, approval)
+
+    def test_incomplete_parity_stops_before_network(self):
+        approval = copy.deepcopy(self.approval)
+        approval['android_parity_evidence']['checks']['notifications_and_device_push']['status'] = 'blocked'
+        with patch.object(publish, 'request') as request, self.assertRaises(ValueError):
+            publish.publish(None, 'unused.aab', self.report, approval, False, {})
+        request.assert_not_called()
 
     def test_template_is_not_approved(self):
         template = json.loads((Path(__file__).parent.parent / 'playstore/approval.template.json').read_text())

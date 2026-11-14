@@ -67,8 +67,8 @@ def inspect(aab, policy):
             if required not in names:
                 raise ValueError(f'Missing genuine bundle entry: {required}')
         native = [n for n in names if '/lib/' in n and n.endswith('.so')]
-        if not any('/arm64-v8a/' in n for n in native):
-            raise ValueError('Missing arm64-v8a native library')
+        if 'base/lib/arm64-v8a/libjcode_mobile.so' not in native:
+            raise ValueError('Missing arm64-v8a shared GPUI libjcode_mobile.so')
         for name in native:
             elf_alignments(archive.read(name))
     bundletool('validate', f'--bundle={aab}')

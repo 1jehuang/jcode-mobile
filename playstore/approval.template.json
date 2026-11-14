@@ -13,5 +13,26 @@
   "privacy_and_data_safety_reviewed": false,
   "play_console_app_ready": false,
   "upload_authorized": false,
-  "commit_authorized": false
+  "commit_authorized": false,
+  "android_parity_evidence": {
+    "aab_sha256": "",
+    "renderer": "shared_gpui_native",
+    "source_revision": "",
+    "accepted_by_root": false,
+    "accepted_by": "",
+    "checks": {
+      "shared_gpui_native_renderer": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "no_legacy_java_ui": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "emulator_launch": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "navigation_and_chat": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "keyboard_and_text_input": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "attachments_and_share": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "voice_and_media": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "haptics": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "notifications_and_device_push": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "authentication_and_deep_links": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "release_aab_install": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "native_16k_runtime": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""}
+    }
+  }
 }
