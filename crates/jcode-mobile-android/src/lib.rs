@@ -1,5 +1,6 @@
 //! JNI is only a JSON/UI adapter. The shared core owns connections and reduction.
 use jcode_mobile_core::{
+    cloud::{self, Account},
     connection::{Config, Connection, Request},
     session::{ConnectionOutput, ConnectionPhase, LocalIntent, Role, SessionState},
 };
@@ -28,12 +29,15 @@ struct Command {
     token: Option<String>,
     session_id: Option<String>,
     text: Option<String>,
+    email: Option<String>,
+    code: Option<String>,
 }
 
 #[derive(Clone)]
 enum Endpoint {
     Tcp { host: String, port: u16 },
     Unix(std::path::PathBuf),
+    Cloud(Account),
 }
 
 impl Endpoint {
@@ -96,6 +100,7 @@ impl Endpoint {
             Self::Unix(path) => Ok(Box::new(
                 jcode_sdk::UnixTransport::connect(path).map_err(|_| transport_error())?,
             )),
+            Self::Cloud(_) => Err(transport_error()),
         }
     }
 }
@@ -123,6 +128,11 @@ impl jcode_sdk::Transport for TcpTransport {
     }
 }
 
+enum LoginResult {
+    Token(Result<String, ()>),
+    Account(Result<Account, ()>),
+}
+
 #[derive(Default)]
 pub struct Bridge {
     state: SessionState,
@@ -130,6 +140,12 @@ pub struct Bridge {
     outputs: Option<Receiver<ConnectionOutput>>,
     endpoint: Option<Endpoint>,
     demo: bool,
+    account: Option<Account>,
+    login_token: Option<String>,
+    login_task: Option<Receiver<LoginResult>>,
+    login_error: Option<&'static str>,
+    #[cfg(test)]
+    login_client: Option<cloud::CloudClient>,
 }
 
 impl Drop for Bridge {
@@ -147,6 +163,32 @@ impl Bridge {
     }
 
     fn drain(&mut self) {
+        if let Some(result) = self
+            .login_task
+            .as_ref()
+            .and_then(|task| task.try_recv().ok())
+        {
+            self.login_task = None;
+            match result {
+                LoginResult::Token(Ok(token)) if !token.is_empty() => {
+                    self.login_token = Some(token);
+                    self.login_error = None;
+                }
+                LoginResult::Account(Ok(account)) if !account.api_key.is_empty() => {
+                    self.account = Some(account);
+                    self.login_token = None;
+                    self.login_error = None;
+                }
+                LoginResult::Token(_) => {
+                    self.login_error =
+                        Some("Could not send sign-in code. Check the email address and try again")
+                }
+                LoginResult::Account(_) => {
+                    self.login_error =
+                        Some("Could not verify sign-in code. Check the code and try again")
+                }
+            }
+        }
         if let Some(outputs) = &self.outputs {
             // Bound each poll so a busy stream cannot starve the Java UI.
             for output in outputs.try_iter().take(2048) {
@@ -161,13 +203,75 @@ impl Bridge {
         self.demo = false;
         self.state = SessionState::default();
         self.state.phase = ConnectionPhase::Connecting;
-        let target = endpoint.clone();
-        let mut config = Config::custom(Arc::new(move || target.open()));
+        let mut config = match endpoint.clone() {
+            Endpoint::Cloud(account) => Config::cloud(account),
+            target => Config::custom(Arc::new(move || target.open())),
+        };
         config.max_reconnect_attempts = Some(3);
         let (connection, outputs) = Connection::start_with_channel(config, session);
         self.connection = Some(connection);
         self.outputs = Some(outputs);
         self.endpoint = Some(endpoint);
+    }
+
+    fn cloud_client(&self) -> cloud::CloudClient {
+        #[cfg(test)]
+        if let Some(client) = &self.login_client {
+            return client.clone();
+        }
+        cloud::client()
+    }
+
+    fn start_login(&mut self, email: String) -> Result<(), &'static str> {
+        if self.login_task.is_some() {
+            return Err("A sign-in request is already running");
+        }
+        if self.account.is_some() {
+            return Err("Sign out before signing in to another account");
+        }
+        let client = self.cloud_client();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("android-email-login".into())
+            .spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| client.start_email_login(&email)))
+                    .ok()
+                    .and_then(Result::ok)
+                    .ok_or(());
+                let _ = sender.send(LoginResult::Token(result));
+            })
+            .map_err(|_| "Could not start sign-in worker")?;
+        self.login_token = None;
+        self.login_error = None;
+        self.login_task = Some(receiver);
+        Ok(())
+    }
+
+    fn verify_login(&mut self, code: String) -> Result<(), &'static str> {
+        if self.login_task.is_some() {
+            return Err("A sign-in request is already running");
+        }
+        let token = self
+            .login_token
+            .clone()
+            .ok_or("Request a sign-in code first")?;
+        let client = self.cloud_client();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("android-email-verify".into())
+            .spawn(move || {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    client.verify_email_login(&token, &code)
+                }))
+                .ok()
+                .and_then(Result::ok)
+                .ok_or(());
+                let _ = sender.send(LoginResult::Account(result));
+            })
+            .map_err(|_| "Could not start sign-in worker")?;
+        self.login_error = None;
+        self.login_task = Some(receiver);
+        Ok(())
     }
 
     pub fn request(&mut self, input: &str) -> String {
@@ -186,6 +290,53 @@ impl Bridge {
     fn execute(&mut self, command: Command) -> Result<(), &'static str> {
         match command.action.as_str() {
             "status" | "poll" => {}
+            "wake" => {
+                if let Some(connection) = &self.connection {
+                    connection.wake();
+                }
+            }
+            "start_login" => {
+                let email = command
+                    .email
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| {
+                        s.len() <= 254
+                            && !s.chars().any(char::is_whitespace)
+                            && !s.chars().any(char::is_control)
+                            && s.split_once('@').is_some_and(|(local, domain)| {
+                                !local.is_empty()
+                                    && domain.contains('.')
+                                    && !domain.starts_with('.')
+                                    && !domain.ends_with('.')
+                                    && !domain.contains('@')
+                            })
+                    })
+                    .ok_or("A valid email address is required")?;
+                self.start_login(email)?;
+            }
+            "verify_login" => {
+                let code = command
+                    .code
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
+                    .ok_or("Enter the six-digit sign-in code")?;
+                self.verify_login(code)?;
+            }
+            "connect_cloud" => {
+                let account = self.account.clone().ok_or("Sign in to Jcode Cloud first")?;
+                self.start(Endpoint::Cloud(account), command.session_id);
+            }
+            "logout" => {
+                self.stop();
+                self.endpoint = None;
+                self.demo = false;
+                self.state = SessionState::default();
+                self.account = None;
+                self.login_token = None;
+                self.login_task = None;
+                self.login_error = None;
+                cloud::reset_in_memory_cache_for_benchmark();
+            }
             "connect" => {
                 let endpoint =
                     Endpoint::parse(command.endpoint.as_deref().ok_or("Endpoint is required")?)?;
@@ -318,9 +469,17 @@ impl Bridge {
             "text":m.text,"reasoning":m.reasoning,"streaming":m.is_streaming,"queued":m.is_queued,
             "tools":m.tool_calls.iter().map(|t| json!({"id":t.id,"name":t.name,"input":t.input,"output":t.output})).collect::<Vec<_>>()
         })).collect();
-        json!({"ok":error.is_none(),"error":error.or(state_error),"status":status,"offline_demo":self.demo,
+        let login_state = if self.account.is_some() {
+            "signed_in"
+        } else if self.login_token.is_some() {
+            "code_sent"
+        } else {
+            "signed_out"
+        };
+        json!({"ok":error.is_none(),"error":error.or(self.login_error).or(state_error),"status":status,"offline_demo":self.demo,
             "sessions":sessions,"selected_session_id":self.state.session_id,"messages":messages,
-            "is_processing":self.state.is_processing,"session_title":self.state.session_title,"model":self.state.model_name})
+            "is_processing":self.state.is_processing,"session_title":self.state.session_title,"model":self.state.model_name,
+            "login_state":login_state,"login_busy":self.login_task.is_some(),"login_error":self.login_error})
     }
 }
 
@@ -357,6 +516,200 @@ pub extern "system" fn Java_org_jcode_mobile_NativeBridge_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_login_uses_sdk_and_keeps_credentials_only_in_memory() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for verify in [false, true] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                reader.read_line(&mut first).unwrap();
+                assert!(first.contains(if verify {
+                    "/auth/email/verify"
+                } else {
+                    "/auth/email/start"
+                }));
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                let reply = if verify {
+                    assert_eq!(body["login_token"], "private-login-token");
+                    assert_eq!(body["code"], "123456");
+                    json!({"api_key":"private-api-key","email":"person@example.test"})
+                } else {
+                    assert_eq!(body["email"], "person@example.test");
+                    assert_eq!(body["client_name"], "jcode-cli");
+                    json!({"login_token":"private-login-token"})
+                }
+                .to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+            }
+        });
+        let mut bridge = Bridge::default();
+        bridge
+            .login_client
+            .replace(cloud::client().with_api_base(format!("http://{address}")));
+        let start = request(
+            &mut bridge,
+            json!({"action":"start_login","email":"person@example.test"}),
+        );
+        assert_eq!(start["ok"], true);
+        let sent = poll_until(&mut bridge, |s| s["login_state"] == "code_sent");
+        assert!(!sent.to_string().contains("private-login-token"));
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"verify_login","code":"123456"})
+            )["ok"],
+            true
+        );
+        let signed_in = poll_until(&mut bridge, |s| s["login_state"] == "signed_in");
+        assert!(!signed_in.to_string().contains("private-api-key"));
+        assert!(!signed_in.to_string().contains("person@example.test"));
+        assert!(bridge.login_token.is_none());
+        assert_eq!(bridge.account.as_ref().unwrap().api_key, "private-api-key");
+        let out = request(&mut bridge, json!({"action":"logout"}));
+        assert_eq!(out["login_state"], "signed_out");
+        assert!(bridge.account.is_none());
+        assert_eq!(
+            request(&mut bridge, json!({"action":"connect_cloud"}))["ok"],
+            false
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn logout_invalidates_in_flight_login_and_inputs_are_validated() {
+        let mut bridge = Bridge::default();
+        for email in [
+            "",
+            "not-an-email",
+            "a@",
+            "a@.com",
+            "a@b@c.test",
+            "a\n@example.test",
+        ] {
+            assert_eq!(
+                request(&mut bridge, json!({"action":"start_login","email":email}))["ok"],
+                false
+            );
+        }
+        for code in ["", "12345", "abcdef", "1234567"] {
+            assert_eq!(
+                request(&mut bridge, json!({"action":"verify_login","code":code}))["ok"],
+                false
+            );
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        bridge.login_task = Some(receiver);
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"start_login","email":"a@example.test"})
+            )["ok"],
+            false
+        );
+        request(&mut bridge, json!({"action":"logout"}));
+        assert!(
+            sender
+                .send(LoginResult::Token(Ok("stale-token".into())))
+                .is_err()
+        );
+        assert_eq!(
+            request(&mut bridge, json!({"action":"poll"}))["login_state"],
+            "signed_out"
+        );
+        assert_eq!(request(&mut bridge, json!({"action":"wake"}))["ok"], true);
+    }
+
+    #[test]
+    fn python_fixture_speaks_actual_sdk_protocol() {
+        struct Fixture(std::process::Child);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let script =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/harness_fixture.py");
+        let mut fixture = Fixture(
+            std::process::Command::new("python3")
+                .arg("-u")
+                .arg(script)
+                .args(["--port", "0", "--delay", "0.01"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("python3 is required for the emulator fixture test"),
+        );
+        let mut ready = String::new();
+        BufReader::new(fixture.0.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let ready: Value = serde_json::from_str(&ready).unwrap();
+        let port = ready["port"].as_u64().unwrap();
+        let mut bridge = Bridge::default();
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"connect","endpoint":format!("tcp://127.0.0.1:{port}")})
+            )["ok"],
+            true
+        );
+        let initial = poll_until(&mut bridge, |s| {
+            s["sessions"].as_array().unwrap().len() == 2
+                && s["messages"].as_array().unwrap().len() == 1
+                && s["model"] == "fixture-not-a-live-model"
+        });
+        assert_eq!(initial["selected_session_id"], "fixture-android");
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"send","text":"SDK smoke test"})
+            )["ok"],
+            true
+        );
+        let reply = poll_until(&mut bridge, |s| {
+            s["is_processing"] == false
+                && s["messages"].as_array().unwrap().iter().any(|m| {
+                    m["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("No live model was called")
+                })
+        });
+        assert_eq!(reply["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(reply["error"], Value::Null);
+        request(&mut bridge, json!({"action":"wake"}));
+        request(
+            &mut bridge,
+            json!({"action":"select_session","session_id":"fixture-second"}),
+        );
+        poll_until(&mut bridge, |s| {
+            s["selected_session_id"] == "fixture-second"
+        });
+        request(&mut bridge, json!({"action":"disconnect"}));
+    }
 
     fn wire_reply(writer: &mut TcpStream, id: Option<u64>, mut event: Value) {
         event["v"] = json!(jcode_sdk::api::API_VERSION_MAJOR);
