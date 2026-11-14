@@ -49,7 +49,7 @@ public final class MainActivity extends Activity {
     private ListView sessionList;
     private ArrayAdapter<String> sessionAdapter;
     private final ArrayList<String> sessionIds = new ArrayList<>();
-    private boolean demo, resumed, destroyed, inFlight, connected, dialogOpen;
+    private boolean demo, resumed, destroyed, inFlight, connected, connectionActive, dialogOpen;
     private String selected = "", renderedMessages = "", renderedSessions = "", pendingText = "";
     private AlertDialog activeDialog;
     private final Runnable poller = new Runnable() {
@@ -91,7 +91,7 @@ public final class MainActivity extends Activity {
         LinearLayout actions = row();
         connect = button("Connect");
         connect.setOnClickListener(v -> {
-            if (connected) request("disconnect", new JSONObject(), true);
+            if (connectionActive) request("disconnect", new JSONObject(), true);
             else connectSaved();
         });
         refresh = button("Refresh");
@@ -221,7 +221,7 @@ public final class MainActivity extends Activity {
                 inFlight = false;
                 if (failure != null) {
                     status.setText(failure);
-                    if (action.equals("connect") || action.equals("disconnect")) connected = false;
+                    if (action.equals("connect") || action.equals("disconnect")) { connected = false; connectionActive = false; }
                 }
                 else {
                     applySnapshot(result);
@@ -248,6 +248,7 @@ public final class MainActivity extends Activity {
                 && (loginState.equals("code_sent") || (loginState.equals("signed_in") && previousLoginState.equals("code_sent")))) main.post(this::showCloud);
         String phase = state.optString("status", "Disconnected");
         connected = state.optBoolean("connected", phase.equalsIgnoreCase("connected") || phase.equalsIgnoreCase("ready") || phase.equalsIgnoreCase("demo"));
+        connectionActive = connected || phase.equals("connecting") || phase.equals("provisioning") || phase.equals("reconnecting");
         processing = state.optBoolean("is_processing", false);
         modelName = nullableString(state, "model");
         JSONArray availableModels = state.optJSONArray("models");
@@ -453,7 +454,7 @@ public final class MainActivity extends Activity {
         cloud.setEnabled(!inFlight);
         cloud.setText(loginBusy ? "Cancel login" : loginState.equals("signed_in") ? "Cloud account" : "Cloud sign in");
         sessionList.setEnabled(!inFlight);
-        connect.setText(connected ? "Disconnect" : "Connect");
+        connect.setText(connectionActive ? "Disconnect" : "Connect");
     }
     @Override protected void onResume() {
         super.onResume();
