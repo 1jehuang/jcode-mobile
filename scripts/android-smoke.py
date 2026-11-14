@@ -27,11 +27,16 @@ def main():
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "Emulator required"
     OUT.mkdir(parents=True, exist_ok=True)
     adb("shell", "am", "force-stop", "org.jcode.mobile")
-    start = adb("shell", "date", "+%m-%d %H:%M:%S.000")
+    start = adb("shell", "date", "+%m-%d\\ %H:%M:%S.000")
     launch = adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
     (OUT / "launch.txt").write_text(launch)
     time.sleep(5)
-    pid = adb("shell", "pidof", "org.jcode.mobile").split()[0]
+    try:
+        pid = adb("shell", "pidof", "org.jcode.mobile").split()[0]
+    except (subprocess.CalledProcessError, IndexError) as error:
+        (OUT / "failure-logcat.txt").write_text(adb("logcat", "-d", "-t", start))
+        (OUT / "failure.png").write_bytes(adb("exec-out", "screencap", "-p", binary=True))
+        raise AssertionError("Shared native GPUI process died during launch") from error
     logs = adb("logcat", "--pid", pid, "-d", "-t", start)
     (OUT / "logcat.txt").write_text(logs)
     (OUT / "launch.png").write_bytes(adb("exec-out", "screencap", "-p", binary=True))
