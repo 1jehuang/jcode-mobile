@@ -2438,9 +2438,9 @@ impl MobileApp {
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
-                    .when(!local, |d| d.child(round_button("attach-photo", "+", t.text_secondary, !preview, t)
+                    .child(round_button("attach-photo", "+", t.text_secondary, !preview, t)
                         .a11y_button("Attach photo")
-                        .when(!preview, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx))))))
+                        .when(!preview, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx)))))
                     .child(div().id("composer-input").debug_selector(move || if preview { "preview-composer-input" } else { "composer-input" }.into()).flex_1().min_w_0().child(composer.clone()))
                     .child(if !preview && (self.voice.busy || self.voice.starting || self.voice.recording.is_some() || self.voice.sending()) {
                         // Reuse the existing send slot. Never insert rows during a voice pull.
