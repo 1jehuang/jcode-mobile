@@ -137,6 +137,17 @@ Python 3 standard library is the only dependency. The Rust test launches the
 script and uses the real SDK and shared reducer against it, not a second Python
 client that could share the same protocol mistake.
 
+Optional fault-injection flags leave the default fixture behavior unchanged:
+
+* `--reject-handshake`: reject every SDK hello. The bridge exhausts its three
+  reconnect retries and reaches `failed` after roughly seven seconds of backoff.
+* `--disconnect-once-after-send`: accept the first prompt, persist both it and
+  its completed response in server memory, acknowledge acceptance, then close
+  the TCP connection before any response delta. Later connections work normally.
+  Reconnecting clients must attach the same session and load authoritative
+  history, not resend the prompt. The one-shot flag is shared by all connections
+  in that fixture process. History survives socket reconnects, not process restarts.
+
 ## Validation
 
 ```sh
@@ -150,4 +161,8 @@ selection of a second session, and disconnect. Other tests cover malformed
 requests, endpoint validation, token rejection, explicitly offline demo, actual
 SDK HTTP email auth against a local fake control plane, credential non-disclosure,
 and logout invalidation of pending results.
+Failure tests exercise bounded handshake rejection and reconnect to `s2` (not
+the fixture's default new-session `s1`). An independent SDK client then checks
+server-owned history to prove the accepted prompt and response were each stored
+exactly once, not merely deduplicated in the UI.
 They do not claim a live production model response or Android packaging coverage.

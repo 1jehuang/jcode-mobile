@@ -9,6 +9,7 @@ Android endpoint: tcp://127.0.0.1:7644, token empty.
 """
 import argparse
 import json
+import socket
 import socketserver
 import threading
 
@@ -20,10 +21,13 @@ class FixtureServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, address, delay=0.03):
+    def __init__(self, address, delay=0.03, reject_handshake=False, disconnect_once_after_send=False):
         super().__init__(address, Handler)
         self.lock = threading.RLock()
         self.delay = delay
+        self.reject_handshake = reject_handshake
+        self.disconnect_once_after_send = disconnect_once_after_send
+        self.disconnected_after_send = False
         self.sessions = {
             "s1": {
                 "session_id": "s1",
@@ -97,6 +101,10 @@ class Handler(socketserver.StreamRequestHandler):
             return
         action = frame.get("req")
         if action == "hello":
+            if self.server.reject_handshake:
+                self.error(request_id, "unsupported_version", "Local fixture rejects the handshake")
+                self.request.shutdown(socket.SHUT_RDWR)
+                return
             self.hello = True
             self.event("hello_ok", request_id, version=VERSION,
                        server="android-local-fixture/1", capabilities=[])
@@ -182,9 +190,20 @@ class Handler(socketserver.StreamRequestHandler):
                 return
             self.server.history[sid].append({"role": "user", "content": text})
             self.server.sessions[sid]["status"] = "processing"
+            disconnect = self.server.disconnect_once_after_send and not self.server.disconnected_after_send
+            if disconnect:
+                # The server accepted and completed the turn, but its reply was
+                # lost. Keep authoritative history across TCP connections. A
+                # client must resume and fetch it, never replay the prompt.
+                self.server.disconnected_after_send = True
+                self.server.history[sid].append({"role": "assistant", "content": "actual streamed reply"})
+                self.server.sessions[sid]["status"] = "idle"
+        self.event("message_accepted", request_id, session_id=sid)
+        if disconnect:
+            self.request.shutdown(socket.SHUT_RDWR)
+            return
         cancel = threading.Event()
         self.active_cancel = cancel
-        self.event("message_accepted", request_id, session_id=sid)
         threading.Thread(target=self.stream_reply, args=(sid, cancel, f"fixture-{request_id}"), daemon=True).start()
 
     def stream_reply(self, sid, cancel, message_id):
@@ -214,10 +233,12 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7644)
     parser.add_argument("--delay", type=float, default=0.03, help="Seconds between streamed chunks")
+    parser.add_argument("--reject-handshake", action="store_true", help="Reject every SDK hello to test bounded failure")
+    parser.add_argument("--disconnect-once-after-send", action="store_true", help="Accept/persist one turn, drop its TCP link, then allow reconnect")
     args = parser.parse_args()
     if not 0 <= args.port <= 65535 or args.delay < 0:
         parser.error("invalid port or delay")
-    with FixtureServer((args.host, args.port), args.delay) as server:
+    with FixtureServer((args.host, args.port), args.delay, args.reject_handshake, args.disconnect_once_after_send) as server:
         print(json.dumps({"fixture": "local-sdk-not-live-model", "host": server.server_address[0],
                           "port": server.server_address[1]}), flush=True)
         try:

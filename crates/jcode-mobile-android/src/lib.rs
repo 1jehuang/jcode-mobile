@@ -669,37 +669,175 @@ mod tests {
         assert_eq!(request(&mut bridge, json!({"action":"wake"}))["ok"], true);
     }
 
-    #[test]
-    fn python_fixture_speaks_actual_sdk_protocol() {
-        struct Fixture(std::process::Child);
-        impl Drop for Fixture {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
+    struct PythonFixture {
+        child: std::process::Child,
+        endpoint: String,
+    }
+
+    impl Drop for PythonFixture {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
         }
-        let script =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/harness_fixture.py");
-        let mut fixture = Fixture(
-            std::process::Command::new("python3")
+    }
+
+    impl PythonFixture {
+        fn start(extra_args: &[&str]) -> Self {
+            let script =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/harness_fixture.py");
+            let child = std::process::Command::new("python3")
                 .arg("-u")
                 .arg(script)
                 .args(["--port", "0", "--delay", "0.2"])
+                .args(extra_args)
                 .stdout(std::process::Stdio::piped())
                 .spawn()
-                .expect("python3 is required for the emulator fixture test"),
+                .expect("python3 is required for the emulator fixture test");
+            let mut fixture = Self {
+                child,
+                endpoint: String::new(),
+            };
+            let mut ready = String::new();
+            BufReader::new(fixture.child.stdout.take().unwrap())
+                .read_line(&mut ready)
+                .unwrap();
+            let ready: Value = serde_json::from_str(&ready).unwrap();
+            let port = ready["port"].as_u64().unwrap();
+            fixture.endpoint = format!("tcp://127.0.0.1:{port}");
+            fixture
+        }
+    }
+
+    #[test]
+    fn rejected_handshake_reaches_bounded_failed_state() {
+        let fixture = PythonFixture::start(&["--reject-handshake"]);
+        let mut bridge = Bridge::default();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"connect","endpoint":fixture.endpoint})
+            )["ok"],
+            true
         );
-        let mut ready = String::new();
-        BufReader::new(fixture.0.stdout.take().unwrap())
-            .read_line(&mut ready)
-            .unwrap();
-        let ready: Value = serde_json::from_str(&ready).unwrap();
-        let port = ready["port"].as_u64().unwrap();
+        let failed = poll_until(&mut bridge, |s| s["status"] == "failed");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "handshake retry budget must be bounded"
+        );
+        assert_eq!(failed["selected_session_id"], Value::Null);
+        assert_eq!(failed["messages"], json!([]));
+        assert_eq!(failed["error"], "Could not connect to harness API server");
+        assert_eq!(
+            request(&mut bridge, json!({"action":"send","text":"must not send"}))["ok"],
+            false
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            request(&mut bridge, json!({"action":"poll"}))["status"],
+            "failed"
+        );
+        assert_eq!(
+            request(&mut bridge, json!({"action":"disconnect"}))["status"],
+            "disconnected"
+        );
+    }
+
+    #[test]
+    fn dropped_accepted_turn_resumes_same_session_without_resending() {
+        let fixture = PythonFixture::start(&["--disconnect-once-after-send"]);
+        let mut bridge = Bridge::default();
+        // s2 deliberately differs from the fixture's create-session default s1.
+        // A reconnect that creates a replacement session cannot pass this test.
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"connect","endpoint":fixture.endpoint,"session_id":"s2"})
+            )["ok"],
+            true
+        );
+        let initial = poll_until(&mut bridge, |s| {
+            s["selected_session_id"] == "s2"
+                && s["messages"].as_array().unwrap().len() == 1
+                && s["models"].as_array().unwrap().len() == 2
+        });
+        assert_eq!(
+            request(
+                &mut bridge,
+                json!({"action":"send","text":"accepted exactly once"})
+            )["ok"],
+            true
+        );
+        // A successful local reconnect can pass through its phase between two
+        // polls. Prove recovery via the authoritative replacement instead of
+        // requiring the UI to sample that transient status.
+        let recovered = poll_until(&mut bridge, |s| {
+            s["status"] == "connected"
+                && s["is_processing"] == false
+                && s["messages"].as_array().unwrap().len() >= 3
+        });
+        assert_eq!(recovered["selected_session_id"], "s2");
+        assert_eq!(recovered["error"], Value::Null);
+        let messages = recovered["messages"].as_array().unwrap();
+        assert_ne!(
+            messages[0]["id"], initial["messages"][0]["id"],
+            "history must be reloaded after the dropped socket"
+        );
+        assert_eq!(
+            messages.len(),
+            3,
+            "authoritative history must replace optimistic content, not duplicate it"
+        );
+        assert_eq!(messages[0]["text"], "earlier");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["text"], "accepted exactly once");
+        assert_eq!(messages[2]["text"], "actual streamed reply");
+
+        // Inspect server-owned history independently through the actual SDK.
+        // This catches a replay hidden by deduplicating only the UI transcript.
+        std::thread::sleep(Duration::from_millis(200));
+        let transport = Endpoint::parse(&fixture.endpoint).unwrap().open().unwrap();
+        let client = jcode_sdk::JcodeClient::connect_with(
+            transport,
+            jcode_sdk::ConnectOptions {
+                ensure_runtime: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        client.attach_session("s2").unwrap();
+        let persisted = client.get_history("s2").unwrap();
+        assert_eq!(persisted.len(), 3);
+        assert_eq!(
+            persisted
+                .iter()
+                .filter(|m| m.role == "user" && m.content == "accepted exactly once")
+                .count(),
+            1
+        );
+        assert_eq!(
+            persisted
+                .iter()
+                .filter(|m| m.role == "assistant" && m.content == "actual streamed reply")
+                .count(),
+            1
+        );
+        assert_eq!(
+            client.get_history("s1").unwrap().len(),
+            1,
+            "unselected session must be untouched"
+        );
+        request(&mut bridge, json!({"action":"disconnect"}));
+    }
+
+    #[test]
+    fn python_fixture_speaks_actual_sdk_protocol() {
+        let fixture = PythonFixture::start(&[]);
         let mut bridge = Bridge::default();
         assert_eq!(
             request(
                 &mut bridge,
-                json!({"action":"connect","endpoint":format!("tcp://127.0.0.1:{port}")})
+                json!({"action":"connect","endpoint":fixture.endpoint})
             )["ok"],
             true
         );
