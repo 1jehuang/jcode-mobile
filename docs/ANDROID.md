@@ -54,6 +54,7 @@ For a release-profile APK, set `ANDROID_PROFILE=release`. This does **not** impl
 - **Jcode Cloud:** use **Cloud sign in**, enter your email and the verification code, then connect. This reuses the shared cloud client and pure-Rust SSH transport. Sign-in state is intentionally memory-only in this first Android implementation, so force-stopping the app requires signing in again. Logging out clears the in-memory account and connection.
 - **Advanced direct server:** use **Settings** and a `tcp://host:port` endpoint for a securely forwarded harness API socket. This is newline-delimited harness API, **not** the legacy `/ws` gateway. There is no raw TCP transport encryption or authentication, so never expose this socket publicly. Use a trusted SSH tunnel or local emulator fixture. Nonempty gateway tokens are rejected rather than silently ignored.
 - The endpoint is stored in app-private preferences. Tokens and cloud credentials are not stored in plaintext preferences, backups, bundles, or logs. Android backups are disabled.
+- Android disables the persistent SSH device-key shortcut and permanent remote key authorization. Cloud connections use the normal pinned ephemeral SSH path instead.
 - **Demo:** explicitly labeled offline. It exercises the packaged Rust JNI library but never contacts a server or runs a model.
 
 The UI supports session lists, switching sessions, streamed chat, history, model selection, generation cancellation, foreground liveness probing, and disconnect. iOS-specific push notifications, extensions, native sharing, photo/voice capture, and full iOS visual parity are not implemented by this Android shell. It is not a GPUI Android backend.
@@ -102,6 +103,8 @@ python3 crates/jcode-mobile-android/scripts/harness_fixture.py --port 17646 --di
 Pass `ANDROID_TEST_SLOW_ENDPOINT=tcp://10.0.2.2:17644`, `ANDROID_TEST_REJECT_ENDPOINT=tcp://10.0.2.2:17645`, and `ANDROID_TEST_RECONNECT_ENDPOINT=tcp://10.0.2.2:17646` alongside `ANDROID_TEST_ENDPOINT` to `android-test.sh`. These add actual partial-stream cancellation, bounded handshake failure, and same-session recovery without duplicated sends. Restart the once-disconnecting fixture before each emulator run so the fault is actually injected again.
 
 Results, screenshots, accessibility dumps, and logs are saved under `target/android/`. Instrumentation uses a separate test APK with the same development signer, not a test entry point exposed in the shipping application.
+
+Use a fresh fixture instance for each UI smoke run. The fixture intentionally retains conversation history, and the app scrolls to the newest message. Reusing a heavily populated fixture can move the initial `earlier` history marker outside the accessibility viewport. Use separate ports when running emulator suites in parallel.
 
 Shared-code checks:
 
