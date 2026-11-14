@@ -141,6 +141,8 @@ mod imp {
                         if !text.trim().is_empty() {
                             emit(PushEvent::Reply { session_id, text });
                         }
+                    } else if action == "CONTINUE" {
+                        emit(PushEvent::Reply { session_id, text: "Continue".into() });
                     } else if action != "com.apple.UNNotificationDismissActionIdentifier" {
                         emit(PushEvent::Open { session_id });
                     }
@@ -179,11 +181,14 @@ mod imp {
         .into_super()
     }
 
-    fn category(id: &str, reply_title: &str) -> Retained<UNNotificationCategory> {
-        let actions = NSArray::from_retained_slice(&[
-            reply(reply_title),
-            action("OPEN", "Open", UNNotificationActionOptions::Foreground),
-        ]);
+    fn category(id: &str, reply_title: &str, quick_continue: bool) -> Retained<UNNotificationCategory> {
+        let mut list = vec![reply(reply_title)];
+        if quick_continue {
+            // One tap from the lock screen: carry on without opening the app.
+            list.push(action("CONTINUE", "Continue", UNNotificationActionOptions::empty()));
+        }
+        list.push(action("OPEN", "Open", UNNotificationActionOptions::Foreground));
+        let actions = NSArray::from_retained_slice(&list);
         UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
             &NSString::from_str(id),
             &actions,
@@ -199,8 +204,8 @@ mod imp {
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         DELEGATE.with(|d| *d.borrow_mut() = Some(delegate));
         center.setNotificationCategories(&NSSet::from_retained_slice(&[
-            category("JCODE_TURN", "Reply"),
-            category("JCODE_INPUT", "Answer"),
+            category("JCODE_TURN", "Reply", true),
+            category("JCODE_INPUT", "Answer", false),
         ]));
 
         // Foregrounding resets the badge and lets the app refresh state.
