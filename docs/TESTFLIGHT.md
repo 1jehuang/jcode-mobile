@@ -1,5 +1,15 @@
 # TestFlight release record
 
+## Build 1794697835, photo attachments, November 14, 2026
+
+- **Upload in progress, public availability not yet confirmed.** User explicitly requested TestFlight delivery and photo support in the current computer-synced session.
+- Frozen mobile source: `bdef6cfd15250eab9f263234cde59771f3db2fb6`. Shared voice source: `1e62fbf0da21a018beab0d066e28b67499909360`. Built from an immutable `git archive` on the managed VM, mounting the existing target cache. No worktree, no duplicate target directory, and no changes to the VM checkout's unrelated live edits.
+- Managed-VM build and distribution signing completed at `2026-11-14T23:12:54Z`. ZIP CRC clean, all four bundle IDs/build numbers correct, three embedded profiles present. Camera permission, photo privacy entry and both native media bridge symbols verified in the actual IPA.
+- IPA SHA-256: `09336c11d5f93e6b4c8db3afc25023439e61207675a6849a3bb3ac901c1a55c3`. Unstripped binary SHA-256: `5cae4667bef26b03455af47014e8e09536dfc12fef5de862d8689d749f4ac4d3`. Artifacts, provenance, complete build log and verification receipt archived under `~/.appstoreconnect/builds/1794697835/` locally and the matching managed-VM build archive.
+- Composer **+** offers camera and photo library, pending photo previews/removal and photo-only sends. Supports cloud and computer-synced chats. Camera JPEGs are bounded to 240 KiB each, with four attachments and 1 MiB decoded aggregate enforced before computer submission. Failed/uncertain computer delivery retains photos. Persistent synced transcript photo history and physical iPhone camera acceptance are not claimed.
+- Backend deployed guarded image transport at `2026-11-14T23:02Z`, version `ea445aef-419a-433d-81e1-e0a97fbafb7f`, preserving all 47 bindings and settings. Old computers reject photo commands explicitly instead of silently dropping images. Backend acceptance: 650 tests, Rust mobile 98 tests, real HTTP/SQLite-to-Rust photo contract passed. Desktop runtime activation is tracked separately below.
+- App hosted serial acceptance: 451 tests passed with 11 ignored; the inventory test read stale hosted checkout fixtures. Retrieved hosted-built test binary passed the exact inventory test against the frozen release archive using a read-only `bwrap` source mount. No local Rust compilation. Full frozen-fixture acceptance is being recorded before publication.
+
 ## Build 1794694215, public November 14, 2026 (Pacific)
 
 - **Public Beta available.** Source-freeze authorization received at `2026-11-14T22:06:58Z`. Separate explicit coordinator matrix-green authorization at `2026-11-14T22:26:45Z` approved upload and publication of this exact archived candidate and IPA hash.
