@@ -1,5 +1,14 @@
 # TestFlight release record
 
+## Build 1794631199, prepared November 13, 2026 (Pacific)
+
+- **Prepared and signed only. Not uploaded or submitted.** Upload/public distribution remains gated on the coordinator's explicit final matrix-green release authorization. Supersedes prepared build `1794629010`, which must not be uploaded.
+- Exact mobile source: `04058c1758d0207e8a6275a39c05ce5af609ad01`, pushed to `origin/main` and fast-forwarded on the managed VM. Shared voice source: `1e62fbf0da21a018beab0d066e28b67499909360` at `/home/ec2-user/jcode`, explicitly selected with `JCODE_SRC`. Both tracked source trees were clean before building. No app code was changed by release operations.
+- `scripts/cloud-ios-build.sh` completed at `2026-11-14T04:40:53Z` (November 13, 20:40 Pacific), using the managed VM's Apple SDK/linker and existing signing setup. Cross-build receipt `20261114-044001660-16` passed in 46.3 seconds. No local workstation compilation. Test acceptance is separately owned by the coordinator.
+- ZIP CRC clean. App, bridge, Live Activity and share extension all carry build `1794631199`. Distribution signing completed. `rcodesign verify` reported no executable signature problems across all four executables, subject to its incomplete-verification warning, not proof of Apple acceptance.
+- IPA SHA-256: `3cbba297ca2d373437cc98d508f540732ab3801127ff2b288fe5f25cebc783d5`. Unstripped binary SHA-256: `563b54327d64d839b1bd16323a3069654776324b67e58b25db4d7ea8ca45bb48`. Downloaded artifact hashes match the VM artifacts.
+- Exact IPA, unstripped binary, source provenance, build log, bundle/CRC/hash verification and executable signature verification are archived under `~/.appstoreconnect/builds/1794631199/` locally and `~/.local/share/jcode-mobile-build/state/.appstoreconnect/builds/1794631199/` on the VM. The local archive also preserves the compiler receipt.
+
 ## Build 1794629010, prepared November 13, 2026 (Pacific)
 
 - **Prepared and signed only. Not uploaded or submitted.** Upload/public distribution remains gated on the coordinator's final acceptance authorization.
