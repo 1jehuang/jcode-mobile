@@ -76,9 +76,13 @@ The login token and `Account` live only in Rust process memory and are never
 included in JSON, logs, preferences or `AccountStore`. App process death requires
 sign-in again. `disconnect` preserves the current in-memory sign-in, whereas
 `logout` forgets it and invalidates pending auth results. Logout is local, not
-server-side key revocation. The existing shared cloud core may cache transcripts
-and pinned SSH device state in its app-data location. Android packaging should
-set a private app-data HOME/XDG location before cloud connection.
+server-side key revocation. Android disables the shared core's persistent
+direct-device-key optimization: it neither saves `cloud-direct.json` nor adds a
+persistent `jcode-device` key to the remote machine. Normal cloud connection uses
+the existing control-plane-authorized ephemeral native SSH key and verified host
+pins, with shared SSH state only in process memory. Logout drops the process's
+SSH cache. The shared core may still cache transcripts in private app-data, but
+that cache is not used to store account or derived SSH credentials.
 
 ## Real server connectivity
 

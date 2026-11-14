@@ -7,6 +7,9 @@
 //! machine and remembers the pinned target. Later launches SSH straight to
 //! the last address, still verifying the pinned host keys, and fall back to
 //! the control plane if anything fails (machine asleep, address changed).
+//! Android disables this persistent-device-key optimization. It uses ephemeral
+//! control-plane SSH and the process's shared SSH cache, without accumulating
+//! abandoned authorized keys on the remote machine after app process death.
 
 use crate::cloud::Account;
 use crate::cloud_ssh::{CloudSsh, CloudSshKey};
@@ -62,6 +65,9 @@ impl DirectState {
 
 /// Load this account's state, creating a fresh device key when absent.
 pub(crate) fn load_or_create(account: &Account) -> Option<DirectState> {
+    if cfg!(target_os = "android") {
+        return None;
+    }
     let id = account_id(account);
     if let Some(state) = store::load().filter(|s| s.account == id && s.key().is_some()) {
         return Some(state);
@@ -75,6 +81,11 @@ pub(crate) fn load_or_create(account: &Account) -> Option<DirectState> {
 /// Record a control-plane-validated target and authorize the device key on it.
 /// Runs over an already authenticated master, so it costs one channel.
 pub(crate) fn remember(account: &Account, ssh: &CloudSsh, target: &CloudTarget) {
+    // A device key authorized remotely but forgotten on process death would
+    // accumulate dead authorized_keys entries. Android never authorizes it.
+    if cfg!(target_os = "android") {
+        return;
+    }
     let Some(mut state) = load_or_create(account) else { return };
     let Some(key) = state.key() else { return };
     if ssh.authorize_device_key(key.public_openssh()).is_err() {
@@ -116,7 +127,28 @@ pub(crate) fn clear() {
     store::clear();
 }
 
-#[cfg(not(target_os = "ios"))]
+/// Android has no persistent direct-reconnect credential until a keystore
+/// integration exists. This deliberately has no path, environment or retained
+/// state. Host tests exercise the exact same fail-closed platform implementation.
+#[cfg(any(target_os = "android", test))]
+mod ephemeral_store {
+    use super::DirectState;
+
+    pub(super) fn load() -> Option<DirectState> {
+        None
+    }
+
+    pub(super) fn save(_: &DirectState) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Android direct-device credentials are disabled"))
+    }
+
+    pub(super) fn clear() {}
+}
+
+#[cfg(target_os = "android")]
+use ephemeral_store as store;
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod store {
     use super::*;
     use std::path::PathBuf;
@@ -176,6 +208,28 @@ mod store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_store_never_retains_derived_secrets() {
+        assert!(ephemeral_store::load().is_none());
+        let key = CloudSshKey::generate(KEY_COMMENT).unwrap();
+        let state = DirectState {
+            account: 9,
+            private_key: key.private_openssh().unwrap(),
+            authorized: true,
+            target: Some(SavedTarget {
+                address: "127.0.0.1".parse().unwrap(),
+                port: 22,
+                user: "fixture".into(),
+                host_keys: vec![key.public_openssh().into()],
+            }),
+        };
+        assert_eq!(ephemeral_store::save(&state).unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        assert!(ephemeral_store::load().is_none(), "even an accidental save cannot retain a key or target");
+        ephemeral_store::clear();
+        ephemeral_store::clear();
+        assert!(ephemeral_store::load().is_none(), "logout has no retained derived credentials to clear");
+    }
 
     #[test]
     fn key_roundtrips_and_target_requires_authorization() {
