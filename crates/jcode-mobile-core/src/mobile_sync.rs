@@ -290,6 +290,24 @@ pub fn message(account: &Account, session: &SyncedSession, text: &str) -> Result
     message_with_images(account, session, text, &[])
 }
 
+/// Keep base64 command data below the synced store's per-row budget.
+pub fn validate_message_images(images: &[crate::SessionImage]) -> Result<(), String> {
+    if images.len() > 4 {
+        return Err("Attach up to four photos per message".into());
+    }
+    let mut total = 0usize;
+    for image in images {
+        if !matches!(image.media_type.as_str(), "image/jpeg" | "image/png" | "image/webp" | "image/gif") || image.bytes.is_empty() {
+            return Err("Choose a readable JPEG, PNG, WebP or GIF photo".into());
+        }
+        total = total.saturating_add(image.bytes.len());
+        if total > 1024 * 1024 {
+            return Err("Photos are too large for computer sync. Choose smaller photos or fewer attachments.".into());
+        }
+    }
+    Ok(())
+}
+
 /// Submit photos to the existing computer session, never a cloud continuation.
 pub fn message_with_images(
     account: &Account,
@@ -297,6 +315,7 @@ pub fn message_with_images(
     text: &str,
     images: &[crate::SessionImage],
 ) -> Result<Command, String> {
+    validate_message_images(images)?;
     if !session.can_message() {
         return Err("This session is not live on your computer".into());
     }
@@ -340,6 +359,15 @@ pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn synced_photo_budget_accepts_four_camera_photos_and_rejects_oversized_data() {
+        let image = crate::SessionImage::new("image/jpeg", vec![1; 240 * 1024]);
+        assert!(validate_message_images(&vec![image.clone(); 4]).is_ok());
+        assert!(validate_message_images(&vec![image; 5]).is_err());
+        assert!(validate_message_images(&[crate::SessionImage::new("image/jpeg", vec![1; 1024 * 1024 + 1])]).is_err());
+        assert!(validate_message_images(&[crate::SessionImage::new("image/jpeg", vec![])]).is_err());
+        assert!(validate_message_images(&[crate::SessionImage::new("application/pdf", vec![1])]).is_err());
+    }
     #[test]
     fn photo_message_posts_base64_to_existing_computer_session() {
         let session: SyncedSession = serde_json::from_value(serde_json::json!({

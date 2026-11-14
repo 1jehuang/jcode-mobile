@@ -410,8 +410,13 @@ impl MobileApp {
         if submitted.is_empty() && images.is_empty() {
             return;
         }
+        if let Err(error) = mobile_sync::validate_message_images(&images) {
+            self.session.error_banner = Some(error);
+            cx.notify();
+            return;
+        }
         let text = if submitted.is_empty() {
-            super::attachments::caption(images.len())
+            crate::app::attachments::caption(images.len())
         } else {
             submitted.clone()
         };
