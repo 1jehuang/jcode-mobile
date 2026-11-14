@@ -295,6 +295,9 @@ impl MobileApp {
         if self.account.is_none() {
             return;
         }
+        if self.route_known_local_chat(&session_id, reply.clone(), cx) {
+            return;
+        }
         if self.session.session_id.as_deref() != Some(session_id.as_str()) {
             let parked = self
                 .parked

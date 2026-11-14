@@ -319,7 +319,7 @@ mod tests {
         );
         assert_eq!((m.running, m.waiting, m.errored), (2, 1, 1));
         let ids: Vec<_> = m.items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["b", "d", "a"]);
+        assert_eq!(ids, ["b", "d", "a", "e"]);
         assert_eq!(m.updated_at, 5);
         assert_eq!(headline(&m), "1 needs input, 1 failed, 2 running");
     }

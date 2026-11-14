@@ -143,6 +143,7 @@ fn safe_name(name: &str) -> Option<String> {
         "connection error unexpected reply",
         "connection error harness",
         "connection error transport",
+        "connection error protocol",
         "connection error launch failed",
         "connection error jcode not found",
         "connection error startup failed",
