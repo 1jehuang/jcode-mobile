@@ -35,6 +35,10 @@ mod voice_motion_tests;
 #[path = "overlay_coverage.rs"]
 mod overlay_coverage;
 
+#[cfg(test)]
+#[path = "android_navigation_tests.rs"]
+mod android_navigation_tests;
+
 #[derive(Default)]
 struct Recorded {
     screen: Option<Bounds<Pixels>>,
@@ -79,6 +83,44 @@ fn recorder(rec: Rc<RefCell<Recorded>>, put: fn(&mut Recorded, Bounds<Pixels>)) 
 }
 
 impl MobileApp {
+    /// Android's back key dismisses the most local surface before navigating.
+    /// Return false only at the root so the OS can leave the activity.
+    pub(super) fn system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.focused_text_input(window, cx).is_some() || self.keyboard_up {
+            window.blur(cx);
+            window.dismiss_virtual_keyboard();
+        } else if self.feel.selection.take().is_some() || self.feel.rename.take().is_some() {
+            window.blur(cx);
+        } else if self.feel.menu.is_some() {
+            self.close_menu(cx);
+        } else if self.tab_menu.take().is_some() {
+            self.tab_hold = None;
+        } else if self.map.visible() {
+            self.map.set_open(false);
+        } else if self.git_info.open {
+            self.git_info.open = false;
+        } else if self.dir_picker {
+            self.dir_picker = false;
+        } else if self.model_picker {
+            self.feel_close_sheet();
+        } else if self.drawer_open {
+            self.close_drawer(cx);
+        } else if self.screen == Screen::Settings {
+            self.feel_back();
+        } else if self.browser_login.is_some() {
+            self.invalidate_auth();
+            self.signing_in = false;
+        } else if self.login_token.take().is_some() {
+            self.invalidate_auth();
+            self.code.update(cx, |input, cx| input.set_text("", cx));
+            self.signing_in = false;
+        } else {
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
     fn apply_voice_gesture(&mut self, actions: Vec<crate::voice_gesture::Action>, cx: &mut Context<Self>) {
         use crate::voice_gesture::Action as VoiceAction;
         for action in actions {
@@ -109,7 +151,7 @@ impl MobileApp {
 
     fn voice_wheel_eligible(&self, event: &ScrollWheelEvent) -> bool {
         let delta = event.delta.pixel_delta(px(20.));
-        cfg!(any(target_os = "ios", target_os = "linux"))
+        cfg!(any(target_os = "ios", target_os = "android", target_os = "linux"))
             && self.scene_allows_voice()
             && self.scene().menus
             && !matches!(event.touch_phase, TouchPhase::Ended | TouchPhase::Cancelled)

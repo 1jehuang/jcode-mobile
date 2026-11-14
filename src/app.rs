@@ -1310,7 +1310,7 @@ impl MobileApp {
             )),
             (false, false) => None,
         };
-        let apple = (!code_step).then(|| self.render_apple_button(cx));
+        let apple = (!code_step && !cfg!(target_os = "android")).then(|| self.render_apple_button(cx));
         // Fixed layout: branding fills whatever space is left above, the form
         // is pinned to the bottom. The screen's bottom padding grows with the
         // keyboard, so the form rides up above it and nothing else moves.
@@ -3019,6 +3019,13 @@ impl Render for MobileApp {
             .pt(px(top))
             .pb(px(bottom))
             .overflow_hidden()
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if cfg!(target_os = "android") && event.keystroke.key == "escape"
+                    && this.system_back(window, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
             // Tapping outside a field dismisses the keyboard, like iOS.
             .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
                 window.blur(cx);

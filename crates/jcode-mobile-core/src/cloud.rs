@@ -133,7 +133,33 @@ pub(crate) fn forget_inspection_ssh(dead: &crate::cloud_ssh::CloudSsh) {
     }
 }
 
-/// Persistent account storage (app data dir on iOS, XDG data on Linux).
+/// Android's application installs a Keystore-backed store before loading accounts.
+/// Implementations must encrypt at rest and must never log these bytes.
+#[cfg(any(target_os = "android", test))]
+pub trait AndroidAccountStorage: Send + Sync + 'static {
+    fn read(&self) -> std::io::Result<Option<Vec<u8>>>;
+    fn write(&self, bytes: &[u8]) -> std::io::Result<()>;
+    fn clear(&self) -> std::io::Result<()>;
+}
+
+#[cfg(any(target_os = "android", test))]
+static ANDROID_ACCOUNT_STORAGE: std::sync::OnceLock<std::sync::Arc<dyn AndroidAccountStorage>> = std::sync::OnceLock::new();
+
+/// Install once during Android bootstrap, before any account prewarming.
+#[cfg(any(target_os = "android", test))]
+pub fn install_android_account_storage(store: std::sync::Arc<dyn AndroidAccountStorage>) -> bool {
+    ANDROID_ACCOUNT_STORAGE.set(store).is_ok()
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_account_storage() -> std::io::Result<&'static dyn AndroidAccountStorage> {
+    ANDROID_ACCOUNT_STORAGE.get().map(|store| store.as_ref()).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotConnected, "Android secure account storage is not initialized")
+    })
+}
+
+/// Persistent accounts use Keychain on iOS, a Keystore-backed provider on
+/// Android, and an app-private file on desktop.
 pub struct AccountStore {
     path: PathBuf,
 }
@@ -159,7 +185,12 @@ impl AccountStore {
             }
             Some(a)
         }
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(target_os = "android")]
+        {
+            let bytes = android_account_storage().ok()?.read().ok()??;
+            serde_json::from_slice(&bytes).ok()
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         self.load_file()
     }
     pub fn save(&self, account: &Account) -> std::io::Result<()> {
@@ -169,7 +200,14 @@ impl AccountStore {
             self.clear_file();
             Ok(())
         }
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(target_os = "android")]
+        {
+            let bytes = serde_json::to_vec(account).map_err(std::io::Error::other)?;
+            android_account_storage()?.write(&bytes)?;
+            self.clear_file();
+            Ok(())
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         self.save_file(account)
     }
     pub fn clear(&self) {
@@ -177,14 +215,22 @@ impl AccountStore {
         crate::cloud_direct::clear();
         #[cfg(target_os = "ios")]
         keychain::clear();
+        #[cfg(target_os = "android")]
+        if let Ok(store) = android_account_storage() {
+            if let Err(error) = store.clear() {
+                log::warn!("Android secure account removal failed: {error}");
+            }
+        }
         self.clear_file();
     }
 
+    #[cfg(not(target_os = "android"))]
     fn load_file(&self) -> Option<Account> {
         let text = std::fs::read_to_string(&self.path).ok()?;
         serde_json::from_str(&text).ok()
     }
     #[cfg_attr(target_os = "ios", allow(dead_code))]
+    #[cfg(not(target_os = "android"))]
     fn save_file(&self, account: &Account) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -825,6 +871,16 @@ mod tests {
         // Cancel never reaches the network.
         let result = wait_for_browser_login(&client().with_api_base(api_base), &start, &|| true, &|| false);
         assert_eq!(result.unwrap_err(), "");
+    }
+
+    #[test]
+    fn android_account_store_requires_secure_provider() {
+        // No Android provider is installed in host tests. Android bootstrap
+        // must install one before saving, never fall back to account.json.
+        match android_account_storage() {
+            Ok(_) => panic!("host test unexpectedly installed an Android credential provider"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotConnected),
+        }
     }
 
     #[test]

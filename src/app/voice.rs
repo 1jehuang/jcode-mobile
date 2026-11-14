@@ -225,7 +225,7 @@ impl MobileApp {
             cx.notify();
             return;
         }
-        if cfg!(any(target_os = "ios", target_os = "linux")) && self.scene_allows_voice() {
+        if cfg!(any(target_os = "ios", target_os = "android", target_os = "linux")) && self.scene_allows_voice() {
             self.begin_voice(true, cx);
         }
     }

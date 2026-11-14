@@ -75,7 +75,12 @@ pub fn present(text: &str) -> bool {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+pub fn present(text: &str) -> bool {
+    crate::android_services::select_text(text)
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn present(_: &str) -> bool {
     false
 }
