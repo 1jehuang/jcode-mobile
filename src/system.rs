@@ -1,5 +1,7 @@
 //! iOS system integration: Dynamic Type, Reduce Motion, light/dark
-//! appearance, and Spotlight indexing of session titles.
+//! appearance, and Spotlight indexing of session titles. Android reads its
+//! Configuration font scale/night mode and animation setting, and indexes
+//! session titles as dynamic launcher shortcuts.
 //!
 //! Settings are read from UIKit on iOS and refreshed whenever the app becomes
 //! active. On Linux the preview simulates them with env vars:

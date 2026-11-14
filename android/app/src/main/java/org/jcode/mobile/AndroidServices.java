@@ -17,6 +17,16 @@ import org.json.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.AtomicFile;
+import android.widget.ScrollView;
+import android.widget.TextView;
 
 /** Platform services only. All application widgets and rendering remain in GPUI. */
 public final class AndroidServices {
@@ -29,6 +39,9 @@ public final class AndroidServices {
     private File cameraFile;
     private AudioRecord recorder;
     private volatile boolean foreground;
+    private final Object accountLock = new Object();
+    private static final String ACCOUNT_KEY = "jcode.accounts.aes-gcm.v1";
+    private static final int MAX_ACCOUNT = 1024 * 1024;
     public AndroidServices(Activity activity) { this.activity = activity; nativeInit(); }
     private native void nativeInit();
     private native void nativeMedia(int status, byte[] data);
@@ -63,6 +76,83 @@ public final class AndroidServices {
             Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
             activity.startActivity(Intent.createChooser(send, "Share")); return true;
         });
+    }
+    public boolean selectText(String text) {
+        return ui(() -> {
+            TextView view = new TextView(activity);
+            view.setText(text);
+            view.setTextSize(16);
+            view.setTextIsSelectable(true);
+            view.setTypeface(android.graphics.Typeface.MONOSPACE);
+            int padding = (int)(20 * activity.getResources().getDisplayMetrics().density);
+            view.setPadding(padding, padding, padding, padding);
+            ScrollView scroll = new ScrollView(activity);
+            scroll.addView(view);
+            new AlertDialog.Builder(activity).setTitle("Select text").setView(scroll).setPositiveButton("Done", (dialog, which) -> dialog.dismiss()).show();
+            return true;
+        });
+    }
+
+    private AtomicFile accountFile() { return new AtomicFile(new File(activity.getNoBackupFilesDir(), "accounts.aesgcm")); }
+    private SecretKey accountKey(boolean create) throws Exception {
+        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+        store.load(null);
+        if (store.containsAlias(ACCOUNT_KEY)) return ((KeyStore.SecretKeyEntry)store.getEntry(ACCOUNT_KEY, null)).getSecretKey();
+        if (!create) throw new java.security.KeyStoreException("Account encryption key is missing");
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(ACCOUNT_KEY, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true).setKeySize(256).build());
+        return generator.generateKey();
+    }
+    private byte[] accountAad() { return (activity.getPackageName() + ":accounts:v1").getBytes(java.nio.charset.StandardCharsets.UTF_8); }
+    public byte[] accountRead() throws Exception {
+        synchronized (accountLock) {
+            AtomicFile file = accountFile();
+            if (!file.getBaseFile().exists() && !new File(file.getBaseFile().getPath() + ".bak").exists()) return null;
+            byte[] blob;
+            try (FileInputStream in = file.openRead(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[4096];
+                for (int n; (n = in.read(buffer)) != -1;) {
+                    if (out.size() + n > MAX_ACCOUNT + 64) throw new IOException("Encrypted account data exceeds limit");
+                    out.write(buffer, 0, n);
+                }
+                blob = out.toByteArray();
+            }
+            if (blob.length < 29 || blob[0] != 1) throw new IOException("Invalid encrypted account format");
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.DECRYPT_MODE, accountKey(false), new GCMParameterSpec(128, Arrays.copyOfRange(blob, 1, 13)));
+            cipher.updateAAD(accountAad());
+            return cipher.doFinal(blob, 13, blob.length - 13);
+        }
+    }
+    public void accountWrite(byte[] plain) throws Exception {
+        if (plain == null || plain.length == 0 || plain.length > MAX_ACCOUNT) throw new IOException("Invalid account data size");
+        synchronized (accountLock) {
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, accountKey(true));
+            cipher.updateAAD(accountAad());
+            byte[] encrypted = cipher.doFinal(plain), iv = cipher.getIV();
+            if (iv.length != 12) throw new java.security.GeneralSecurityException("Unsupported GCM nonce length");
+            AtomicFile file = accountFile();
+            FileOutputStream out = null;
+            try {
+                out = file.startWrite();
+                out.write(1); out.write(iv); out.write(encrypted);
+                out.getFD().sync();
+                file.finishWrite(out);
+                out = null;
+                if (!Arrays.equals(accountRead(), plain)) throw new IOException("Encrypted account write verification failed");
+            } catch (Exception error) { if (out != null) file.failWrite(out); throw error; }
+        }
+    }
+    public void accountClear() throws Exception {
+        synchronized (accountLock) {
+            KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
+            if (store.containsAlias(ACCOUNT_KEY)) store.deleteEntry(ACCOUNT_KEY);
+            AtomicFile file = accountFile(); file.delete();
+            if (file.getBaseFile().exists() || new File(file.getBaseFile().getPath() + ".bak").exists()) throw new IOException("Cannot remove encrypted account data");
+        }
     }
     public boolean openUrl(String url) {
         return ui(() -> {

@@ -4,8 +4,9 @@
 //! authentication sheet is the in-app option: it slides over the app, shares
 //! Safari's cookies (the Google account chooser already lists the accounts
 //! signed in on the phone) and is dismissed by [`close`] as soon as the device
-//! flow is approved. Elsewhere [`open`] returns false and the caller falls
-//! back to the system browser.
+//! flow is approved. Android opens the system browser with shared login cookies.
+//! Unlike the iOS sheet, an external Android browser cannot be dismissed by
+//! [`close`]. Desktop [`open`] returns false for the caller's browser fallback.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

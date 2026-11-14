@@ -5,6 +5,10 @@
 //! scaled down. The bridge is loaded with `dlopen`, so an older bundle without
 //! the media symbols degrades to "unavailable" instead of failing to launch.
 //!
+//! Android uses the system document picker and external camera, delivering
+//! bounded, upright JPEGs through the JNI service bridge. Temporary camera
+//! output is removed after delivery or cancellation.
+//!
 //! The desktop preview has no picker. `JCODE_MOBILE_ATTACH=<image file>` makes
 //! either source deliver that file, for working on the composer from Linux.
 

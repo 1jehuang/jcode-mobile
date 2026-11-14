@@ -1,5 +1,5 @@
-//! System share sheet. iOS presents UIActivityViewController; the desktop
-//! preview has none, so callers fall back to the clipboard.
+//! System share sheet: UIActivityViewController on iOS and ACTION_SEND chooser
+//! on Android. The desktop preview has none, so callers fall back to clipboard.
 
 /// Presents the share sheet for `text`. Returns false when there is no
 /// system sheet (desktop preview) so the caller can copy instead.

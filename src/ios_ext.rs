@@ -11,6 +11,10 @@
 //! The Live Activity lives in a Swift widget extension (ios-ext/). Rust drives
 //! it through `JcodeBridge.framework`, loaded with `dlopen` so the app still
 //! runs when the framework is absent (simulator, Linux preview).
+//!
+//! Android reuses the deep-link parser and shows a local ongoing agent summary
+//! notification instead of ActivityKit. It has no background push-to-update
+//! transport until the server and client gain FCM support.
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use jcode_mobile_core::agents::{AgentState, AgentsState, LiveTokenKind, LocalAgent, headline};

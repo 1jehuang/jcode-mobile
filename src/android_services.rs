@@ -17,7 +17,12 @@ pub extern "system" fn Java_org_jcode_mobile_AndroidServices_nativeInit(
     helper: JObject,
 ) {
     match (env.get_java_vm(), env.new_global_ref(helper)) {
-        (Ok(vm), Ok(helper)) => *BRIDGE.lock().unwrap() = Some(Arc::new(Bridge { vm, helper })),
+        (Ok(vm), Ok(helper)) => {
+            *BRIDGE.lock().unwrap() = Some(Arc::new(Bridge { vm, helper }));
+            jcode_mobile_core::cloud::install_android_account_storage(Arc::new(
+                AndroidAccountStorage,
+            ));
+        }
         _ => log::error!("Android service initialization failed"),
     }
 }
@@ -54,6 +59,45 @@ pub fn call_bool(method: &str, text: &str) -> bool {
         log::warn!("Android {method}: {e}");
         false
     })
+}
+
+pub fn select_text(text: &str) -> bool {
+    call_bool("selectText", text)
+}
+
+struct AndroidAccountStorage;
+impl jcode_mobile_core::cloud::AndroidAccountStorage for AndroidAccountStorage {
+    fn read(&self) -> std::io::Result<Option<Vec<u8>>> {
+        with(|env, obj| {
+            let bytes = env.call_method(obj, "accountRead", "()[B", &[])?.l()?;
+            if bytes.is_null() {
+                Ok(None)
+            } else {
+                env.convert_byte_array(JByteArray::from(bytes)).map(Some)
+            }
+        })
+        .map_err(std::io::Error::other)
+    }
+    fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+        with(|env, obj| {
+            let bytes = env.byte_array_from_slice(bytes)?;
+            env.call_method(
+                obj,
+                "accountWrite",
+                "([B)V",
+                &[JValue::Object(bytes.as_ref())],
+            )?;
+            Ok(())
+        })
+        .map_err(std::io::Error::other)
+    }
+    fn clear(&self) -> std::io::Result<()> {
+        with(|env, obj| {
+            env.call_method(obj, "accountClear", "()V", &[])?;
+            Ok(())
+        })
+        .map_err(std::io::Error::other)
+    }
 }
 pub fn haptic(kind: i32) {
     let _ = with(|env, obj| {

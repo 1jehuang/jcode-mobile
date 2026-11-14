@@ -10,6 +10,10 @@
 //! Local banners (`post`) remain as a fallback for the few seconds iOS keeps
 //! the socket alive after the user leaves, and are skipped once APNs is live
 //! so the user never gets the same news twice.
+//!
+//! Android supports local channels, notification taps and inline reply. Remote
+//! Android delivery is NOT implemented: the server transport is APNs-only, and
+//! no FCM registration token is generated or mislabeled as an APNs token.
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use jcode_mobile_core::session::Alert;

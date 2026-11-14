@@ -1,6 +1,6 @@
-//! Taptic feedback. On iOS this drives UIKit's feedback generators through
-//! the Objective-C runtime (no extra framework bindings needed). Elsewhere it
-//! is a no-op, logged at debug level (JCODE_MOBILE_HAPTICS_LOG=1 prints it).
+//! Native feedback: UIKit generators on iOS and Android View haptic feedback
+//! (respecting the user's system preference) on Android. Desktop is a no-op,
+//! logged at debug level (JCODE_MOBILE_HAPTICS_LOG=1 prints it).
 //!
 //! Emit at action boundaries, after eligibility checks: Selection for a changed
 //! choice, Light for navigation/send, Medium for a committed gesture, Rigid for
