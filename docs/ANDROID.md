@@ -56,7 +56,7 @@ For a release-profile APK, set `ANDROID_PROFILE=release`. This does **not** impl
 - The endpoint is stored in app-private preferences. Tokens and cloud credentials are not stored in plaintext preferences, backups, bundles, or logs. Android backups are disabled.
 - **Demo:** explicitly labeled offline. It exercises the packaged Rust JNI library but never contacts a server or runs a model.
 
-The UI supports session lists, switching sessions, streamed chat, history, foreground liveness probing, and disconnect. iOS-specific push notifications, extensions, native sharing, photo/voice capture, and full iOS visual parity are not implemented by this Android shell. It is not a GPUI Android backend.
+The UI supports session lists, switching sessions, streamed chat, history, model selection, generation cancellation, foreground liveness probing, and disconnect. iOS-specific push notifications, extensions, native sharing, photo/voice capture, and full iOS visual parity are not implemented by this Android shell. It is not a GPUI Android backend.
 
 ## Repeatable emulator tests
 
@@ -89,7 +89,17 @@ ANDROID_SERIAL=emulator-5556 python3 scripts/android-smoke.py \
   --endpoint tcp://10.0.2.2:17643
 ```
 
-Both test helpers refuse physical devices. Instrumentation verifies actual native library loading, invalid commands/endpoints, safe token rejection, Unicode/emoji/multiline round trips, explicit offline demo, real socket handshake/history/session list, message streaming, session switching, wake and disconnect. The UI script exercises the installed app through accessibility and input events, including keyboard dismissal, unsent drafts across background/resume and rotation, and larger font settings. It restores the emulator's original rotation and font settings even when a check fails.
+Both test helpers refuse physical devices. Instrumentation verifies actual native library loading, invalid commands/endpoints, safe token rejection, Unicode/emoji/multiline round trips, explicit offline demo, real socket handshake/history/session list, model selection, message streaming, session switching, wake and disconnect. The UI script exercises the installed app through accessibility and input events, including visible software keyboard handling, blank-email validation without sending mail, unsent drafts across background/resume and rotation, and larger font settings. It restores the emulator's original rotation, font, and keyboard settings even when a check fails.
+
+For additional cancellation and recovery coverage, start independent fixture instances:
+
+```sh
+python3 crates/jcode-mobile-android/scripts/harness_fixture.py --port 17644 --delay 0.6
+python3 crates/jcode-mobile-android/scripts/harness_fixture.py --port 17645 --reject-handshake
+python3 crates/jcode-mobile-android/scripts/harness_fixture.py --port 17646 --disconnect-once-after-send
+```
+
+Pass `ANDROID_TEST_SLOW_ENDPOINT=tcp://10.0.2.2:17644`, `ANDROID_TEST_REJECT_ENDPOINT=tcp://10.0.2.2:17645`, and `ANDROID_TEST_RECONNECT_ENDPOINT=tcp://10.0.2.2:17646` alongside `ANDROID_TEST_ENDPOINT` to `android-test.sh`. These add actual partial-stream cancellation, bounded handshake failure, and same-session recovery without duplicated sends. Restart the once-disconnecting fixture before each emulator run so the fault is actually injected again.
 
 Results, screenshots, accessibility dumps, and logs are saved under `target/android/`. Instrumentation uses a separate test APK with the same development signer, not a test entry point exposed in the shipping application.
 

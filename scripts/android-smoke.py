@@ -38,20 +38,26 @@ def tree():
 
 
 def matches(node, text=None, description=None, contains=None):
-    return ((text is None or node.get("text") == text)
+    return ((text is None or node.get("text", "").casefold() == text.casefold())
             and (description is None or node.get("content-desc") == description)
-            and (contains is None or contains in node.get("text", "")))
+            and (contains is None or contains.casefold() in node.get("text", "").casefold()))
 
 
 def wait_node(timeout=30, **query):
     deadline = time.monotonic() + timeout
+    last_error = None
     while time.monotonic() < deadline:
-        nodes = tree()
+        try:
+            nodes = tree()
+        except (AssertionError, subprocess.TimeoutExpired) as error:
+            last_error = str(error)
+            time.sleep(.3)
+            continue
         for node in nodes.iter("node"):
             if matches(node, **query):
                 return node
         time.sleep(.3)
-    raise AssertionError("UI element not found: " + str(query))
+    raise AssertionError("UI element not found: " + str(query) + ("; " + last_error if last_error else ""))
 
 
 def click(**query):
@@ -91,19 +97,30 @@ def main():
     old_rotation = adb("shell", "settings", "get", "system", "user_rotation")
     old_auto = adb("shell", "settings", "get", "system", "accelerometer_rotation")
     old_font = adb("shell", "settings", "get", "system", "font_scale")
+    old_ime = adb("shell", "settings", "get", "secure", "show_ime_with_hard_keyboard")
     log_start = adb("shell", "date", "+%m-%d\\ %H:%M:%S.000")
     try:
         adb("shell", "settings", "put", "system", "accelerometer_rotation", "0")
         adb("shell", "settings", "put", "system", "user_rotation", "0")
+        adb("shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", "1")
         launch()
         check(wait_node(description="Message to send").get("enabled") in ("true", "false"), "App launches with accessible native composer")
         check(wait_node(text="Send").get("enabled") == "false", "Disconnected send is disabled")
         screenshot("disconnected")
+        click(text="Cloud sign in")
+        click(text="Send code")
+        check(wait_node(text="Sign in to Jcode Cloud") is not None, "Blank cloud email is rejected without sending a verification email")
+        screenshot("cloud-validation")
+        click(text="Not now")
         launch(demo=True)
         wait_node(contains="demo")
         check(wait_node(text="Send").get("enabled") == "true", "Explicit offline demo enables native session")
         click(description="Message to send")
         adb("shell", "input", "text", "emulator%ssmoke")
+        ime = adb("shell", "dumpsys", "input_method")
+        check("mInputShown=true" in ime or "isInputViewShown=true" in ime, "Software keyboard is actually shown")
+        check(wait_node(text="Send").get("enabled") == "true", "Send stays accessible while the software keyboard is open")
+        screenshot("keyboard")
         # Hide IME with Back, which must not exit the activity.
         adb("shell", "input", "keyevent", "KEYCODE_BACK")
         click(text="Send")
@@ -138,7 +155,7 @@ def main():
             adb("shell", "input", "text", args.endpoint)
             adb("shell", "input", "keyevent", "KEYCODE_BACK")
             click(text="Save & connect")
-            wait_node(contains="connected")
+            wait_node(text="connected")
             wait_node(contains="earlier")
             check(True, "UI connects through real Android TCP and loads server history")
             click(description="Message to send")
@@ -150,7 +167,8 @@ def main():
             screenshot("network-transcript")
             click(text="Disconnect")
             check(wait_node(text="Send").get("enabled") == "false", "Disconnect disables send")
-        logs = adb("logcat", "-d", "-t", log_start, timeout=30)
+        pid = adb("shell", "pidof", "org.jcode.mobile").split()[0]
+        logs = adb("logcat", "--pid", pid, "-d", "-t", log_start, timeout=30)
         (ARTIFACTS / "logcat.txt").write_text(logs)
         check("FATAL EXCEPTION" not in logs and "Fatal signal" not in logs, "No JVM/native fatal crash during smoke run")
         (ARTIFACTS / "result.json").write_text(json.dumps({"serial": SERIAL, "api": adb("shell", "getprop", "ro.build.version.sdk"), "checks": CHECKS}, indent=2) + "\n")
@@ -165,6 +183,10 @@ def main():
                 adb("shell", "settings", "delete", "system", key)
             else:
                 adb("shell", "settings", "put", "system", key, value)
+        if old_ime == "null":
+            adb("shell", "settings", "delete", "secure", "show_ime_with_hard_keyboard")
+        else:
+            adb("shell", "settings", "put", "secure", "show_ime_with_hard_keyboard", old_ime)
 
 
 if __name__ == "__main__":

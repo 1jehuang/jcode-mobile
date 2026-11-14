@@ -10,8 +10,9 @@ PLATFORM="$SDK/platforms/android-${ANDROID_API:-35}/android.jar"
 OUT="$ROOT/target/android"
 ABIS="${ANDROID_ABIS:-arm64-v8a x86_64}"
 PROFILE="${ANDROID_PROFILE:-debug}"
+JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}"
 [[ "$PROFILE" == debug || "$PROFILE" == release ]] || { echo 'ANDROID_PROFILE must be debug or release' >&2; exit 1; }
-for tool in javac jar zip keytool justrust; do
+for tool in "${JAVA_BIN}javac" "${JAVA_BIN}jar" "${JAVA_BIN}keytool" zip justrust; do
     command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 1; }
 done
 for tool in aapt2 d8 zipalign apksigner; do
@@ -35,15 +36,20 @@ for abi in $ABIS; do
     export "CARGO_TARGET_${target_env}_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$clang"
     export "CC_${target//-/_}=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$clang"
     export "AR_${target//-/_}=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-    export "CARGO_TARGET_${target_env}_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384"
+    export "CARGO_TARGET_${target_env}_RUSTFLAGS=-C link-arg=-fuse-ld=lld -C link-arg=-Wl,-z,max-page-size=16384"
     args=()
     [[ "$PROFILE" == release ]] && args+=(--release)
     # Hosted workers do not have this machine's Android NDK/toolchain. The
     # native Linux checks/tests still use hosted justrust by default.
-    CARGO_TARGET_DIR="$ROOT/target" justrust build --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile-android --target "$target" "${args[@]}"
+    # Host linker acceleration must not replace the NDK linker, particularly
+    # on ARM64 where Android requires Cortex-A53 workaround flags.
+    JUSTRUST_LINKER=off CARGO_TARGET_DIR="$ROOT/target" justrust build --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile-android --target "$target" "${args[@]}"
     mkdir -p "$STAGE/apk/lib/$abi"
     cp "$ROOT/target/$target/$PROFILE/libjcode_mobile_android.so" "$STAGE/apk/lib/$abi/"
     "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$STAGE/apk/lib/$abi/libjcode_mobile_android.so"
+    while read -r alignment; do
+        (( alignment >= 16384 )) || { echo "Native library for $abi is not 16 KiB aligned. Check RUSTFLAGS overrides." >&2; exit 1; }
+    done < <("$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" --program-headers "$STAGE/apk/lib/$abi/libjcode_mobile_android.so" | awk '$1 == "LOAD" { print $NF }')
 done
 # The app uses framework widgets, so resource compilation is optional.
 resource_args=()
@@ -53,8 +59,8 @@ if [[ -d android/app/src/main/res ]] && find android/app/src/main/res -type f -p
 fi
 "$TOOLS/aapt2" link -I "$PLATFORM" --manifest android/app/src/main/AndroidManifest.xml --java "$STAGE/generated" -o "$STAGE/base.apk" "${resource_args[@]}"
 find android/app/src/main/java "$STAGE/generated" -name '*.java' > "$STAGE/sources.txt"
-javac --release 8 -classpath "$PLATFORM" -d "$STAGE/classes" @"$STAGE/sources.txt"
-jar cf "$STAGE/classes.jar" -C "$STAGE/classes" .
+"${JAVA_BIN}javac" --release 8 -classpath "$PLATFORM" -d "$STAGE/classes" @"$STAGE/sources.txt"
+"${JAVA_BIN}jar" cf "$STAGE/classes.jar" -C "$STAGE/classes" .
 "$TOOLS/d8" --min-api 26 --lib "$PLATFORM" --output "$STAGE/dex" "$STAGE/classes.jar"
 cp "$STAGE/base.apk" "$STAGE/unsigned.apk"
 cp "$STAGE/dex/classes.dex" "$STAGE/apk/"
@@ -63,7 +69,7 @@ cp "$STAGE/dex/classes.dex" "$STAGE/apk/"
 KEYSTORE="${ANDROID_KEYSTORE:-$HOME/.android/jcode-debug.keystore}"
 if [[ -z "${ANDROID_KEYSTORE:-}" && ! -f "$KEYSTORE" ]]; then
     mkdir -p "$(dirname "$KEYSTORE")"
-    keytool -genkeypair -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
+    "${JAVA_BIN}keytool" -genkeypair -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
     chmod 600 "$KEYSTORE"
 fi
 # The built-in key is development-only. Production signing must be explicit.
