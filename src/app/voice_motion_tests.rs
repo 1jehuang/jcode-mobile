@@ -124,11 +124,19 @@ fn voice_motion_is_painted_in_same_frame_and_last_frame_disappears(cx: &mut Test
         before
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let painted = f32::from(cx.debug_bounds("voice-control").unwrap().size.height);
+    let painted = cx.debug_bounds("voice-control");
+    let painted_mic = cx.debug_bounds("voice-overscroll-mic");
     view.read_with(cx, |app, _| {
-        assert!(app.feel.voice_gesture.pull < before, "draw must advance the spring");
-        assert!((painted - app.feel.voice_gesture.pull).abs() <= 1.,
-            "render must use this frame's motion, not the previous displacement");
+        if crate::system::reduce_motion() {
+            close(app.feel.voice_gesture.pull, 0.);
+            assert!(painted.is_none(), "released reveal must disappear in this same reduced-motion frame");
+            assert!(painted_mic.is_none());
+        } else {
+            let painted = f32::from(painted.unwrap().size.height);
+            assert!(app.feel.voice_gesture.pull < before, "draw must advance the spring");
+            assert!((painted - app.feel.voice_gesture.pull).abs() <= 1.,
+                "render must use this frame's motion, not the previous displacement");
+        }
     });
     assert_eq!(cx.debug_bounds("chat-composer").unwrap().size, baseline.size);
     view.update(cx, |app, cx| { settle(app, 0.); cx.notify(); });

@@ -78,9 +78,12 @@ fn fixed_clock_holds_partial_text_then_releases_a_whole_block(cx: &mut TestAppCo
     view.update(cx, |app, _| {
         let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now, false);
         let entry = &app.session.transcript[0];
-        assert_eq!(&entry.text[..frame.rows[&entry.id].text_len], "Complete paragraph.\n\n");
+        let reduced = crate::system::reduce_motion();
+        assert_eq!(&entry.text[..frame.rows[&entry.id].text_len],
+            if reduced { raw } else { "Complete paragraph.\n\n" });
         assert_eq!(entry.text, raw, "presentation must never truncate reducer state");
-        assert!(frame.animating);
+        assert_eq!(frame.animating, !reduced);
+        if reduced { assert_eq!(frame.rows[&entry.id].text_fade.amount, 0.); }
     });
     let partial_height = cx.debug_bounds("entry-1").unwrap().size.height;
     for (millis, full) in [(159, false), (160, true), (380, true)] {
@@ -91,12 +94,14 @@ fn fixed_clock_holds_partial_text_then_releases_a_whole_block(cx: &mut TestAppCo
             let frame = app.stream_presentation.prepare(app.active_tab, &app.session, at, false);
             let entry = &app.session.transcript[0];
             let row = frame.rows[&entry.id];
-            assert_eq!(row.text_len == raw.len(), full, "idle release at {millis}ms");
+            assert_eq!(row.text_len == raw.len(), full || crate::system::reduce_motion(), "idle release at {millis}ms");
             assert!(raw.is_char_boundary(row.text_len));
             if millis == 380 { assert!(!frame.animating); assert_eq!(row.text_fade.amount, 0.); }
         });
         let painted_height = cx.debug_bounds("entry-1").unwrap().size.height;
-        if full {
+        if crate::system::reduce_motion() {
+            assert_eq!(painted_height, partial_height, "instant text must already occupy its final layout");
+        } else if full {
             assert!(painted_height > partial_height, "released block must reach actual app layout");
         } else {
             assert_eq!(painted_height, partial_height, "partial block must not paint early");
@@ -118,7 +123,13 @@ fn completion_and_instant_presentation_flush_unreleased_content(cx: &mut TestApp
     cx.update(|window, cx| { window.draw(cx).clear(cx); });
     view.update(cx, |app, _| {
         let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now, false);
-        assert_eq!(frame.rows[&app.session.transcript[0].id].text_len, 0);
+        let row = frame.rows[&app.session.transcript[0].id];
+        assert_eq!(row.text_len, if crate::system::reduce_motion() { raw.len() } else { 0 });
+        if crate::system::reduce_motion() {
+            assert_eq!(row.text_fade.amount, 0.);
+            assert!(!frame.animating);
+            assert_eq!(app.stream_motion.shift(), px(0.));
+        }
     });
     view.update(cx, |app, cx| {
         event(app, ApiEvent::TextDone { session_id: "stream-fixture".into(), message_id: None });
@@ -178,7 +189,12 @@ fn upward_input_hands_off_positive_stream_shift_and_new_chunks_do_not_follow(cx:
     let (offset, shift, at) = view.read_with(cx, |app, _| {
         assert!(app.follow);
         let shift = app.stream_motion.shift();
-        assert!(shift > px(0.), "fixture must interrupt a positive visual displacement");
+        if crate::system::reduce_motion() {
+            assert_eq!(shift, px(0.), "instant stream growth has no displacement to transfer");
+            assert_eq!(-app.transcript_scroll.offset().y, app.transcript_scroll.max_offset().y);
+        } else {
+            assert!(shift > px(0.), "fixture must interrupt a positive visual displacement");
+        }
         (app.transcript_scroll.offset(), shift, app.transcript_scroll.bounds().center())
     });
     cx.simulate_event(ScrollWheelEvent {
@@ -236,7 +252,11 @@ fn phone_widths_and_keyboard_resize_keep_windowed_stream_tail_materialized(cx: &
         });
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         view.read_with(cx, |app, _| {
-            assert!(app.stream_motion.shift() > px(0.), "fixture must resize during active motion at {width}");
+            if crate::system::reduce_motion() {
+                assert_eq!(app.stream_motion.shift(), px(0.), "resize must not introduce accessibility motion at {width}");
+            } else {
+                assert!(app.stream_motion.shift() > px(0.), "fixture must resize during active motion at {width}");
+            }
             assert!(app.rendered_transcript_rows < 25, "history must remain windowed");
             assert_eq!(-app.transcript_scroll.offset().y, app.transcript_scroll.max_offset().y);
             assert_eq!(app.transcript_scroll.max_offset().x, px(0.));
@@ -349,7 +369,13 @@ fn replacement_and_cancellation_flush_the_actual_row_without_hidden_tail(cx: &mu
     view.update(cx, |app, _| {
         let frame = app.stream_presentation.prepare(app.active_tab, &app.session, now + Duration::from_millis(16), false);
         assert_eq!(app.session.transcript[0].text, replaced);
-        assert_eq!(frame.rows[&1].text_len, 0, "replacement cannot reuse the old prefix boundary");
+        let row = frame.rows[&1];
+        assert_eq!(row.text_len, if crate::system::reduce_motion() { replaced.len() } else { 0 },
+            "replacement must use its own boundary, instantly complete under Reduce Motion");
+        if crate::system::reduce_motion() {
+            assert_eq!(row.text_fade.amount, 0.);
+            assert!(!frame.animating);
+        }
     });
     view.update(cx, |app, cx| {
         event(app, ApiEvent::SessionStatus { session_id: "stream-fixture".into(), status: "cancelled".into(), pending_soft_interrupts: None });
