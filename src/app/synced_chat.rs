@@ -22,6 +22,7 @@ pub(super) struct LocalChat {
     uncertain: bool,
     delivery_error: Option<String>,
     poll_generation: u64,
+    submitted_images: Vec<jcode_mobile_core::SessionImage>,
 }
 
 impl MobileApp {
@@ -186,7 +187,13 @@ impl MobileApp {
                 uncertain: false,
                 delivery_error: None,
                 poll_generation: 0,
+                submitted_images: Vec::new(),
             });
+            // Closing an in-flight tab is not proof of delivery. Its retained
+            // command owns the submitted photos until an actual acknowledgement.
+            if let Some(chat) = self.synced.chats.get(&tab) {
+                self.attach.pending = chat.submitted_images.clone();
+            }
             self.poll_local_chat(tab, cx);
         }
         // A notification reply is a draft, never an automatic command.
@@ -211,6 +218,20 @@ impl MobileApp {
                 .iter_mut()
                 .find(|p| p.id == tab)
                 .map(|p| &mut p.session)
+        }
+    }
+
+    fn remove_submitted_photos(&mut self, tab: u64, images: &[jcode_mobile_core::SessionImage]) {
+        let pending = if self.active_tab == tab {
+            Some(&mut self.attach.pending)
+        } else {
+            self.parked
+                .iter_mut()
+                .find(|p| p.id == tab)
+                .map(|p| &mut p.attachments)
+        };
+        if let Some(pending) = pending {
+            pending.retain(|photo| !images.iter().any(|sent| sent.id == photo.id));
         }
     }
 
@@ -305,13 +326,17 @@ impl MobileApp {
             return;
         };
         let mut error = chat.delivery_error.clone();
+        let mut delivered_images = Vec::new();
         if let Some(command) = command {
             match command {
                 Ok(command) if chat.pending.as_deref() != Some(&command.command_id) => {
                     error = Some("Computer returned a different message command".into());
                 }
                 Ok(command) => match command.message_complete(&chat.session.session_id) {
-                    Ok(true) => chat.pending = None,
+                    Ok(true) => {
+                        chat.pending = None;
+                        delivered_images = std::mem::take(&mut chat.submitted_images);
+                    }
                     Ok(false) => {}
                     Err(e) => {
                         if command.kind == "message"
@@ -319,6 +344,7 @@ impl MobileApp {
                             && command.status == "failed"
                         {
                             chat.pending = None;
+                            chat.submitted_images.clear();
                             chat.delivery_error = Some(e.clone());
                         }
                         error = Some(e);
@@ -344,6 +370,7 @@ impl MobileApp {
                 let uncertain = chat.uncertain;
                 let title = Some(chat.session.label().to_owned());
                 let live = chat.session.live;
+                self.remove_submitted_photos(tab, &delivered_images);
                 if let Some(state) = self.local_session_mut(tab) {
                     state.phase = if live {
                         ConnectionPhase::Connected
@@ -365,6 +392,7 @@ impl MobileApp {
                 }
             }
             Err(e) => {
+                self.remove_submitted_photos(tab, &delivered_images);
                 if let Some(state) = self.local_session_mut(tab) {
                     state.phase = ConnectionPhase::Disconnected;
                     state.error_banner = Some(format!("Computer sync unavailable: {e}"));
@@ -377,10 +405,16 @@ impl MobileApp {
         if self.offline || self.session.phase != ConnectionPhase::Connected {
             return;
         }
-        let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() {
+        let submitted = self.composer.read(cx).text().trim().to_string();
+        let images = self.attach.pending.clone();
+        if submitted.is_empty() && images.is_empty() {
             return;
         }
+        let text = if submitted.is_empty() {
+            super::attachments::caption(images.len())
+        } else {
+            submitted.clone()
+        };
         let Some(account) = self.account.clone() else {
             return;
         };
@@ -396,14 +430,15 @@ impl MobileApp {
             return;
         }
         chat.submitting = true;
+        chat.submitted_images = images.clone();
         chat.delivery_error = None;
         self.session.error_banner = None;
         let session = chat.session.clone();
         let generation = self.auth_generation;
         let expected = account.clone();
-        let submitted = text.clone();
-        let task =
-            cx.background_spawn(async move { mobile_sync::message(&account, &session, &text) });
+        let task = cx.background_spawn(async move {
+            mobile_sync::message_with_images(&account, &session, &text, &images)
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -442,6 +477,10 @@ impl MobileApp {
                 // POST may already return a terminal acknowledgement. Only
                 // queued/running commands need another status poll.
                 chat.pending = (!complete).then_some(command.command_id);
+                if complete {
+                    let images = std::mem::take(&mut chat.submitted_images);
+                    self.remove_submitted_photos(tab, &images);
+                }
                 if self.active_tab == tab {
                     if self.composer.read(cx).text().trim() == submitted {
                         self.composer.update(cx, |input, cx| input.set_text("", cx));

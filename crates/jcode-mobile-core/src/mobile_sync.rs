@@ -287,21 +287,37 @@ pub fn transfer(account: &Account, session: &SyncedSession, text: &str) -> Resul
 }
 
 pub fn message(account: &Account, session: &SyncedSession, text: &str) -> Result<Command, String> {
+    message_with_images(account, session, text, &[])
+}
+
+/// Submit photos to the existing computer session, never a cloud continuation.
+pub fn message_with_images(
+    account: &Account,
+    session: &SyncedSession,
+    text: &str,
+    images: &[crate::SessionImage],
+) -> Result<Command, String> {
     if !session.can_message() {
         return Err("This session is not live on your computer".into());
     }
     transcript_path(&session.session_id)?;
-    if text.trim().is_empty() {
+    if text.trim().is_empty() && images.is_empty() {
         return Err("Enter a message".into());
     }
-    let value = request(
-        account,
-        "message",
-        "/mobile/commands",
-        Some(serde_json::json!({
-            "kind": "message", "session_id": session.session_id, "text": text.trim()
-        })),
-    )?;
+    let mut body = serde_json::json!({
+        "kind": "message", "session_id": session.session_id, "text": text.trim()
+    });
+    if !images.is_empty() {
+        body["images"] = images
+            .iter()
+            .map(|image| {
+                let (media_type, data) = image.wire();
+                serde_json::json!({"media_type":media_type,"data":data})
+            })
+            .collect::<Vec<_>>()
+            .into();
+    }
+    let value = request(account, "message", "/mobile/commands", Some(body))?;
     let command: Command =
         serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())?;
     command.message_complete(&session.session_id)?;
@@ -324,6 +340,39 @@ pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn photo_message_posts_base64_to_existing_computer_session() {
+        let session: SyncedSession = serde_json::from_value(serde_json::json!({
+            "session_id":"local-photo", "source":"local", "live":true
+        }))
+        .unwrap();
+        let (account, server) = mock_response(
+            202,
+            serde_json::json!({"command":{
+                "command_id":"12345678-1234-1234-1234-123456789abc",
+                "kind":"message", "session_id":"local-photo", "status":"queued"
+            }}),
+        );
+        let image = crate::SessionImage::new("image/jpeg", vec![1, 2, 3]);
+        assert!(
+            !message_with_images(&account, &session, " Photo attached. ", &[image])
+                .unwrap()
+                .message_complete("local-photo")
+                .unwrap()
+        );
+        let sent = server.join().unwrap();
+        assert!(sent.starts_with("POST /v1/mobile/commands HTTP/1.1"));
+        assert!(
+            sent.to_lowercase()
+                .contains("authorization: bearer test-account-key")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(sent.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"kind":"message","session_id":"local-photo","text":"Photo attached.","images":[{"media_type":"image/jpeg","data":"AQID"}]})
+        );
+    }
     #[test]
     fn lookup_reads_account_scoped_metadata_and_validates_session() {
         let (account, server) = mock_response(

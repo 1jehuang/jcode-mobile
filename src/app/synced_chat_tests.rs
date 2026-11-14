@@ -5,6 +5,9 @@ use crate::app::{self, lifecycle_coverage::fixture_app};
 #[path = "synced_chat_more_tests.rs"]
 mod more_tests;
 
+#[path = "synced_chat_photo_tests.rs"]
+mod photo_tests;
+
 fn live() -> SyncedSession {
     serde_json::from_value(serde_json::json!({"session_id":"local-chat","source":"local","title":"Computer task","live":true,"busy":false})).unwrap()
 }
