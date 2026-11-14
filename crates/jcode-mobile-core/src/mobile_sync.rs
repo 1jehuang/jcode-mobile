@@ -51,6 +51,101 @@ pub struct SyncedSession {
     pub last_message_preview: Option<String>,
 }
 
+/// A read-only account-scoped transcript, in ascending message sequence order.
+#[derive(Clone, Debug)]
+pub struct SyncedTranscript {
+    pub session: SyncedSession,
+    pub messages: Vec<SyncedMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SyncedMessage {
+    pub seq: u64,
+    pub role: String,
+    /// The sync API calls this field `text`.
+    #[serde(rename = "text")]
+    pub content: String,
+    pub created_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TranscriptPage {
+    session: SyncedSession,
+    messages: Vec<SyncedMessage>,
+    more: bool,
+}
+
+fn transcript_path(id: &str) -> Result<String, String> {
+    // Match the server's ID grammar, also rejecting URL dot-segment aliases.
+    if id.is_empty()
+        || id.len() > 128
+        || matches!(id, "." | "..")
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+    {
+        return Err("Invalid synced session id".into());
+    }
+    // Encode even the allowed ':' so the ID remains a single URL path segment.
+    Ok(format!("/mobile/sessions/{}", id.replace(':', "%3A")))
+}
+
+/// Read one synced session's metadata without fetching the full transcript.
+pub fn lookup(account: &Account, id: &str) -> Result<SyncedSession, String> {
+    let path = transcript_path(id)?;
+    let value = request(
+        account,
+        "lookup",
+        &format!("{path}?limit=1&after_seq=-1"),
+        None,
+    )?;
+    let session: SyncedSession =
+        serde_json::from_value(value["session"].clone()).map_err(|e| e.to_string())?;
+    if session.session_id != id {
+        return Err("Synced transcript returned a different session".into());
+    }
+    Ok(session)
+}
+
+/// Fetch every page using only this account's bearer credentials. This never
+/// wakes a cloud host, issues a command, or continues the synced session.
+pub fn transcript(account: &Account, id: &str) -> Result<SyncedTranscript, String> {
+    let path = transcript_path(id)?;
+    let mut messages = Vec::new();
+    let mut after_seq: i64 = -1;
+    loop {
+        let value = request(
+            account,
+            "transcript",
+            &format!("{path}?after_seq={after_seq}"),
+            None,
+        )?;
+        let page: TranscriptPage = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        if page.session.session_id != id {
+            return Err("Synced transcript returned a different session".into());
+        }
+        let previous = after_seq;
+        for message in page.messages {
+            let seq = i64::try_from(message.seq)
+                .map_err(|_| "Invalid synced message sequence".to_string())?;
+            if seq <= after_seq {
+                return Err("Synced transcript pagination did not advance".into());
+            }
+            after_seq = seq;
+            messages.push(message);
+        }
+        if !page.more {
+            return Ok(SyncedTranscript {
+                session: page.session,
+                messages,
+            });
+        }
+        if after_seq == previous {
+            return Err("Synced transcript pagination did not advance".into());
+        }
+    }
+}
+
 impl SyncedSession {
     pub fn can_transfer(&self) -> bool {
         self.source == "local"
@@ -181,6 +276,112 @@ pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lookup_reads_account_scoped_metadata_and_validates_session() {
+        let (account, server) = mock_response(
+            200,
+            serde_json::json!({"session":{"session_id":"local:1","source":"local","title":"Laptop"}}),
+        );
+        assert_eq!(lookup(&account, "local:1").unwrap().label(), "Laptop");
+        let sent = server.join().unwrap();
+        assert!(
+            sent.starts_with("GET /v1/mobile/sessions/local%3A1?limit=1&after_seq=-1 HTTP/1.1")
+        );
+        assert!(
+            sent.to_lowercase()
+                .contains("authorization: bearer test-account-key")
+        );
+        let (account, server) = mock_response(
+            200,
+            serde_json::json!({"session":{"session_id":"other","source":"local"}}),
+        );
+        assert!(lookup(&account, "local").is_err());
+        server.join().unwrap();
+        assert!(lookup(&account, "../unsafe").is_err());
+    }
+
+    #[test]
+    fn transcript_pages_are_read_only_account_scoped_and_complete() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let account = Account {
+            given_name: None,
+            name: None,
+            api_base: format!("http://{}/v1", listener.local_addr().unwrap()),
+            api_key: "test-account-key".into(),
+            email: None,
+        };
+        let server = std::thread::spawn(move || {
+            for (cursor, rows, more) in [
+                (
+                    -1,
+                    serde_json::json!([{"seq":0,"role":"user","text":"hello"},{"seq":7,"role":"assistant","text":"answer"}]),
+                    true,
+                ),
+                (
+                    7,
+                    serde_json::json!([{"seq":12,"role":"tool","text":"result"},{"seq":15,"role":"system","text":"context"}]),
+                    false,
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let mut buf = [0; 4096];
+                    let n = stream.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buf[..n]);
+                }
+                let sent = String::from_utf8(bytes).unwrap();
+                assert!(sent.starts_with(&format!(
+                    "GET /v1/mobile/sessions/local%3A1?after_seq={cursor} HTTP/1.1"
+                )));
+                assert!(
+                    sent.to_lowercase()
+                        .contains("authorization: bearer test-account-key")
+                );
+                let body = serde_json::json!({"session":{"session_id":"local:1","source":"local"},"messages":rows,"more":more}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let result = transcript(&account, "local:1").unwrap();
+        assert_eq!(result.session.session_id, "local:1");
+        assert_eq!(result.messages.len(), 4);
+        assert_eq!(result.messages[1].content, "answer");
+        assert_eq!(result.messages[2].role, "tool");
+        assert_eq!(result.messages[3].seq, 15);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn transcript_rejects_unsafe_ids_and_invalid_pages() {
+        for id in ["", ".", "..", "a/b", "a?x=y", "a#b", "%2f", "非"] {
+            assert!(transcript_path(id).is_err(), "{id}");
+        }
+        assert!(transcript_path(&"a".repeat(129)).is_err());
+        for body in [
+            serde_json::json!({"session":{"session_id":"local","source":"local"},"messages":[],"more":true}),
+            serde_json::json!({"session":{"session_id":"other","source":"local"},"messages":[],"more":false}),
+            serde_json::json!({"session":{"session_id":"local","source":"local"},"messages":[{"seq":1,"role":"user","text":"x"},{"seq":1,"role":"assistant","text":"y"}],"more":false}),
+        ] {
+            let (account, server) = mock_response(200, body);
+            assert!(transcript(&account, "local").is_err());
+            server.join().unwrap();
+        }
+        let (account, server) = mock_response(
+            404,
+            serde_json::json!({"error":{"message":"no such session"}}),
+        );
+        assert_eq!(
+            transcript(&account, "local").unwrap_err(),
+            "no such session"
+        );
+        server.join().unwrap();
+    }
+
     fn mock_response(
         status: u16,
         body: serde_json::Value,
