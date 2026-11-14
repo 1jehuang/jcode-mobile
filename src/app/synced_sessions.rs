@@ -1,4 +1,6 @@
-//! Local synced sessions stay read-only. Continuing creates a separate cloud tab.
+//! Synced browsing, live computer chat and explicit cloud continuation.
+#[path = "synced_chat.rs"]
+mod chat;
 use super::a11y::A11yExt as _;
 use super::{MobileApp, Screen};
 use crate::haptics::{self, Haptic};
@@ -13,6 +15,7 @@ const SESSION_PAGE_SIZE: usize = 5;
 
 #[derive(Default)]
 pub(super) struct State {
+    chats: std::collections::HashMap<u64, chat::LocalChat>,
     sessions: Vec<SyncedSession>,
     commands: Vec<Command>,
     selected: Option<String>,
@@ -23,6 +26,12 @@ pub(super) struct State {
     error: Option<String>,
     /// Additional pages explicitly requested in the drawer.
     visible_pages: usize,
+    external_open: u64,
+    external_loading: bool,
+    external_retry: Option<(String, Option<String>)>,
+    transcript: Option<mobile_sync::SyncedTranscript>,
+    transcript_loading: bool,
+    transcript_generation: u64,
 }
 
 impl State {
@@ -78,6 +87,64 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn resolved_laptop_notification_never_opens_cloud_or_sends_inline_reply(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+        view.update(cx, |app, cx| {
+            let tab = app.active_tab;
+            app.composer.update(cx, |input, cx| input.set_text("cloud draft", cx));
+            app.drawer_search.update(cx, |input, cx| input.set_text("unrelated filter", cx));
+            app.apply_external_sessions("local-work".into(), Some("reply from push".into()), State::fixture().sessions, cx);
+            assert_eq!(app.active_tab, tab);
+            assert_eq!(app.tab_order, [tab]);
+            assert!(app.connection.is_none());
+            assert!(app.auto_send.is_none());
+            assert!(app.drawer_open);
+            assert_eq!(app.synced.selected.as_deref(), Some("local-work"));
+            assert_eq!(app.synced.sessions[0].session_id, "local-work");
+            assert!(app.drawer_search.read(cx).text().is_empty());
+            assert_eq!(app.transfer_input.read(cx).text(), "reply from push");
+            assert_eq!(app.composer.read(cx).text(), "cloud draft");
+            assert!(app.session.transcript.is_empty());
+            app.open_external_session("local-work".into(), Some("second push reply".into()), cx);
+            assert_eq!(app.tab_order, [tab]);
+            assert!(app.connection.is_none());
+            assert!(app.auto_send.is_none());
+            assert_eq!(app.transfer_input.read(cx).text(), "second push reply");
+            assert_eq!(app.composer.read(cx).text(), "cloud draft");
+        });
+    }
+
+    #[gpui::test]
+    fn resolved_cloud_notification_keeps_existing_tab_opening_behavior(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+        view.update(cx, |app, cx| {
+            let mut sessions = State::fixture().sessions;
+            sessions.push(serde_json::from_value(serde_json::json!({"session_id":"cloud-work","source":"cloud"})).unwrap());
+            app.apply_external_sessions("cloud-work".into(), None, sessions, cx);
+            assert_eq!(app.tab_order.len(), 2);
+            assert!(!app.drawer_open);
+            assert!(app.synced.selected.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn unsynced_notification_target_does_not_guess_a_cloud_host(cx: &mut gpui::TestAppContext) {
+        cx.update(super::super::init);
+        let (view, cx) = cx.add_window_view(super::super::lifecycle_coverage::fixture_app);
+        view.update(cx, |app, cx| {
+            let tab = app.active_tab;
+            app.apply_external_sessions("not-synced-yet".into(), None, vec![], cx);
+            assert_eq!(app.tab_order, [tab]);
+            assert!(app.connection.is_none());
+            assert!(app.drawer_open);
+            assert!(app.synced.error.as_deref().unwrap().contains("not synced"));
+            assert!(app.synced.external_retry.is_some());
+        });
+    }
 
     #[test]
     fn refresh_preserves_existing_row_order_and_updates_content() {
@@ -354,6 +421,116 @@ mod tests {
 }
 
 impl MobileApp {
+    /// Resolve unknown notification/deep-link targets before opening SSH. A
+    /// laptop session ID is not an attachable session on the cloud machine.
+    pub(super) fn open_external_session(&mut self, id: String, reply: Option<String>, cx: &mut Context<Self>) {
+        let Some(account) = self.account.clone() else { return };
+        self.synced.external_open += 1;
+        if self.route_known_local_chat(&id, reply.clone(), cx) {
+            self.synced.external_loading = false;
+            self.synced.external_retry = None;
+            if !self.is_local_chat() {
+                self.load_synced_transcript(id, cx);
+            }
+            return;
+        }
+        let already_open = self.session.session_id.as_deref() == Some(&id)
+            || self.parked.iter().any(|p| p.session.session_id.as_deref() == Some(&id));
+        if self.offline || already_open {
+            self.synced.external_loading = false;
+            self.synced.external_retry = None;
+            self.screen = Screen::Chat;
+            self.drawer_open = false;
+            self.open_session(id, reply, cx);
+            return;
+        }
+        let generation = self.synced.external_open;
+        let auth_generation = self.auth_generation;
+        self.synced.external_retry = Some((id.clone(), reply.clone()));
+        self.screen = Screen::Chat;
+        self.drawer_open = true;
+        self.synced.external_loading = true;
+        self.synced.error = None;
+        let request_account = account.clone();
+        let request_id = id.clone();
+        let task = cx.background_spawn(async move { mobile_sync::lookup(&request_account, &request_id) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.auth_generation != auth_generation || !same_account(this.account.as_ref(), &account) || this.synced.external_open != generation { return; }
+                this.synced.external_loading = false;
+                match result {
+                    Ok(session) => {
+                        this.synced.external_retry = None;
+                        let mut sessions = this.synced.sessions.clone();
+                        sessions.retain(|s| s.session_id != id);
+                        sessions.push(session);
+                        this.apply_external_sessions(id, reply, sessions, cx);
+                    }
+                    Err(e) => {
+                        this.synced.error = Some(format!("Tap here to retry opening session: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn apply_external_sessions(&mut self, id: String, reply: Option<String>, sessions: Vec<SyncedSession>, cx: &mut Context<Self>) {
+        let live = sessions.iter().find(|s| s.session_id == id && s.can_message()).cloned();
+        let local = sessions.iter().any(|s| s.session_id == id && s.can_transfer());
+        let cloud = sessions.iter().any(|s| s.session_id == id && s.source == "cloud");
+        self.synced.replace_sessions(sessions);
+        if let Some(session) = live {
+            self.open_local_chat(session, reply, cx);
+        } else if local {
+            self.drawer_open = true;
+            self.drawer_last = std::time::Instant::now();
+            self.drawer_search.update(cx, |input, cx| input.set_text("", cx));
+            self.synced.sessions.sort_by_key(|s| s.session_id != id);
+            self.synced.visible_pages = 0;
+            self.synced.selected = Some(id.clone());
+            self.transfer_input.update(cx, |input, cx| input.set_text(reply.unwrap_or_default(), cx));
+            self.load_synced_transcript(id, cx);
+        } else if cloud {
+            self.drawer_open = false;
+            self.open_session(id, reply, cx);
+        } else {
+            self.drawer_open = true;
+            self.synced.external_retry = Some((id, reply));
+            self.synced.error = Some("Session is not synced yet. Enable mobile sync on its computer, then tap here to retry.".into());
+        }
+    }
+
+    fn load_synced_transcript(&mut self, id: String, cx: &mut Context<Self>) {
+        self.synced.transcript_generation += 1;
+        let generation = self.synced.transcript_generation;
+        let auth_generation = self.auth_generation;
+        self.synced.transcript = None;
+        self.synced.transcript_loading = false;
+        self.synced.error = None;
+        if self.offline { return; }
+        let Some(account) = self.account.clone() else { return };
+        self.synced.transcript_loading = true;
+        let request_account = account.clone();
+        let task = cx.background_spawn(async move { mobile_sync::transcript(&request_account, &id) });
+        let selected = self.synced.selected.clone();
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.auth_generation != auth_generation || !same_account(this.account.as_ref(), &account) || this.synced.selected != selected
+                    || this.synced.transcript_generation != generation { return; }
+                this.synced.transcript_loading = false;
+                match result {
+                    Ok(transcript) => this.synced.transcript = Some(transcript),
+                    Err(e) => this.synced.error = Some(format!("Could not load synced conversation: {e}")),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
     pub(super) fn refresh_synced_sessions(&mut self, cx: &mut Context<Self>) {
         if self.offline {
             return;
@@ -593,7 +770,9 @@ impl MobileApp {
         // A single reserved status line prevents loading and error transitions
         // from pushing every computer row (and the cloud sections below it).
         let status = self.synced.error.clone().unwrap_or_else(|| {
-            if self.synced.loading {
+            if self.synced.external_loading {
+                "Finding notification's session…".into()
+            } else if self.synced.loading {
                 if self.synced.sessions.is_empty() {
                     "Loading synced sessions…"
                 } else {
@@ -608,6 +787,11 @@ impl MobileApp {
             div()
                 .id("drawer-local-status")
                 .debug_selector(|| "drawer-local-status".into())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some((id, reply)) = this.synced.external_retry.clone().filter(|_| !this.synced.external_loading) {
+                        this.open_external_session(id, reply, cx);
+                    }
+                }))
                 .flex_none()
                 .h(px(20.))
                 .mx(px(16.))
@@ -648,7 +832,7 @@ impl MobileApp {
         };
         for session in matching.iter().take(limit) {
             let sid = session.session_id.clone();
-            let selected = self.synced.selected.as_ref() == Some(&sid);
+            let selected = self.synced.selected.as_ref() == Some(&sid) && !session.can_message();
             let latest = self
                 .synced
                 .commands
@@ -680,11 +864,16 @@ impl MobileApp {
                 .on_click(cx.listener({
                     let sid = sid.clone();
                     move |this, _, _, cx| {
+                        if let Some(session) = this.synced.sessions.iter().find(|s| s.session_id == sid && s.can_message()).cloned() {
+                            this.open_local_chat(session, None, cx);
+                            return;
+                        }
                         if this.synced.selected.as_ref() != Some(&sid) {
                             this.synced.selected = Some(sid.clone());
                             haptics::play(Haptic::Selection);
                             this.transfer_input
                                 .update(cx, |input, cx| input.set_text("", cx));
+                            this.load_synced_transcript(sid.clone(), cx);
                             cx.notify();
                         }
                     }
@@ -697,7 +886,7 @@ impl MobileApp {
                         .text_size(crate::system::fs(13.))
                         .line_height(relative(1.2))
                         .text_color(if selected { t.text_strong } else { t.text })
-                        .child(session.label().to_string()),
+                        .child(format!("{}{}", session.label(), if session.can_message() { if session.busy { " · Working on computer" } else { " · Live on computer" } } else { "" })),
                 )
                 .child(
                     div()
@@ -755,6 +944,18 @@ impl MobileApp {
                     );
             }
             if selected {
+                row = row.child(div().text_size(crate::system::fs(12.)).text_color(t.text_muted)
+                    .child("Synced conversation · read-only on this phone"));
+                if self.synced.transcript_loading {
+                    row = row.child(div().child("Loading conversation…"));
+                }
+                if let Some(transcript) = self.synced.transcript.as_ref().filter(|tr| tr.session.session_id == sid) {
+                    for message in &transcript.messages {
+                        row = row.child(div().py(px(6.)).text_size(crate::system::fs(12.))
+                            .text_color(t.text_secondary)
+                            .child(format!("{}\n{}", message.role, message.content)));
+                    }
+                }
                 row = row.child(div().text_size(crate::system::fs(12.)).text_color(t.text_secondary).child("Creates a new cloud session from synced text. Local files and running tools are not moved. The original stays intact."))
                     .child(self.transfer_input.clone());
             }

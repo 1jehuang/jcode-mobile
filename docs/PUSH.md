@@ -97,6 +97,28 @@ The skip is recorded in `~/.jcode/logs/mobile-push.jsonl`.
 Local fallback previews posted by the app itself are not labeled this way:
 the app only connects to cloud sessions and does not time turns.
 
+## Opening a notification
+
+Notification session IDs are account-wide, not cloud-host-local. For an
+unopened target, the app first resolves the exact ID through the authenticated
+mobile-sync session endpoint. A local target opens its computer-session view,
+using live computer chat when available or the read-only synced transcript,
+without starting SSH or silently transferring it. A cloud target opens its
+cloud tab. Existing open tabs are focused directly. Lookup failures stay in a
+bounded error state with a tap-to-retry action, not an indefinite cloud opener.
+An explicit cloud resume failure must never create a blank replacement session.
+
+Read-only synced conversations load all transcript pages. Inline replies for a
+read-only laptop transcript remain a draft for an explicit cloud continuation.
+For live computer chat they remain a composer draft until Send is pressed.
+Neither path sends a reply to an unrelated cloud session.
+
+Release acceptance still requires a real iPhone notification tap for a laptop
+session and a cloud session, both with the app suspended and force-quit. Also
+check sync disabled/missing, lookup failure and retry, repeated taps, and an
+inline reply while another cloud tab has an unsent draft. Automated HTTP and
+app-routing tests do not establish APNs delivery or release-device behavior.
+
 ## APNs payload built by the Worker
 
 ```json

@@ -9,7 +9,7 @@ use crate::cloud::Account;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub const MAX_ITEMS: usize = 3;
+pub const MAX_ITEMS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +34,16 @@ pub struct AgentItem {
     /// Unix seconds the current state began, for a live timer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
+    /// Plan name (todo plan title).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// Todo progress: completed, in progress, total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
 }
 
 /// `JcodeAgentsAttributes.ContentState`.
@@ -46,6 +56,13 @@ pub struct AgentsState {
     pub items: Vec<AgentItem>,
     #[serde(default)]
     pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos_done: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos_total: Option<u32>,
+    /// Agents beyond the listed items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more: Option<u32>,
 }
 
 impl AgentsState {
@@ -86,10 +103,13 @@ pub fn merge(server: Option<&AgentsState>, local: &[LocalAgent], now: i64) -> Ag
         }
         let prev = out.items.iter().position(|i| i.id == l.id);
         let prev_state = prev.map(|i| out.items[i].state);
-        let mut kept = (None, None);
+        let mut kept: Option<AgentItem> = None;
         if let Some(i) = prev {
-            let old = out.items.remove(i);
-            kept = (old.origin, old.since.filter(|_| Some(old.state) == l.state));
+            let mut old = out.items.remove(i);
+            if Some(old.state) != l.state {
+                old.since = None;
+            }
+            kept = Some(old);
         }
         if let Some(s) = prev_state {
             dec(&mut out, s);
@@ -99,14 +119,22 @@ pub fn merge(server: Option<&AgentsState>, local: &[LocalAgent], now: i64) -> Ag
             if prev_state.is_some() || server.is_none() || !server_counted_unlisted(server, s) {
                 inc(&mut out, s);
             }
-            out.items.push(AgentItem {
+            let mut item = kept.unwrap_or_else(|| AgentItem {
                 id: l.id.clone(),
-                title: l.title.clone(),
+                title: String::new(),
                 state: s,
-                detail: l.detail.clone(),
-                origin: kept.0,
-                since: kept.1,
+                detail: String::new(),
+                origin: None,
+                since: None,
+                plan: None,
+                done: None,
+                active: None,
+                total: None,
             });
+            item.title = l.title.clone();
+            item.state = s;
+            item.detail = l.detail.clone();
+            out.items.push(item);
         }
     }
     out.items.sort_by_key(|i| i.state);
@@ -245,10 +273,21 @@ mod tests {
     use super::*;
 
     fn item(id: &str, s: AgentState) -> AgentItem {
-        AgentItem { id: id.into(), title: id.into(), state: s, detail: String::new(), origin: None, since: None }
+        AgentItem { id: id.into(), title: id.into(), state: s, detail: String::new(), origin: None, since: None,
+            plan: None, done: None, active: None, total: None }
     }
     fn local(id: &str, s: Option<AgentState>) -> LocalAgent {
         LocalAgent { id: id.into(), title: id.into(), state: s, detail: String::new() }
+    }
+
+    #[test]
+    fn decodes_plan_and_todo_progress() {
+        let j = r#"{"running":1,"waiting":0,"errored":0,"updatedAt":1,"todosDone":2,"todosTotal":5,"more":0,
+            "items":[{"id":"a","title":"A","state":"running","detail":"","plan":"Live","done":2,"active":1,"total":5}]}"#;
+        let s: AgentsState = serde_json::from_str(j).unwrap();
+        assert_eq!((s.items[0].plan.as_deref(), s.items[0].done, s.items[0].total), (Some("Live"), Some(2), Some(5)));
+        let m = merge(Some(&s), &[], 2);
+        assert_eq!(m.todos_total, Some(5));
     }
 
     #[test]
@@ -293,6 +332,7 @@ mod tests {
             errored: 0,
             items: vec![item("x", AgentState::Waiting), item("y", AgentState::Running)],
             updated_at: 1,
+            ..Default::default()
         };
         // x was answered locally and is now running, y finished.
         let m = merge(Some(&srv), &[local("x", Some(AgentState::Running)), local("y", None)], 2);

@@ -67,6 +67,7 @@ impl MobileApp {
 
     /// Focus the tab already showing `session_id`, or resume it in a new tab.
     pub(super) fn drawer_open_session(&mut self, session_id: String, cx: &mut Context<Self>) {
+        if self.route_known_local_chat(&session_id, None, cx) { return; }
         if self.account.is_none() {
             return;
         }

@@ -311,6 +311,9 @@ impl MobileApp {
 
     /// Send a voice transcript as its own message. False when not connected.
     fn send_voice_text(&mut self, text: &str) -> bool {
+        // Local chat uses the command queue, not the SSH protocol. Keep voice
+        // auto-send results as drafts for explicit composer submission.
+        if self.is_local_chat() { return false; }
         if self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
             return false;
         }

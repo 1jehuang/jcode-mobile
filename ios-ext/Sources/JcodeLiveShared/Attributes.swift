@@ -18,6 +18,24 @@ public struct JcodeAgentsAttributes: ActivityAttributes {
         public var origin: String?
         /// Unix seconds the current state began. Older hosts omit it.
         public var since: Int?
+        /// Plan name (todo plan title). Older hosts omit it.
+        public var plan: String?
+        /// Todo progress: completed, in progress, total.
+        public var done: Int?
+        public var active: Int?
+        public var total: Int?
+
+        /// Plan name when known, else the session title.
+        public var name: String {
+            if let plan, !plan.isEmpty { return plan }
+            return title
+        }
+
+        /// SF Symbol for where it runs: cloud or this laptop.
+        public var originSymbol: String {
+            guard let origin, !origin.isEmpty else { return "circle.fill" }
+            return origin.lowercased().contains("cloud") ? "cloud.fill" : "laptopcomputer"
+        }
 
         public var sinceDate: Date? {
             guard let since, since > 0 else { return nil }
@@ -31,8 +49,17 @@ public struct JcodeAgentsAttributes: ActivityAttributes {
         public var errored: Int
         public var items: [Item]
         public var updatedAt: Int
+        public var todosDone: Int?
+        public var todosTotal: Int?
+        public var more: Int?
 
         public var total: Int { running + waiting + errored }
+
+        /// Overall todo fraction, 0...1, or nil when no agent has todos.
+        public var progress: Double? {
+            guard let t = todosTotal, t > 0 else { return nil }
+            return min(1, Double(todosDone ?? 0) / Double(t))
+        }
     }
 
     public var title: String

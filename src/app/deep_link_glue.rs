@@ -135,7 +135,7 @@ impl MobileApp {
     fn on_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         log::info!("deep link: {link:?}");
         match link {
-            DeepLink::OpenSession { session_id } => self.open_session(session_id, None, cx),
+            DeepLink::OpenSession { session_id } => self.open_external_session(session_id, None, cx),
             DeepLink::NewSession { prompt } => {
                 if self.account.is_none() {
                     return;

@@ -181,8 +181,8 @@ impl MobileApp {
                     .detach();
                 }
             }
-            PushEvent::Open { session_id } => self.open_session(session_id, None, cx),
-            PushEvent::Reply { session_id, text } => self.open_session(session_id, Some(text), cx),
+            PushEvent::Open { session_id } => self.open_external_session(session_id, None, cx),
+            PushEvent::Reply { session_id, text } => self.open_external_session(session_id, Some(text), cx),
         }
     }
 

@@ -707,6 +707,7 @@ impl MobileApp {
     }
 
     fn start_connection_target(&mut self, resume: Option<String>, working_dir: Option<String>, fork_from: Option<String>, cx: &mut Context<Self>) {
+        if self.is_local_chat() { return; }
         self.cancel_voice(cx);
         if self.offline { return; }
         self.ensure_account_profile(cx);
@@ -732,6 +733,9 @@ impl MobileApp {
     }
 
     fn reconnect(&mut self, cx: &mut Context<Self>) {
+        if self.is_local_chat() {
+            return;
+        }
         if let Some(c) = self.connection.take() {
             c.stop();
         }
@@ -812,6 +816,7 @@ impl MobileApp {
         let Some(pos) = self.tab_order.iter().position(|t| *t == id) else { return };
         haptics::play(Haptic::Rigid);
         self.tab_order.remove(pos);
+        self.forget_local_chat(id);
         self.tab_motion.remove(&id);
         if id == self.active_tab {
             self.cancel_voice(cx);
@@ -842,7 +847,8 @@ impl MobileApp {
         let title = s.and_then(|s| s.session_title.clone()).unwrap_or_else(|| "New session".into());
         let session_id = s.and_then(|s| s.session_id.clone());
         let many = self.tab_order.len() > 1;
-        let can_fork = self.account.is_some() && !self.offline && session_id.is_some();
+        let local = s.is_some_and(|s| self.session_is_local_chat(s));
+        let can_fork = self.account.is_some() && !self.offline && session_id.is_some() && !local;
         let row = |key: &'static str, text: &'static str, color: Hsla, enabled: bool| {
             div()
                 .id(key)
@@ -876,9 +882,9 @@ impl MobileApp {
             )));
         }
         list = list
-            .child(row("tm-rename", "Rename", t.text, true).on_click(cx.listener(move |this, _, _, cx| {
+            .child(row("tm-rename", "Rename", t.text, !local).when(!local, |d| d.on_click(cx.listener(move |this, _, _, cx| {
                 this.feel_rename_tab(id, cx)
-            })))
+            }))))
             .child(row("tm-fork", "Fork session", if can_fork { t.text } else { t.text_muted }, can_fork)
                 .when(can_fork, |d| d.on_click(cx.listener(move |this, _, _, cx| {
                     this.fork_tab(id, cx)
@@ -1020,6 +1026,10 @@ impl MobileApp {
     }
 
     fn send_draft(&mut self, cx: &mut Context<Self>) {
+        if self.is_local_chat() {
+            self.send_local_draft(cx);
+            return;
+        }
         let text = self.composer.read(cx).text().trim().to_string();
         if text.is_empty() || self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
             return;
@@ -1045,6 +1055,7 @@ impl MobileApp {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.is_local_chat() { return; }
         if !self.session.is_processing { return; }
         haptics::play(Haptic::Medium);
         self.send(|id| Request::Cancel { id });
@@ -1870,11 +1881,11 @@ impl MobileApp {
             );
         }
         let empty = entries.is_empty() && !self.session.is_reasoning;
-        if empty && self.session.phase == ConnectionPhase::Connected {
+        if empty && self.session.phase == ConnectionPhase::Connected && !self.is_local_chat() {
             self.ensure_recent_dirs();
             self.ensure_computer_stats(cx);
         }
-        let recent = if empty { self.render_recent_dirs(t, cx) } else { None };
+        let recent = if empty && !self.is_local_chat() { self.render_recent_dirs(t, cx) } else { None };
         self.suggestions_shown = recent.is_some();
         let body = if empty {
             // Desktop's fresh session: the question sits just above the composer,
@@ -2293,8 +2304,10 @@ impl MobileApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let local = self.session_is_local_chat(session);
         let processing = session.is_processing;
-        let ready = session.phase == ConnectionPhase::Connected && session.session_id.is_some();
+        let ready = session.phase == ConnectionPhase::Connected && session.session_id.is_some()
+            && (!local || self.local_chat_ready(session));
         let has_text = !composer.read(cx).text().trim().is_empty();
         let focused = !preview && composer.read(cx).is_focused(window);
         let model_raw = session.model_name.clone();
@@ -2343,7 +2356,9 @@ impl MobileApp {
             } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5)
                 .debug_selector(|| "voice-status".into()).px(px(8.))))
             .when(!ready, |d| d.child(label(
-                if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
+                if local {
+                    "Waiting for your computer or message delivery. Your draft stays here."
+                } else if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
                     "Not connected. Your draft stays here."
                 } else {
                     "Connecting… You can keep typing."
@@ -2371,17 +2386,23 @@ impl MobileApp {
                                 this.cancel_voice_animated(cx);
                                 cx.notify();
                             }))
-                    } else if processing && !has_text {
+                    } else if processing && !has_text && !local {
                         round_button("stop", "■", t.error, ready, t)
                             .a11y_button("Stop response")
                             .when(ready, |d| d.on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
                     } else {
                         round_button("send", if ready { "↑" } else { "…" }, t.text_strong, ready && has_text, t)
-                            .a11y_button(if !ready { "Waiting for connection" } else if processing { "Queue follow-up" } else { "Send message" })
+                            .a11y_button(if !ready { "Waiting for connection" } else if local { "Send to computer" } else if processing { "Queue follow-up" } else { "Send message" })
                             .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
-            .child(
+            .when(local, |d| d.child(label("On your computer · Messages run there, not in cloud", t.text_muted, 10.5)
+                .debug_selector(|| "local-chat-location".into()).px(px(8.))))
+            .when(!preview && local && self.local_delivery_uncertain(session), |d| d.child(
+                outline_button("local-delivery-checked", "I checked the computer. Allow another message", true, t)
+                    .on_click(cx.listener(|this, _, _, cx| this.acknowledge_local_delivery(cx)))
+            ))
+            .when(!local, |d| d.child(
                 div()
                     .id("chat-metadata")
                     .debug_selector(move || if preview { "preview-chat-metadata" } else { "chat-metadata" }.into())
@@ -2461,7 +2482,7 @@ impl MobileApp {
                                 )
                             })
                     }),
-            )
+            ))
     }
 
     /// Bottom sheet listing every model route, grouped by model. Tapping one

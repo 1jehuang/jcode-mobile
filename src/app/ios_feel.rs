@@ -1032,6 +1032,7 @@ impl MobileApp {
 
     /// Tab sheet "Rename": inline title editor.
     pub(super) fn feel_rename_tab(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.tab_session(id).is_some_and(|s| self.session_is_local_chat(s)) { return; }
         let current = self.tab_session(id).and_then(|s| s.session_title.clone()).unwrap_or_default();
         let input = cx.new(|cx| {
             let mut t = TextInput::new("Session name", cx);
@@ -1084,6 +1085,7 @@ impl MobileApp {
 
     /// Fork the source conversation into an independent session in a new tab.
     pub(super) fn fork_tab(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.tab_session(id).is_some_and(|s| self.session_is_local_chat(s)) { return; }
         if self.account.is_none() || self.offline {
             return;
         }
