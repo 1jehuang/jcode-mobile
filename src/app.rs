@@ -2347,11 +2347,13 @@ impl MobileApp {
             (f32::from(safe.top), f32::from(safe.bottom))
         };
         let available = (height - top - base - self.kb_lift - 48.).max(0.);
-        let compact = self.keyboard_up && available < 140.;
+        let compact = self.keyboard_up && available < 240.;
         let line_height = f32::from(crate::system::fs(20.));
-        let max_lines = ((available - 84.) / line_height).floor().clamp(1., 6.) as usize;
-        if composer.read(cx).max_lines != max_lines {
-            composer.update(cx, |input, cx| { input.max_lines = max_lines; cx.notify(); });
+        // Reserve composer chrome and metadata before budgeting visible rows.
+        let reserve = if local { 84. + line_height * 2. } else { 84. };
+        let max_lines = ((available - reserve) / line_height).floor().clamp(1., 6.) as usize;
+        if composer.read(cx).visible_lines != Some(max_lines) {
+            composer.update(cx, |input, cx| { input.visible_lines = Some(max_lines); cx.notify(); });
         }
         let model_raw = session.model_name.clone();
         let model = crate::labels::pretty_model(model_raw.as_deref());
@@ -2399,7 +2401,9 @@ impl MobileApp {
             } else { self.voice.status() }, |d, status| d.child(label(status, t.text_muted, 10.5)
                 .debug_selector(|| "voice-status".into()).px(px(8.))))
             .when(!ready, |d| d.child(label(
-                if local {
+                if local && compact {
+                    "Waiting for your computer"
+                } else if local {
                     "Waiting for your computer or message delivery. Your draft stays here."
                 } else if matches!(session.phase, ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected) {
                     "Not connected. Your draft stays here."
@@ -2439,7 +2443,7 @@ impl MobileApp {
                             .when(ready && has_text, |d| d.on_click(cx.listener(|this, _, _, cx| this.send_draft(cx))))
                     }),
             )
-            .when(local, |d| d.child(label("On your computer · Messages run there, not in cloud", t.text_muted, 10.5)
+            .when(local, |d| d.child(label(if compact { "On your computer" } else { "On your computer · Messages run there, not in cloud" }, t.text_muted, 10.5)
                 .debug_selector(|| "local-chat-location".into()).px(px(8.))))
             .when(!preview && local && self.local_delivery_uncertain(session), |d| d.child(
                 outline_button("local-delivery-checked", "I checked the computer. Allow another message", true, t)

@@ -30,6 +30,27 @@ fn simulator_keyboard_long_draft_keeps_editor_and_send_visible(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn simulator_keyboard_local_long_draft_keeps_routing_label_visible(cx: &mut TestAppContext) {
+    let _scale = scale_fixture(1.6);
+    let (view, cx) = mount(cx);
+    resize(&view, cx, 320., 568.);
+    view.update(cx, |app, cx| {
+        let local = serde_json::from_value(serde_json::json!({"session_id":"local-footer-fixture","source":"local","live":true,"busy":false})).unwrap();
+        app.open_local_chat(local, None, cx);
+        app.composer.update(cx, |input, cx| input.set_text("long local draft with wrapped words ".repeat(40), cx));
+        cx.notify();
+    });
+    let composer = view.read_with(cx, |app, _| app.composer.clone());
+    cx.update(|window, cx| window.focus(&composer.focus_handle(cx), cx));
+    settle(&view, cx);
+    let keyboard = cx.debug_bounds("sim-keyboard").unwrap();
+    let location = cx.debug_bounds("local-chat-location").unwrap();
+    let state = view.read_with(cx, |app, cx| (app.device, app.safe.top, app.safe.bottom, app.kb_lift, app.composer.read(cx).max_lines, app.composer.read(cx).visible_lines));
+    let input = cx.debug_bounds("composer-input");
+    assert!(location.bottom() <= keyboard.top(), "local routing label clipped: {location:?}, {keyboard:?}, {input:?}, {state:?}");
+}
+
+#[gpui::test]
 fn simulator_keyboard_settings_narrow_save_preserves_draft(cx: &mut TestAppContext) {
     let _scale = scale_fixture(2.);
     let (view, cx) = mount(cx);

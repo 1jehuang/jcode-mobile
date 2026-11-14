@@ -67,6 +67,7 @@ pub struct TextInput {
     scroll_y: Pixels,
     /// Wrap onto up to this many lines, then scroll. 1 = single line.
     pub max_lines: usize,
+    pub(crate) visible_lines: Option<usize>,
     pub secure: bool,
     /// Selection-only viewer. Never edits content or requests the keyboard.
     pub read_only: bool,
@@ -92,6 +93,7 @@ impl TextInput {
             last_origin: Point::default(),
             scroll_y: px(0.),
             max_lines: 1,
+            visible_lines: None,
             secure: false,
             read_only: false,
             selection_anchor: None,
@@ -555,7 +557,7 @@ impl Element for TextElement {
             return (window.request_layout(style, [], cx), ());
         }
         // Height follows the wrapped draft, capped at max_lines.
-        let max_lines = input.max_lines;
+        let max_lines = input.visible_lines.unwrap_or(input.max_lines).min(input.max_lines).max(1);
         let display = shaping_text(input);
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -1367,7 +1369,7 @@ mod ios_keyboard_tests {
     #[gpui::test]
     fn multiline_clipboard_paste_preserves_code_and_unicode_selection(cx: &mut TestAppContext) {
         let (input, cx) = setup(cx);
-        input.update(cx, |t, _| t.max_lines = 6);
+        input.update(cx, |t, _| { t.max_lines = 6; t.visible_lines = Some(1); });
         insert_text(cx, "😀 replace tail");
         with_handler(cx, |t, w, cx| {
             t.set_selected_text_range(3..10, w, cx);
