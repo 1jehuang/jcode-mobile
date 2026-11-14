@@ -15,6 +15,24 @@ use crate::theme::Theme;
 /// Height of the keyboard incl. suggestion bar and home-indicator area.
 pub const HEIGHT: f32 = 336.;
 
+/// Landscape previews must leave usable space above the software keyboard.
+/// The portrait keyboard keeps its familiar height on normal phone sizes.
+pub fn height_for_viewport(width: f32, height: f32) -> f32 {
+    if width > height {
+        HEIGHT.min(height * 0.5)
+    } else {
+        HEIGHT.min(height * 0.65)
+    }
+}
+
+#[test]
+fn keyboard_height_leaves_landscape_content_and_preserves_portrait() {
+    assert_eq!(height_for_viewport(390., 844.), HEIGHT);
+    assert_eq!(height_for_viewport(320., 568.), HEIGHT);
+    assert_eq!(height_for_viewport(568., 320.), 160.);
+    assert_eq!(height_for_viewport(844., 390.), 195.);
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Key {
     Char(SharedString),
@@ -74,6 +92,7 @@ pub fn render(
     state: &SimKeyboard,
     config: &TextInputConfiguration,
     bottom_inset: f32,
+    height: f32,
     on_key: Rc<dyn Fn(Key, &mut Window, &mut App)>,
     t: &Theme,
 ) -> AnyElement {
@@ -81,6 +100,15 @@ pub fn render(
     let fn_bg: Hsla = gpui::rgb(0x464646).into();
     let accent: Hsla = gpui::rgb(0x0a84ff).into();
     let _ = t;
+    let compact = height < 260.;
+    let gap = if compact { 5. } else { 11. };
+    let bar_height = if compact { 24. } else { 40. };
+    let bottom_inset = bottom_inset.min(height * 0.1);
+    let key_height = if compact {
+        ((height - bottom_inset - bar_height - gap * 4.) / 4.).max(16.)
+    } else {
+        42.
+    };
     // Position disambiguates repeated Mode keys and email punctuation.
     let key_index = std::cell::Cell::new(0usize);
     let key = |k: Key, text: SharedString, flex: f32, bg: Hsla| {
@@ -91,7 +119,7 @@ pub fn render(
             .debug_selector(move || format!("sim-key-{index}"))
             .flex_grow(1.)
             .flex_basis(px(flex * 32.))
-            .h(px(42.))
+            .h(px(key_height))
             .rounded(px(5.))
             .bg(bg)
             .flex()
@@ -127,7 +155,7 @@ pub fn render(
         _ => None,
     };
     let mut bar = div()
-        .h(px(40.))
+        .h(px(bar_height))
         .flex()
         .items_center()
         .justify_center()
@@ -242,13 +270,13 @@ pub fn render(
         .bottom_0()
         .left_0()
         .right_0()
-        .h(px(HEIGHT))
+        .h(px(height))
         .pb(px(bottom_inset))
         .bg(gpui::rgb(0x2b2b2b))
         .rounded_b(px(47.))
         .flex()
         .flex_col()
-        .gap(px(11.))
+        .gap(px(gap))
         .child(bar)
         .children(rows)
         // Swallow taps between keys so they don't blur the field.
@@ -305,6 +333,7 @@ mod tests {
                     &self.keyboard,
                     &self.config,
                     20.,
+                    HEIGHT,
                     callback,
                     &Theme::pure_black(),
                 ))

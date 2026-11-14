@@ -113,7 +113,7 @@ impl MobileApp {
                     .pt(px(8.))
                     .pb(px(12.))
                     .child(div().w_full().flex().justify_center().child(div().w(px(36.)).h(px(5.)).rounded_full().bg(t.text_muted)))
-                    .child(super::label("Directory", t.text_strong, 16.).px(px(16.)).pt(px(8.)))
+                    .when(!self.keyboard_up, |d| d.child(super::label("Directory", t.text_strong, 16.).px(px(16.)).pt(px(8.))))
                     .child(
                         div()
                             .mx(px(12.))
@@ -144,12 +144,13 @@ impl MobileApp {
                                     })),
                             ),
                     )
-                    .child(super::label(note, t.text_muted, 11.).px(px(16.)))
+                    .when(!self.keyboard_up, |d| d.child(super::label(note, t.text_muted, 11.).px(px(16.))))
                     .child(
                         div()
                             .id("dir-list")
                             .debug_selector(|| "dir-list".into())
                             .flex_1()
+                            .min_h_0()
                             .overflow_y_scroll()
                             .px(px(12.))
                             .child(rows),
