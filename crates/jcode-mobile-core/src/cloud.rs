@@ -74,13 +74,54 @@ fn client_for(account: &Account) -> CloudClient {
 }
 
 /// A dedicated pinned connection for read-only inspection. No API server is started.
+/// How long an inspection may spend reaching the machine through the control
+/// plane. Inspections are glanceable: they never wait out provisioning.
+const INSPECTION_CONNECT: Duration = Duration::from_secs(10);
+
+/// SSH for a bounded read-only inspection. Prefers the already authenticated
+/// master (no network round trip), then this device's direct key, and only
+/// then the control plane, with a short deadline instead of provisioning's.
 pub(crate) fn inspection_ssh(account: &Account) -> Result<crate::cloud_ssh::CloudSsh, String> {
+    let cached = {
+        let cache = warm_target().lock().unwrap();
+        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
+    };
+    if let Some(ssh) = cached.filter(|ssh| !ssh.is_closed()) {
+        return Ok(ssh.master().clone());
+    }
+    if let Some(state) = crate::cloud_direct::load_or_create(account)
+        && let (Some(target), Some(key)) = (state.target(), state.key())
+    {
+        match crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT) {
+            Ok(ssh) => return Ok(cache_master(account, ssh).master().clone()),
+            Err(error) if error.kind == jcode_sdk::ErrorKind::HostKeyMismatch => {
+                crate::cloud_direct::forget_target(account);
+            }
+            Err(_) => {}
+        }
+    }
+    let unreachable = || "Could not reach your cloud machine for inspection".to_string();
     let key = crate::cloud_ssh::CloudSshKey::generate(CLIENT_NAME)
         .map_err(|_| "Could not prepare machine inspection".to_string())?;
-    let target = client_for(account).wait_for_host(account, key.public_openssh(), &|_| {}, &|| false)
-        .map_err(|_| "Could not reach your cloud machine for inspection".to_string())?;
-    crate::cloud_ssh::CloudSsh::connect(target, key)
-        .map_err(|_| "Could not securely connect for machine inspection".to_string())
+    let mut cloud = client_for(account);
+    cloud.poll_interval = Duration::from_millis(250);
+    let deadline = Instant::now() + INSPECTION_CONNECT;
+    let ssh = match wait_for_host_or_direct(&cloud, account, &key, &|_| {}, &|| Instant::now() >= deadline)
+        .map_err(|_| unreachable())?
+    {
+        HostWait::Direct(ssh) => ssh,
+        HostWait::Ready(target) => crate::cloud_ssh::CloudSsh::connect_timeout(target, key, INSPECTION_CONNECT)
+            .map_err(|_| "Could not securely connect for machine inspection".to_string())?,
+    };
+    Ok(cache_master(account, ssh).master().clone())
+}
+
+/// Drop a cached master that an inspection found dead, so a retry reconnects.
+pub(crate) fn forget_inspection_ssh(dead: &crate::cloud_ssh::CloudSsh) {
+    let mut cache = warm_target().lock().unwrap();
+    if cache.as_ref().is_some_and(|entry| entry.ssh.master().same_connection(dead)) {
+        *cache = None;
+    }
 }
 
 /// Persistent account storage (app data dir on iOS, XDG data on Linux).

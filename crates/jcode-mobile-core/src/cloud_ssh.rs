@@ -125,6 +125,11 @@ impl PreparedSsh {
         self.open_client_timeout(OPEN_TIMEOUT)
     }
 
+    /// The authenticated master, for bounded built-in inspections.
+    pub(crate) fn master(&self) -> &CloudSsh {
+        &self.0.ssh
+    }
+
     pub(crate) fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -510,6 +515,10 @@ impl CloudSsh {
                 Err(failed("SSH runtime exited during authentication"))
             }
         }
+    }
+
+    pub(crate) fn same_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     pub fn is_closed(&self) -> bool {

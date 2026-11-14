@@ -317,6 +317,34 @@ Third output line".into(),
     }
 
     #[gpui::test]
+    fn lift_outside_the_panel_never_leaves_the_swipe_parked_between_sessions(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        let panel = cx.debug_bounds("panel-preview-0").unwrap();
+        let inside = point(panel.right() - px(30.), panel.top() + px(100.));
+        // The header sits above the swipe panel and has no wheel listener.
+        let outside = point(px(195.), px(4.));
+        for (phase, at, dx) in [
+            (gpui::TouchPhase::Started, inside, 0.),
+            (gpui::TouchPhase::Moved, inside, 40.),
+            (gpui::TouchPhase::Ended, outside, 0.),
+        ] {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: at,
+                delta: gpui::ScrollDelta::Pixels(point(px(dx), px(0.))),
+                modifiers: Modifiers::default(),
+                touch_phase: phase,
+            });
+            draw(cx);
+        }
+        view.read_with(cx, |app, _| {
+            assert!(!app.swipe.active && !app.swipe.finger_down(), "swipe stayed held after the lift");
+            assert_eq!(app.active_tab, 0, "a committed drag must still switch");
+        });
+    }
+
+    #[gpui::test]
     fn preview_taps_do_not_expand_send_or_focus_either_editor(cx: &mut TestAppContext) {
         let (view, cx) = mount(cx);
         prepare_destination(&view, cx);

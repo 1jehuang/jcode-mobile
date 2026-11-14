@@ -1638,6 +1638,29 @@ impl MobileApp {
         cx.notify();
     }
 
+    /// Window-level end of a touch. The panel's own listener only hears events
+    /// over its hitbox, so a lift elsewhere would leave the drag held forever.
+    pub(crate) fn finish_panel_touch(&mut self, ev: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
+        let ending = matches!(ev.touch_phase, gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled);
+        if ending && self.swipe_engaged() {
+            self.panel_wheel(ev, cx);
+        }
+    }
+
+    /// A lift reported without a scroll end still ends the drag.
+    pub(crate) fn finish_panel_lift(&mut self, cx: &mut Context<Self>) {
+        if self.swipe.finger_down() {
+            self.swipe.touch_phase(gpui::TouchPhase::Ended);
+            if self.swipe.active {
+                self.end_swipe(cx);
+            }
+        }
+    }
+
+    fn swipe_engaged(&self) -> bool {
+        self.swipe.active || self.swipe.finger_down()
+    }
+
     /// Both the active viewport and the inert neighbor shield own the same
     /// drag. Crossing their boundary must not lose movement or cancellation.
     fn panel_wheel(&mut self, ev: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -1690,6 +1713,11 @@ impl MobileApp {
             .flex_col()
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|this, ev: &gpui::ScrollWheelEvent, _window, cx| {
+                // The window-level handler already finished this touch.
+                let ending = matches!(ev.touch_phase, gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled);
+                if ending && !this.swipe_engaged() {
+                    return;
+                }
                 this.panel_wheel(ev, cx);
             }))
             .child(

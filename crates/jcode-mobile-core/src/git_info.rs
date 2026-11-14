@@ -33,10 +33,19 @@ pub struct GitSnapshot {
 pub fn inspect(account: &cloud::Account, working_dir: &str) -> Result<GitSnapshot, String> {
     inspection_command(working_dir)?;
     let ssh = cloud::inspection_ssh(account)?;
-    parse(
-        &ssh.inspect_git(working_dir)
-            .map_err(|_| INVALID.to_string())?,
-    )
+    let output = match ssh.inspect_git(working_dir) {
+        Ok(output) => output,
+        // A reused master may have died while the app was suspended.
+        // Reconnect once instead of reporting a stale socket as a Git failure.
+        Err(_) if ssh.is_closed() => {
+            cloud::forget_inspection_ssh(&ssh);
+            cloud::inspection_ssh(account)?
+                .inspect_git(working_dir)
+                .map_err(|_| INVALID.to_string())?
+        }
+        Err(_) => return Err(INVALID.to_string()),
+    };
+    parse(&output)
 }
 
 pub(crate) fn inspection_command(working_dir: &str) -> Result<String, String> {
@@ -56,6 +65,7 @@ pub(crate) fn inspection_command(working_dir: &str) -> Result<String, String> {
 // external diff, hooks or pager. Pipe reads and process lifetime are both bounded.
 const SCRIPT: &str = r#"import os, sys, json, subprocess, selectors, time, re
 end = time.monotonic() + 6
+sys.argv[1] = os.path.expanduser(sys.argv[1])
 budget = 48000
 env = {k:v for k,v in os.environ.items() if not k.startswith('GIT_')}
 env.update(GIT_OPTIONAL_LOCKS='0', GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', LC_ALL='C')

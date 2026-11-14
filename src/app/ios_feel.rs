@@ -604,6 +604,7 @@ impl MobileApp {
                         return;
                     }
                     let swallow = h.update(cx, |this, cx| {
+                        this.finish_panel_lift(cx);
                         if this.git_up(false, cx) { return true; }
                         if this.git_info.open { return false; }
                         this.feel_up(window, cx)
@@ -623,6 +624,11 @@ impl MobileApp {
                     let p = e.position;
                     let consumed = h
                         .update(cx, |this, cx| {
+                            // The lift can land outside the chat panel (header,
+                            // composer, home indicator) or be consumed below.
+                            // Finish the tab swipe here so it never stays parked
+                            // between two sessions.
+                            this.finish_panel_touch(e, cx);
                             if this.git_info.open { return false; }
                             this.sync_gestures();
                             this.feel.g.scroll_event(p, e.touch_phase);
