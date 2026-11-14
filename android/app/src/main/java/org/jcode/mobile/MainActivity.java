@@ -49,7 +49,10 @@ public final class MainActivity extends Activity {
     private ListView sessionList;
     private ArrayAdapter<String> sessionAdapter;
     private final ArrayList<String> sessionIds = new ArrayList<>();
-    private boolean demo, resumed, destroyed, inFlight, connected, connectionActive, dialogOpen;
+    private boolean demo, resumed, destroyed, inFlight, interactiveBusy, connected, connectionActive, dialogOpen;
+    private String queuedAction;
+    private JSONObject queuedArgs;
+    private boolean queuedVisible;
     private String selected = "", renderedMessages = "", renderedSessions = "", pendingText = "";
     private AlertDialog activeDialog;
     private final Runnable poller = new Runnable() {
@@ -117,7 +120,7 @@ public final class MainActivity extends Activity {
         };
         sessionList.setAdapter(sessionAdapter);
         sessionList.setOnItemClickListener((parent, view, position, id) -> {
-            if (!inFlight && position < sessionIds.size()) {
+            if (!interactiveBusy && position < sessionIds.size()) {
                 JSONObject args = new JSONObject();
                 put(args, "session_id", sessionIds.get(position));
                 request("select_session", args, true);
@@ -180,7 +183,7 @@ public final class MainActivity extends Activity {
 
     private void sendMessage() {
         String text = composer.getText().toString();
-        if (inFlight || processing || !connected || selected.isEmpty() || text.trim().isEmpty()) return;
+        if (interactiveBusy || processing || !connected || selected.isEmpty() || text.trim().isEmpty()) return;
         JSONObject args = new JSONObject();
         put(args, "text", text);
         pendingText = text;
@@ -197,11 +200,24 @@ public final class MainActivity extends Activity {
     }
 
     private void request(String action, JSONObject args, boolean visible) {
-        if (destroyed || inFlight) return;
+        if (destroyed) return;
+        boolean readOnly = action.equals("poll") || action.equals("status") || action.equals("wake") || action.equals("sessions");
+        if (inFlight) {
+            // Preserve serialization without dropping taps that race a background read.
+            if (!readOnly && queuedAction == null) {
+                queuedAction = action;
+                queuedArgs = args;
+                queuedVisible = visible;
+                interactiveBusy = true;
+                updateControls();
+            }
+            return;
+        }
         main.removeCallbacks(poller);
         inFlight = true;
-        updateControls();
-        if (visible) status.setText(action.equals("connect") ? "Connecting… network setup may take a moment" : "Working…");
+        interactiveBusy = !readOnly;
+        if (interactiveBusy) updateControls();
+        if (visible) setTextIfChanged(status, action.equals("connect") ? "Connecting… network setup may take a moment" : "Working…");
         put(args, "action", action);
         WORKER.execute(() -> {
             JSONObject response = null;
@@ -219,8 +235,9 @@ public final class MainActivity extends Activity {
             main.post(() -> {
                 if (destroyed) return;
                 inFlight = false;
+                interactiveBusy = queuedAction != null;
                 if (failure != null) {
-                    status.setText(failure);
+                    setTextIfChanged(status, failure);
                     if (action.equals("connect") || action.equals("disconnect")) { connected = false; connectionActive = false; }
                 }
                 else {
@@ -230,6 +247,15 @@ public final class MainActivity extends Activity {
                     if (action.equals("send") && result.optBoolean("ok", true)) {
                         if (composer.getText().toString().equals(pendingText)) composer.setText("");
                     }
+                }
+                if (queuedAction != null) {
+                    String nextAction = queuedAction;
+                    JSONObject nextArgs = queuedArgs;
+                    boolean nextVisible = queuedVisible;
+                    queuedAction = null;
+                    queuedArgs = null;
+                    request(nextAction, nextArgs, nextVisible);
+                    return;
                 }
                 updateControls();
                 if (resumed && !dialogOpen && NativeBridge.isAvailable()) main.postDelayed(poller, 1000);
@@ -263,8 +289,9 @@ public final class MainActivity extends Activity {
         String loginError = nullableString(state, "login_error");
         if (!loginError.isEmpty()) error = loginError;
         if (error.equals("null")) error = "";
-        status.setText(!response.optBoolean("ok", true) || !error.isEmpty() ? "Error: " + (error.isEmpty() ? "Request failed" : error) : (demo ? "DEMO · " : "") + phase + (state.optBoolean("is_processing", false) ? " · Working…" : ""));
-        if (loginBusy && error.isEmpty()) status.setText("Cloud sign-in in progress…");
+        String statusText = !response.optBoolean("ok", true) || !error.isEmpty() ? "Error: " + (error.isEmpty() ? "Request failed" : error) : (demo ? "DEMO · " : "") + phase + (processing ? " · Working…" : "");
+        if (loginBusy && error.isEmpty()) statusText = "Cloud sign-in in progress…";
+        setTextIfChanged(status, statusText);
         if (state.has("selected_session_id")) selected = nullableString(state, "selected_session_id");
         else if (state.has("session_id")) selected = nullableString(state, "session_id");
         JSONArray sessions = state.optJSONArray("sessions");
@@ -282,7 +309,7 @@ public final class MainActivity extends Activity {
                 String title = session.optString("title", id);
                 if (title.isEmpty() || title.equals("null")) title = id;
                 String detail = session.optString("status", session.optString("working_dir", ""));
-                if (id.equals(selected)) { checked = sessionIds.size(); heading.setText(title); }
+                if (id.equals(selected)) { checked = sessionIds.size(); setTextIfChanged(heading, title); }
                 sessionIds.add(id);
                 sessionAdapter.add(title + (detail.isEmpty() ? "" : "\n" + detail));
             }
@@ -329,7 +356,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showModels() {
-        if (inFlight || dialogOpen || !connected || processing) return;
+        if (interactiveBusy || dialogOpen || !connected || processing) return;
         if (models.isEmpty()) {
             present(new AlertDialog.Builder(this).setTitle("Model").setMessage(modelName.isEmpty() ? "No models are available for this connection yet." : "Current model: " + modelName).setPositiveButton("OK", null).create());
             return;
@@ -344,7 +371,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCloud() {
-        if (inFlight || destroyed || !resumed || dialogOpen) return;
+        if (interactiveBusy || destroyed || !resumed || dialogOpen) return;
         if (loginBusy) {
             present(new AlertDialog.Builder(this).setTitle("Cloud sign-in in progress")
                 .setMessage("You can wait for sign-in to finish, or cancel and clear the in-memory account.")
@@ -398,7 +425,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showSettings() {
-        if (inFlight || dialogOpen) return;
+        if (interactiveBusy || dialogOpen) return;
         LinearLayout panel = column();
         panel.setPadding(dp(20), dp(8), dp(20), dp(8));
         EditText endpoint = new EditText(this);
@@ -443,18 +470,25 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
+    private static void setTextIfChanged(TextView view, String text) {
+        if (!text.contentEquals(view.getText())) view.setText(text);
+    }
+    private static void setEnabledIfChanged(View view, boolean enabled) {
+        if (view.isEnabled() != enabled) view.setEnabled(enabled);
+    }
     private static String accessToken = "";
     private void updateControls() {
-        send.setEnabled(!inFlight && connected && !selected.isEmpty() && !processing);
-        cancel.setVisibility(processing ? View.VISIBLE : View.GONE);
-        cancel.setEnabled(!inFlight && connected && processing);
-        modelButton.setEnabled(!inFlight && connected && !processing && !demo);
-        connect.setEnabled(!inFlight);
-        refresh.setEnabled(!inFlight);
-        cloud.setEnabled(!inFlight);
-        cloud.setText(loginBusy ? "Cancel login" : loginState.equals("signed_in") ? "Cloud account" : "Cloud sign in");
-        sessionList.setEnabled(!inFlight);
-        connect.setText(connectionActive ? "Disconnect" : "Connect");
+        setEnabledIfChanged(send, !interactiveBusy && connected && !selected.isEmpty() && !processing);
+        int cancelVisibility = processing ? View.VISIBLE : View.GONE;
+        if (cancel.getVisibility() != cancelVisibility) cancel.setVisibility(cancelVisibility);
+        setEnabledIfChanged(cancel, !interactiveBusy && connected && processing);
+        setEnabledIfChanged(modelButton, !interactiveBusy && connected && !processing && !demo);
+        setEnabledIfChanged(connect, !interactiveBusy);
+        setEnabledIfChanged(refresh, !interactiveBusy);
+        setEnabledIfChanged(cloud, !interactiveBusy);
+        setTextIfChanged(cloud, loginBusy ? "Cancel login" : loginState.equals("signed_in") ? "Cloud account" : "Cloud sign in");
+        setEnabledIfChanged(sessionList, !interactiveBusy);
+        setTextIfChanged(connect, connectionActive ? "Disconnect" : "Connect");
     }
     @Override protected void onResume() {
         super.onResume();
