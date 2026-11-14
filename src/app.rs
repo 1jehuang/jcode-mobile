@@ -680,6 +680,13 @@ impl MobileApp {
     /// Apply a completed authentication result, with effects guarded at their boundary.
     fn adopt_account(&mut self, account: Account, cx: &mut Context<Self>) {
         self.invalidate_auth();
+        if self.account.is_some() {
+            // A completed login can replace an account without going through
+            // sign-out. Never clear the newly persisted credentials here.
+            self.unregister_push(cx);
+            if !self.offline { ios_system::forget_index(); }
+            self.discard_account_workspace(cx);
+        }
         self.focus_code = false;
         self.blur_on_render = true;
         self.login_token = None;
@@ -950,6 +957,7 @@ impl MobileApp {
     }
 
     fn pump(&mut self, tab: u64, mut rx: UnboundedReceiver<ConnectionOutput>, cx: &mut Context<Self>) {
+        let auth_generation = self.auth_generation;
         let opened = std::time::Instant::now();
         let mut history_logged = false;
         cx.spawn(async move |this, cx| {
@@ -966,6 +974,9 @@ impl MobileApp {
                 let apply_start = std::time::Instant::now();
                 let ok = this
                     .update(cx, |this, cx| {
+                        // Stopped sockets can still have queued events. Tab ids
+                        // survive logout, so a tab match alone is not ownership.
+                        if this.auth_generation != auth_generation { return; }
                         if tab != this.active_tab {
                             if let Some(p) = this.parked.iter_mut().find(|p| p.id == tab) {
                                 for o in batch {
@@ -1111,58 +1122,18 @@ impl MobileApp {
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.invalidate_auth();
-        self.auto_send = None;
-        self.blur_on_render = true;
-        self.focus_code = false;
-        self.tab_hold = None;
-        self.hold_fired = false;
-        self.tab_menu = None;
-        self.model_picker = false;
-        self.dir_picker = false;
-        self.drawer_open = false;
-        self.drawer_t = 0.;
-        self.drawer_drag = 0.;
-        self.drawer_drag_last = None;
-        self.drawer_finger = false;
-        self.drawer_directory = Default::default();
-        self.feel = Default::default();
-        self.swipe = Default::default();
-        self.expanded_tools.clear();
-        self.recent_dirs_asked = None;
-        self.delete_step = 0;
-        self.delete_error = None;
+        self.discard_account_workspace(cx);
         self.sign_in_error = None;
         self.code.update(cx, |input, cx| input.set_text("", cx));
-        self.drawer_search.update(cx, |input, cx| input.set_text("", cx));
-        self.dir_input.update(cx, |input, cx| input.set_text("", cx));
         if self.account.is_some() { haptics::play(Haptic::Rigid); }
-        self.git_info = git_info::GitState::default();
-        self.cloud_machine = cloud_machine::MachineState::default();
-        self.cancel_voice(cx);
         if !self.offline {
             ios_system::forget_index();
         }
         self.unregister_push(cx);
-        if let Some(c) = self.connection.take() {
-            c.stop();
-        }
-        for p in self.parked.drain(..) {
-            if let Some(c) = p.connection {
-                c.stop();
-            }
-        }
-        self.tab_order = vec![self.active_tab];
-        self.tab_motion.clear();
         if !self.offline {
             self.store.clear();
         }
         self.account = None;
-        self.account_profile_requested = false;
-        self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
-        self.synced = Default::default();
-        self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
-        self.apple_link = None;
-        self.session = SessionState::default();
         self.login_token = None;
         self.screen = Screen::SignIn;
         cx.notify();

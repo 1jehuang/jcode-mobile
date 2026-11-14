@@ -1,5 +1,7 @@
 //! Authentication/settings interaction coverage with injected service completions.
 //! No authentication provider, account file, network, or native browser is used.
+#[path = "account_isolation_regressions.rs"]
+mod isolation_regressions;
 use super::*;
 use gpui::{
     Modifiers, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchEvent, TouchId,

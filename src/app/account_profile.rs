@@ -7,6 +7,59 @@ pub(super) fn same_account(current: Option<&Account>, expected: &Account) -> boo
 }
 
 impl MobileApp {
+    /// Account transitions cannot retain a previous workspace, even when a
+    /// completed sign-in replaces an account without visiting the sign-out UI.
+    /// Device preferences and the APNs device token are intentionally retained.
+    pub(super) fn discard_account_workspace(&mut self, cx: &mut Context<Self>) {
+        self.auto_send = None;
+        self.blur_on_render = true;
+        self.focus_code = false;
+        self.tab_hold = None;
+        self.hold_fired = false;
+        self.tab_menu = None;
+        self.model_picker = false;
+        self.dir_picker = false;
+        self.drawer_open = false;
+        self.drawer_t = 0.;
+        self.drawer_drag = 0.;
+        self.drawer_drag_last = None;
+        self.drawer_finger = false;
+        self.drawer_directory = Default::default();
+        self.feel = Default::default();
+        self.swipe = Default::default();
+        self.map = Default::default();
+        self.expanded_tools.clear();
+        self.recent_dirs_asked = None;
+        self.delete_step = 0;
+        self.delete_error = None;
+        self.drawer_search
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.dir_input
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.git_info = Default::default();
+        self.cloud_machine = Default::default();
+        self.cancel_voice(cx);
+        if let Some(connection) = self.connection.take() {
+            connection.stop();
+        }
+        for tab in self.parked.drain(..) {
+            if let Some(connection) = tab.connection {
+                connection.stop();
+            }
+        }
+        self.tab_order = vec![self.active_tab];
+        self.tab_motion.clear();
+        self.composer.update(cx, |input, cx| {
+            input.restore_draft(InputDraft::default(), cx)
+        });
+        self.synced = Default::default();
+        self.transfer_input
+            .update(cx, |input, cx| input.set_text("", cx));
+        self.apple_link = None;
+        self.session = Default::default();
+        self.account_profile_requested = false;
+    }
+
     pub(super) fn ensure_account_profile(&mut self, cx: &mut Context<Self>) {
         if self.offline || self.account_profile_requested {
             return;
