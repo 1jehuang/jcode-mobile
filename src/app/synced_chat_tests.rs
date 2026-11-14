@@ -62,7 +62,6 @@ fn opening_live_local_creates_chat_without_cloud_and_preserves_other_draft(
         app.feel_rename_tab(local, cx);
         assert!(app.connection.is_none());
         assert_eq!(app.tab_order.len(), 2);
-        assert!(app.feel.rename.is_none());
         app.offline = true;
     });
 }

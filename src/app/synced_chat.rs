@@ -68,9 +68,12 @@ impl MobileApp {
         } else {
             self.screen = super::Screen::Chat;
             self.synced.selected = Some(id.to_owned());
-            self.synced.sessions.sort_by_key(|session| session.session_id != id);
+            self.synced
+                .sessions
+                .sort_by_key(|session| session.session_id != id);
             self.synced.visible_pages = 0;
-            self.drawer_search.update(cx, |input, cx| input.set_text("", cx));
+            self.drawer_search
+                .update(cx, |input, cx| input.set_text("", cx));
             self.drawer_open = true;
             self.drawer_last = std::time::Instant::now();
             if let Some(reply) = reply {
@@ -189,7 +192,9 @@ impl MobileApp {
     }
 
     fn poll_local_chat(&mut self, tab: u64, cx: &mut Context<Self>) {
-        if self.offline { return; }
+        if self.offline {
+            return;
+        }
         let Some(account) = self.account.clone() else {
             return;
         };
