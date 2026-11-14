@@ -6,6 +6,14 @@
   <key>NSPrivacyTrackingDomains</key><array/>
   <key>NSPrivacyCollectedDataTypes</key>
   <array>
+    <!-- Only photos the user explicitly attaches to a message. -->
+    <dict>
+      <key>NSPrivacyCollectedDataType</key><string>NSPrivacyCollectedDataTypePhotosorVideos</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key><true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key><false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array><string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string></array>
+    </dict>
     <!-- jcode Cloud account: email address used for sign-in (may be an Apple private relay address). -->
     <dict>
       <key>NSPrivacyCollectedDataType</key><string>NSPrivacyCollectedDataTypeEmailAddress</string>

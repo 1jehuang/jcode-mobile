@@ -1,5 +1,118 @@
 {
   "entries": [
+{
+  "renderer": false,
+  "handler": false,
+  "events": {
+    "on_media": 1
+  },
+  "controls": {},
+  "owner": "src/app/attachments.rs::impl:MobileApp::install_media",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
+{
+  "renderer": false,
+  "handler": true,
+  "events": {},
+  "controls": {},
+  "owner": "src/app/attachments.rs::impl:MobileApp::on_media",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "state_model_mocked",
+      "tests": [
+        "src/app/attachment_tests.rs::late_picker_result_stays_with_parked_tab_and_signout_drops_it"
+      ],
+      "note": "Synthetic picker delivery stays in its original tab and late image delivery after clearing is ignored."
+    },
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
+{
+  "renderer": true,
+  "handler": false,
+  "events": {},
+  "controls": {},
+  "owner": "src/app/attachments.rs::impl:MobileApp::photo",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
+{
+  "renderer": true,
+  "handler": false,
+  "events": {
+    "on_click": 3
+  },
+  "controls": {
+    "debug_selector:macro:format:literal:{}attachment-{i}": 1,
+    "id:tuple:literal:attachment": 1,
+    "outline_button:literal:attach-camera": 1,
+    "outline_button:literal:attach-library": 1
+  },
+  "owner": "src/app/attachments.rs::impl:MobileApp::render_attachment_tray",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "hit_tested",
+      "tests": [
+        "src/app/attachment_tests.rs::attachment_menu_and_remove_work_through_controls"
+      ],
+      "note": "Drawn attach button toggles source choices and tapping the photo removes it. Native source choices are not automated."
+    },
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
+{
+  "renderer": true,
+  "handler": false,
+  "events": {},
+  "controls": {},
+  "owner": "src/app/attachments.rs::impl:MobileApp::render_prompt_photos",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
+{
+  "renderer": false,
+  "handler": true,
+  "events": {},
+  "controls": {},
+  "owner": "src/media.rs::imp::on_media",
+  "coverage_scope": "partial",
+  "coverage": [
+    {
+      "kind": "platform_device_required",
+      "tests": [],
+      "note": "Camera permission, native capture, Photos selection, swipe cancellation and real model delivery require iPhone acceptance. Synced computer chats do not yet accept photos."
+    }
+  ]
+},
     {
       "owner": "src/app.rs::impl:MobileApp::render_synced_tool_output",
       "renderer": true,
@@ -215,6 +328,7 @@
         "pill:literal:pill-account": 1,
         "pill:literal:pill-effort": 1,
         "pill:literal:pill-model": 1,
+        "round_button:literal:attach-photo": 1,
         "round_button:literal:cancel-dictation": 1,
         "round_button:literal:send": 1,
         "round_button:literal:stop": 1
@@ -273,7 +387,7 @@
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 7
+        "on_click": 8
       },
       "handler": false,
       "owner": "src/app.rs::impl:MobileApp::render_composer_for",

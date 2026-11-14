@@ -957,7 +957,7 @@ mod tests {
             let mut state = SessionState::default();
             state.apply_history(sid(), vec![HistoryMessage {
                 response_stats: None, role: role.into(), content: text, tool: None
-            }]);
+            }], vec![]);
             assert_eq!(state.transcript[0].text.as_ptr(), ptr);
         }
         let content = format!("\n*\u{2063}thought\u{2063}*\n\n{}", "回答".repeat(512));
@@ -995,7 +995,7 @@ mod tests {
                 black_box(entries);
                 let mut state = SessionState::default();
                 let start = Instant::now();
-                state.apply_history(sid(), messages);
+                state.apply_history(sid(), messages, vec![]);
                 new += start.elapsed();
                 black_box(state);
             }

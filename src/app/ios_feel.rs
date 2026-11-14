@@ -15,7 +15,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, TouchDragEvent, TouchPhase, Window,
     canvas, div, prelude::*, px,
 };
-use jcode_mobile_core::{ConnectionPhase, LocalIntent, Request, Role};
+use jcode_mobile_core::{ConnectionPhase, Request, Role};
 
 use super::{MobileApp, Screen, label};
 use crate::gestures::{Action, Gestures, Scene, Target};
@@ -846,7 +846,7 @@ impl MobileApp {
         swallow
     }
 
-    fn toast(&mut self, msg: &str) {
+    pub(super) fn toast(&mut self, msg: &str) {
         self.feel.toast = Some((msg.to_string(), Instant::now()));
     }
 
@@ -963,8 +963,10 @@ impl MobileApp {
                     .child(row("msg-retry", "Retry", "↻", can_retry).when(can_retry, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
                             if this.can_retry_entry(entry) && let Some(text) = this.retry_text(entry) {
-                                this.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
-                                this.send(|id| Request::Message { id, content: text });
+                                let images = this.session.transcript.iter().position(|e| e.id == entry)
+                                    .and_then(|i| this.session.transcript[..=i].iter().rev().find(|e| e.role == Role::User))
+                                    .map(|e| this.session.images_for(e.id).to_vec()).unwrap_or_default();
+                                this.send_prompt(text, images);
                                 this.stream_motion.reset();
                                 this.follow = true;
                                 this.feel_sent();

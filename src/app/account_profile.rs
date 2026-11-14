@@ -39,6 +39,7 @@ impl MobileApp {
         self.git_info = Default::default();
         self.cloud_machine = Default::default();
         self.cancel_voice(cx);
+        self.clear_attachments();
         if let Some(connection) = self.connection.take() {
             connection.stop();
         }

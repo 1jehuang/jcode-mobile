@@ -3542,6 +3542,7 @@ dependencies = [
  "gpui",
  "gpui-thinking-orbs",
  "gpui_platform",
+ "image",
  "jcode-mobile-core",
  "jcode-voice",
  "log",

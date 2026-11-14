@@ -33,6 +33,7 @@ impl MobileApp {
             for entry in &session.transcript {
                 if entry.role == Role::User { prompt_n += 1; }
                 let key = super::transcript_layout::key(id, entry, prompt_n, &parked.expanded_tools, self.content_width());
+                let key = key.with_images(session.images_for(entry.id));
                 let height = self.transcript_heights.get(key);
                 let skip = height.is_some_and(|height| super::transcript_layout::offscreen(top, height, off, viewport * 3.));
                 #[cfg(test)]
@@ -44,7 +45,7 @@ impl MobileApp {
                         .debug_selector({ let id = entry.id; move || format!("preview-entry-{id}") });
                     let heights = self.transcript_heights.clone();
                     rows.push(row.relative()
-                        .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, None, t, cx))
+                        .child(self.render_entry(entry, prompt_n, &parked.expanded_tools, None, session.images_for(entry.id), t, cx))
                         .child(gpui::canvas(move |bounds, _, _| heights.record(key, bounds.size.height), |_, _, _, _| {}).absolute().inset_0())
                         .into_any_element());
                 }
@@ -82,7 +83,7 @@ impl MobileApp {
             })
             .child(div().relative().flex_1().min_h_0().flex().flex_col().overflow_hidden().child(body))
             .child(div().id("preview-composer").debug_selector(|| "preview-composer".into())
-                .flex_none().child(self.render_composer_for(session, &parked.preview_composer, true, t, window, cx)))
+                .flex_none().child(self.render_composer_for(session, &parked.preview_composer, &parked.attachments, true, t, window, cx)))
             // Paint an opaque hit-test layer last. The matching visuals are not
             // live controls until navigation commits, and never take IME focus.
             .child(div().absolute().inset_0().occlude()

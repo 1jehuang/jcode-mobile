@@ -20,6 +20,7 @@ use crate::haptics::{self, Haptic};
 #[path = "push_glue.rs"]
 mod push_glue;
 mod deep_link_glue;
+mod attachments;
 mod a11y;
 use a11y::A11yExt as _;
 mod recent_dirs;
@@ -207,6 +208,7 @@ pub struct MobileApp {
     status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     /// Dev hook (JCODE_MOBILE_SEND): message sent once connected.
     auto_send: Option<String>,
+    attach: attachments::State,
     /// APNs device token (hex) once iOS hands it over.
     push_token: Option<String>,
     /// Account-wide agent status from the Worker (all hosts, all sessions).
@@ -264,7 +266,7 @@ impl MobileApp {
             t
         });
         let composer = cx.new(|cx| {
-            let mut t = TextInput::new("Message jcode…", cx);
+            let mut t = TextInput::new("Message…", cx);
             t.bare = true;
             t.max_lines = 6;
             t.config = TextInputConfiguration {
@@ -432,6 +434,7 @@ impl MobileApp {
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
             auto_send: (!offline).then(|| std::env::var("JCODE_MOBILE_SEND").ok()).flatten(),
+            attach: Default::default(),
             push_token: None,
             agents_status: None,
             live_tokens: Vec::new(),
@@ -457,6 +460,7 @@ impl MobileApp {
         if !offline {
             app.install_push(cx);
             app.install_deep_links(cx);
+            app.install_media(cx);
         }
         // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
         if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {
@@ -781,7 +785,7 @@ impl MobileApp {
         self.cancel_voice(cx);
         let draft = self.composer.read(cx).save_draft();
         let preview_composer = cx.new(|cx| {
-            let mut input = TextInput::new("Message jcode…", cx);
+            let mut input = TextInput::new("Message…", cx);
             input.bare = true;
             input.max_lines = 6;
             input.read_only = true;
@@ -800,7 +804,9 @@ impl MobileApp {
             preview_activity_orb: cx.new(|_| inline_orb()),
             preview_status_orb: cx.new(|_| inline_orb()),
             auto_send: self.auto_send.take(),
+            attachments: std::mem::take(&mut self.attach.pending),
         });
+        self.attach.menu = false;
         self.composer.update(cx, |input, cx| input.restore_draft(InputDraft::default(), cx));
     }
 
@@ -815,6 +821,7 @@ impl MobileApp {
         self.expanded_tools = p.expanded_tools;
         self.follow = p.follow;
         self.auto_send = p.auto_send;
+        self.attach.pending = p.attachments;
         self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
         crate::haptics::play(crate::haptics::Haptic::Selection);
         cx.notify();
@@ -844,6 +851,8 @@ impl MobileApp {
             self.expanded_tools = p.expanded_tools;
             self.follow = p.follow;
             self.auto_send = p.auto_send;
+            self.attach.pending = p.attachments;
+            self.attach.menu = false;
             self.composer.update(cx, |input, cx| input.restore_draft(p.draft, cx));
         } else if let Some(i) = self.parked.iter().position(|p| p.id == id) {
             if let Some(c) = self.parked.swap_remove(i).connection {
@@ -1036,7 +1045,9 @@ impl MobileApp {
         let Some(text) = self.auto_send.take() else { return; };
         let draft = self.composer.read(cx).save_draft();
         self.composer.update(cx, |input, cx| input.set_text(text, cx));
+        let photos = std::mem::take(&mut self.attach.pending);
         self.send_draft(cx);
+        self.attach.pending = photos;
         self.composer.update(cx, |input, cx| input.restore_draft(draft, cx));
     }
 
@@ -1045,8 +1056,8 @@ impl MobileApp {
             self.send_local_draft(cx);
             return;
         }
-        let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() || self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
+        let mut text = self.composer.read(cx).text().trim().to_string();
+        if (text.is_empty() && self.attach.pending.is_empty()) || self.session.phase != ConnectionPhase::Connected || self.session.session_id.is_none() {
             return;
         }
         static ASKED: std::sync::Once = std::sync::Once::new();
@@ -1054,13 +1065,10 @@ impl MobileApp {
         if !self.offline {
             ASKED.call_once(crate::notify::request_permission);
         }
-        if self.session.is_processing {
-            self.session.apply_intent(LocalIntent::UserQueuedInterrupt(text.clone()));
-            self.send(|id| Request::SoftInterrupt { id, content: text, urgent: false });
-        } else {
-            self.session.apply_intent(LocalIntent::UserSentMessage(text.clone()));
-            self.send(|id| Request::Message { id, content: text });
-        }
+        let images = std::mem::take(&mut self.attach.pending);
+        if text.is_empty() { text = attachments::caption(images.len()); }
+        self.send_prompt(text, images);
+        self.attach.menu = false;
         self.feel_sent();
         self.composer.update(cx, |t, cx| t.set_text("", cx));
         self.stream_motion.reset();
@@ -1144,6 +1152,7 @@ impl MobileApp {
 
 /// A background session tab: its own connection and transcript.
 struct ParkedTab {
+    attachments: Vec<jcode_mobile_core::SessionImage>,
     id: u64,
     connection: Option<Connection>,
     session: SessionState,
@@ -1801,6 +1810,7 @@ impl MobileApp {
             } else {
                 transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width())
             };
+            let key = key.with_images(self.session.images_for(e.id));
             geometry.push((key, self.transcript_heights.get(key), px(0.)));
         }
         let mut suffix = px(0.);
@@ -1832,7 +1842,7 @@ impl MobileApp {
                     .debug_selector({ let id = e.id; move || format!("entry-{id}") });
                 #[cfg(test)]
                 { self.rendered_transcript_rows += 1; }
-                let el = self.render_entry(e, prompt_n, &self.expanded_tools, presentation.rows.get(&e.id), t, cx);
+                let el = self.render_entry(e, prompt_n, &self.expanded_tools, presentation.rows.get(&e.id), self.session.images_for(e.id), t, cx);
                 let heights = self.transcript_heights.clone();
                 rows.push(row.relative()
                     .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
@@ -2149,7 +2159,7 @@ impl MobileApp {
         Some(if last.text.is_empty() { "working" } else { "responding" })
     }
 
-    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, images: &[jcode_mobile_core::SessionImage], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.entry_build");
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
@@ -2186,6 +2196,7 @@ impl MobileApp {
                             .text_size(crate::system::fs(13.5))
                             .line_height(crate::system::fs(21.))
                             .text_color(t.text_strong)
+                            .children(self.render_prompt_photos(images, t, cx))
                             .child(e.text.clone()),
                     )
                     .into_any_element()
@@ -2318,13 +2329,14 @@ impl MobileApp {
     /// then desktop's pill row: model, effort, `Provider · Auth` on the left,
     /// the machine chip on the right.
     fn render_composer(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_composer_for(&self.session, &self.composer, false, t, window, cx)
+        self.render_composer_for(&self.session, &self.composer, &self.attach.pending, false, t, window, cx)
     }
 
     fn render_composer_for(
         &self,
         session: &SessionState,
         composer: &Entity<TextInput>,
+        pending: &[jcode_mobile_core::SessionImage],
         preview: bool,
         t: &Theme,
         window: &Window,
@@ -2334,7 +2346,7 @@ impl MobileApp {
         let processing = session.is_processing;
         let ready = session.phase == ConnectionPhase::Connected && session.session_id.is_some()
             && (!local || self.local_chat_ready(session));
-        let has_text = !composer.read(cx).text().trim().is_empty();
+        let has_text = !composer.read(cx).text().trim().is_empty() || !pending.is_empty();
         let focused = !preview && composer.read(cx).is_focused(window);
         // A six-line draft must not grow through the software keyboard on
         // compact phones. Keep the draft intact and let TextInput scroll its
@@ -2350,7 +2362,9 @@ impl MobileApp {
         let compact = self.keyboard_up && available < 240.;
         let line_height = f32::from(crate::system::fs(20.));
         // Reserve composer chrome and metadata before budgeting visible rows.
-        let reserve = if local { 84. + line_height * 2. } else { 84. };
+        let tray = if pending.is_empty() { 0. } else { 64. };
+        let menu = if !preview && self.attach.menu { 52. } else { 0. };
+        let reserve = if local { 84. + line_height * 2. } else { 84. } + tray + menu;
         let max_lines = ((available - reserve) / line_height).floor().clamp(1., 6.) as usize;
         if composer.read(cx).visible_lines != Some(max_lines) {
             composer.update(cx, |input, cx| { input.visible_lines = Some(max_lines); cx.notify(); });
@@ -2386,6 +2400,7 @@ impl MobileApp {
         });
         div()
             .id("chat-composer")
+            .children(self.render_attachment_tray(pending, preview, t, cx))
             .debug_selector(move || if preview { "preview-chat-composer" } else { "chat-composer" }.into())
             .flex()
             .flex_col()
@@ -2423,6 +2438,9 @@ impl MobileApp {
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
+                    .when(!local, |d| d.child(round_button("attach-photo", "+", t.text_secondary, !preview, t)
+                        .a11y_button("Attach photo")
+                        .when(!preview, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_attach_menu(cx))))))
                     .child(div().id("composer-input").debug_selector(move || if preview { "preview-composer-input" } else { "composer-input" }.into()).flex_1().min_w_0().child(composer.clone()))
                     .child(if !preview && (self.voice.busy || self.voice.starting || self.voice.recording.is_some() || self.voice.sending()) {
                         // Reuse the existing send slot. Never insert rows during a voice pull.

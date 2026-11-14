@@ -69,6 +69,17 @@ pub(super) struct Key {
     scale: u32,
 }
 
+impl Key {
+    pub(super) fn with_images(mut self, images: &[jcode_mobile_core::SessionImage]) -> Self {
+        if images.is_empty() { return self; }
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.fingerprint.hash(&mut hash);
+        for image in images { image.id.hash(&mut hash); }
+        self.fingerprint = hash.finish();
+        self
+    }
+}
+
 pub(super) fn key(
     tab: u64,
     entry: &TranscriptEntry,

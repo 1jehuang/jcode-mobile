@@ -53,6 +53,7 @@ cat > "$APP/Info.plist" <<PLIST
   <key>UILaunchScreen</key><dict/>
   <key>ITSAppUsesNonExemptEncryption</key><false/>
   <key>NSMicrophoneUsageDescription</key><string>Record a voice message and transcribe it into your draft using your Jcode account.</string>
+  <key>NSCameraUsageDescription</key><string>Take a photo to attach to a message you send to Jcode.</string>
   <key>DTPlatformName</key><string>iphoneos</string>
   <key>DTPlatformVersion</key><string>27.1</string>
   <key>DTPlatformBuild</key><string>24A94232</string>

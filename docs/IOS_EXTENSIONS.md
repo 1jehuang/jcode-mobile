@@ -19,6 +19,26 @@ The Swift sources are a SwiftPM package in `ios-ext/`, built by
 `NO_IOS_EXT=1` skips it. Bundle IDs and provisioning profiles for the
 extensions come from `scripts/asc_extensions.py`.
 
+## Composer photos
+
+The composer `+` opens **Take Photo** and **Photo Library**. Up to four
+photos can be attached, removed from the draft, and sent with or without text.
+Camera permission is requested only when taking a photo. The library uses
+PHPicker, so it does not request access to the user's whole photo library.
+The Swift bridge in `Sources/JcodeBridge/Media.swift` normalizes orientation,
+scales the longest side to 2048 pixels and encodes JPEG at quality 0.82.
+Rust copies the callback bytes immediately and sends them through the existing
+SDK image payload. Thumbnails are decoded off the UI thread.
+
+Draft photos stay with their tab. Sent photos are restored from cloud history
+prompt anchors and included when retrying a prompt. Computer-synced chats do
+not yet expose attachments because that submission endpoint is text-only.
+`JCODE_MOBILE_ATTACH=/path/to/photo.jpg` supplies a desktop preview picker result.
+
+Device acceptance still required: allow/deny camera, capture/retake/cancel,
+library multi-select and swipe dismissal, background/foreground while picking,
+and send a photo to a vision-capable model. The simulator has no camera.
+
 ## Deep links: `jcode://`
 
 Everything enters through one URL scheme, parsed in `src/ios_ext.rs`

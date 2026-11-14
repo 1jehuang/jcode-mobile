@@ -20,6 +20,7 @@ mod tool_summary;
 mod tool_output;
 mod labels;
 mod ios_ext;
+mod media;
 mod haptics;
 mod web_auth;
 mod gestures;
