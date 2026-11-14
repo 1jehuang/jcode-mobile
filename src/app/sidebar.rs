@@ -785,6 +785,8 @@ mod tests {
             let (_, events) = capture(|| app.drawer_open_session("unavailable".into(), cx));
             assert!(events.is_empty(), "signed-out actions are silent");
             app.account = Some(jcode_mobile_core::Account {
+                given_name: None,
+                name: None,
                 api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
             });
             app.session.session_id = Some("original".into());

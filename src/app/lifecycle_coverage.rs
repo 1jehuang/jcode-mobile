@@ -5,6 +5,8 @@ use gpui::TestAppContext;
 
 pub(super) fn fixture_account() -> Account {
     Account {
+        given_name: None,
+        name: None,
         api_key: "lifecycle-fixture-not-a-key".into(),
         api_base: "https://fixture.invalid".into(),
         email: None,

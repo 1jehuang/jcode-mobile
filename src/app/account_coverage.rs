@@ -12,6 +12,8 @@ use std::sync::{
 
 pub(super) fn account() -> Account {
     Account {
+        given_name: None,
+        name: None,
         api_key: "synthetic-coverage-key".into(),
         api_base: "https://offline.invalid".into(),
         email: Some("coverage@example.test".into()),

@@ -58,6 +58,8 @@ fn fuzz_instances_block_external_actions_and_preserve_stored_credentials(cx: &mu
     ));
     let path = directory.join("fixture-account.json");
     let account = Account {
+        given_name: None,
+        name: None,
         api_key: "offline-fixture-not-a-real-key".into(),
         api_base: "http://127.0.0.1:9".into(),
         email: Some("offline@example.test".into()),

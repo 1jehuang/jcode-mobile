@@ -445,6 +445,8 @@ mod haptic_tests {
 
     fn account() -> Account {
         Account {
+            given_name: None,
+            name: None,
             api_key: "apple-fixture".into(),
             api_base: "https://offline.invalid".into(),
             email: None,
@@ -668,6 +670,8 @@ mod haptic_tests {
         let panel = cx.new(|cx| {
             AppleLinkPanel::new(
                 Account {
+                    given_name: None,
+                    name: None,
                     api_key: "fixture".into(),
                     api_base: "http://127.0.0.1:9".into(),
                     email: None,

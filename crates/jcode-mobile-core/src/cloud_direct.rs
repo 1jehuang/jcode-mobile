@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn account_identity_depends_on_key_and_endpoint() {
-        let a = Account { api_key: "k".into(), email: None, api_base: "https://a".into() };
+        let a = Account { given_name: None, name: None, api_key: "k".into(), email: None, api_base: "https://a".into() };
         let b = Account { api_key: "k2".into(), ..a.clone() };
         let c = Account { api_base: "https://b".into(), ..a.clone() };
         assert_ne!(account_id(&a), account_id(&b));

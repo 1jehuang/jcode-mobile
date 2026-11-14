@@ -220,6 +220,8 @@ mod tests {
         });
         (
             Account {
+                given_name: None,
+                name: None,
                 api_base,
                 api_key: "test-account-key".into(),
                 email: None,

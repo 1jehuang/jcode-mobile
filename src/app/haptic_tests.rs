@@ -21,7 +21,7 @@ fn held_tab_haptics_fire_once_per_threshold_not_every_move(cx: &mut TestAppConte
     });
     view.update(cx, |app, cx| {
         app.screen = Screen::Chat;
-        app.account = Some(Account { api_key: "fixture".into(), api_base: "http://127.0.0.1:9".into(), email: None });
+        app.account = Some(Account { given_name: None, name: None, api_key: "fixture".into(), api_base: "http://127.0.0.1:9".into(), email: None });
         app.new_tab(cx);
         app.focus_tab(0, cx);
     });
@@ -59,6 +59,8 @@ fn haptics_follow_successful_actions_and_leave_noops_silent(cx: &mut TestAppCont
         });
         assert!(events.is_empty(), "no-op/offline actions must be silent: {events:?}");
         app.account = Some(Account {
+            given_name: None,
+            name: None,
             api_key: "offline-fixture".into(),
             api_base: "http://127.0.0.1:9".into(),
             email: Some("haptics@example.test".into()),

@@ -6,6 +6,8 @@ fn server(expected: usize) -> (Account, std::thread::JoinHandle<Vec<Vec<String>>
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let account = Account {
+        given_name: None,
+        name: None,
         api_base: format!("http://{}/v1", listener.local_addr().unwrap()),
         api_key: "fixture-account".into(),
         email: None,
@@ -143,6 +145,8 @@ fn pooled_connections_are_origin_scoped() {
 #[test]
 fn invalid_command_ids_never_reach_transport() {
     let account = Account {
+        given_name: None,
+        name: None,
         api_base: "http://127.0.0.1:1".into(),
         api_key: "fixture-only".into(),
         email: None,

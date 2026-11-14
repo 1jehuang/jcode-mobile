@@ -318,6 +318,8 @@ mod tests {
             let (_, feedback) = haptics::capture(|| app.continue_synced_in_cloud(cx));
             assert!(feedback.is_empty(), "missing account stays silent");
             app.account = Some(Account {
+                given_name: None,
+                name: None,
                 api_key: "fixture".into(),
                 api_base: "http://127.0.0.1:9".into(),
                 email: None,
@@ -334,6 +336,8 @@ mod tests {
     #[test]
     fn stale_account_results_are_rejected() {
         let account = Account {
+            given_name: None,
+            name: None,
             api_key: "key-one".into(),
             api_base: "https://example.test/v1".into(),
             email: None,

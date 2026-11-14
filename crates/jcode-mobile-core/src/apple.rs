@@ -38,7 +38,13 @@ pub fn sign_in_at(api_base: &str, identity_token: &str, raw_nonce: &str) -> Resu
         serde_json::json!({ "identity_token": identity_token, "nonce": raw_nonce, "client_name": CLIENT_NAME }),
     )?;
     let api_key = body["api_key"].as_str().ok_or("jcode.sh returned no account key")?.to_string();
-    Ok(Account { api_key, email: body["email"].as_str().map(str::to_string), api_base: api_base.trim_end_matches('/').into() })
+    Ok(Account {
+        api_key,
+        email: body["email"].as_str().map(str::to_string),
+        given_name: body["given_name"].as_str().map(str::to_string),
+        name: body["name"].as_str().map(str::to_string),
+        api_base: api_base.trim_end_matches('/').into(),
+    })
 }
 
 /// Mail a 6-digit code to `email`. Returns the link token for [`verify_link`].

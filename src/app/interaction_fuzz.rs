@@ -144,6 +144,8 @@ fn install_surface(view: &Entity<MobileApp>, cx: &mut VisualTestContext, surface
             None
         } else {
             Some(Account {
+                given_name: None,
+                name: None,
                 api_key: "offline-fixture".into(),
                 api_base: "https://offline.invalid/v1".into(),
                 email: Some("touch@example.test".into()),

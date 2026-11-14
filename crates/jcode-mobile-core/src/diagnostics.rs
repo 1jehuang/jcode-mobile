@@ -624,6 +624,8 @@ mod tests {
     #[test]
     fn immutable_attempted_batches_and_account_isolation() {
         let a = Account {
+            given_name: None,
+            name: None,
             api_key: "key-a".into(),
             email: None,
             api_base: "https://example.test/v1".into(),
@@ -684,6 +686,8 @@ mod tests {
         ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let account = Account {
+                given_name: None,
+                name: None,
                 api_key: "test-secret".into(),
                 email: None,
                 api_base: format!("http://{}/v1", listener.local_addr().unwrap()),

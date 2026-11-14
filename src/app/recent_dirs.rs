@@ -308,6 +308,8 @@ mod tests {
         });
         view.update(cx, |app, cx| {
             app.account = Some(jcode_mobile_core::Account {
+                given_name: None,
+                name: None,
                 api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
             });
             app.session.working_dir = Some("/repo".into());
@@ -330,6 +332,8 @@ mod tests {
         });
         view.update(cx, |app, cx| {
             app.account = Some(jcode_mobile_core::Account {
+                given_name: None,
+                name: None,
                 api_key: "offline-fixture".into(), api_base: "https://offline.invalid".into(), email: None,
             });
             let original = app.active_tab;

@@ -18,6 +18,8 @@ pub(super) fn mount(cx: &mut TestAppContext) -> (Entity<MobileApp>, &mut VisualT
         app.screen = Screen::Chat;
         app.device = Some((390., 844.));
         app.account = Some(Account {
+            given_name: None,
+            name: None,
             api_key: "navigation-fixture".into(),
             api_base: "https://offline.invalid".into(),
             email: Some("fixture@example.test".into()),

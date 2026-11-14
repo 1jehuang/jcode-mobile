@@ -73,6 +73,11 @@ fn client_for(account: &Account) -> CloudClient {
     client().with_api_base(account.api_base.clone())
 }
 
+/// Refresh the saved account identity from the authenticated profile.
+pub fn refresh_account_profile(account: &Account) -> Result<Account, String> {
+    client_for(account).refresh_account_profile(account).map_err(|e| e.message)
+}
+
 /// A dedicated pinned connection for read-only inspection. No API server is started.
 /// How long an inspection may spend reaching the machine through the control
 /// plane. Inspections are glanceable: they never wait out provisioning.
@@ -241,6 +246,8 @@ pub fn account_from_jcode_config() -> Option<Account> {
         .filter(|b| b.starts_with("https://"))
         .unwrap_or_else(|| DEFAULT_API_BASE.into());
     Some(Account {
+        given_name: None,
+        name: None,
         api_key,
         email: get("JCODE_ACCOUNT_EMAIL"),
         api_base: api_base.trim_end_matches('/').into(),
@@ -662,8 +669,13 @@ mod tests {
     fn account_store_roundtrip() {
         let dir = std::env::temp_dir().join(format!("jm-acct-{}", std::process::id()));
         let store = AccountStore::new(dir.join("a.json"));
-        let acct =
-            Account { api_key: "k".into(), email: Some("e@x".into()), api_base: DEFAULT_API_BASE.into() };
+        let acct = Account {
+            api_key: "k".into(),
+            email: Some("e@x".into()),
+            given_name: Some("Ada".into()),
+            name: Some("Ada Lovelace".into()),
+            api_base: DEFAULT_API_BASE.into(),
+        };
         store.save(&acct).unwrap();
         assert_eq!(store.load(), Some(acct));
         store.clear();
@@ -671,8 +683,27 @@ mod tests {
     }
 
     #[test]
+    fn account_store_loads_legacy_json_without_names() {
+        let dir = std::env::temp_dir().join(format!("jm-acct-legacy-{}", std::process::id()));
+        let store = AccountStore::new(dir.join("a.json"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &store.path,
+            serde_json::json!({ "api_key": "legacy-key", "email": "legacy@example.test", "api_base": DEFAULT_API_BASE }).to_string(),
+        ).unwrap();
+        let account = store.load_file().expect("legacy account remains readable");
+        assert_eq!(account.api_key, "legacy-key");
+        assert_eq!(account.email.as_deref(), Some("legacy@example.test"));
+        assert_eq!(account.api_base, DEFAULT_API_BASE);
+        assert_eq!(account.given_name, None);
+        assert_eq!(account.name, None);
+        store.clear_file();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
     fn warm_master_is_scoped_to_credentials_endpoint_and_expiry() {
-        let account = Account { api_key: "key-a".into(), email: None, api_base: DEFAULT_API_BASE.into() };
+        let account = Account { given_name: None, name: None, api_key: "key-a".into(), email: None, api_base: DEFAULT_API_BASE.into() };
         let now = Instant::now();
         let entry = WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL };
         assert_eq!(entry.for_account(&account, now), Some(7));
@@ -688,7 +719,7 @@ mod tests {
     #[test]
     fn cancelled_connection_does_not_contact_cloud() {
         let account =
-            Account { api_key: "unused".into(), email: None, api_base: "http://127.0.0.1:1".into() };
+            Account { given_name: None, name: None, api_key: "unused".into(), email: None, api_base: "http://127.0.0.1:1".into() };
         let result = connect(&account, &|_| panic!("cancelled connection reported progress"), &|| true);
         assert!(matches!(result, Err(e) if e.kind == jcode_sdk::ErrorKind::Cancelled));
     }
@@ -698,6 +729,8 @@ mod tests {
         assert_eq!(client().client_name, "jcode-cli");
         assert_eq!(client().api_base, DEFAULT_API_BASE);
         let account = Account {
+            given_name: None,
+            name: None,
             api_key: "unused".into(),
             email: None,
             api_base: "https://cloud.example/v1".into(),
