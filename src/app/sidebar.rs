@@ -393,7 +393,7 @@ impl MobileApp {
         let current = self.session.session_id.clone();
         let open: Vec<String> = self.parked.iter().filter_map(|p| p.session.session_id.clone()).collect();
         let mut list = div().id("drawer-overview")
-            .debug_selector(|| "drawer-overview".into()).flex_none().max_h(relative(0.4))
+            .debug_selector(|| "drawer-overview".into())
             .overflow_y_scroll().flex().flex_col().pb(px(8.));
         list = list.child(self.render_synced_sessions(t, cx));
         // Any tab's list will do; the active one may not have fetched yet.
@@ -418,6 +418,14 @@ impl MobileApp {
             .collect();
         let pinned: Vec<SessionInfo> = visible.iter().filter(|s| s.saved).cloned().collect();
         let rest: Vec<SessionInfo> = visible.iter().filter(|s| !s.saved).cloned().collect();
+        // Reserve room for directory groups only when they actually exist.
+        // A synced-only drawer otherwise clips its rows into 40% of the panel
+        // while leaving most of the phone empty, especially at large text sizes.
+        list = if rest.is_empty() {
+            list.flex_1().min_h_0()
+        } else {
+            list.flex_none().max_h(relative(0.4))
+        };
         if searching && visible.is_empty() {
             list = list.child(
                 div()
@@ -603,7 +611,8 @@ impl MobileApp {
             }
         }
         div().id("drawer-sessions").debug_selector(|| "drawer-sessions".into())
-            .flex_1().min_h_0().flex().flex_col().overflow_hidden().child(list).child(directories)
+            .flex_1().min_h_0().flex().flex_col().overflow_hidden().child(list)
+            .when(!rest.is_empty(), |d| d.child(directories))
     }
 
     /// Compact desktop-style account pill. The entire 44pt row opens settings.
@@ -853,6 +862,28 @@ mod tests {
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert!(cx.debug_bounds("drawer-directory-sessions-/a").is_none());
         assert!(cx.debug_bounds("drawer-directory-sessions-/b").is_some());
+    }
+
+    #[gpui::test]
+    fn synced_only_drawer_uses_available_height_for_open_tabs(cx: &mut gpui::TestAppContext) {
+        use super::super::navigation_coverage::{drawer, mount, draw};
+        let (view, cx) = mount(cx);
+        view.update(cx, |app, cx| {
+            app.synced = super::super::synced_sessions::State::fixture();
+            app.session.session_list.clear();
+            cx.notify();
+        });
+        drawer(&view, cx);
+        for (width, height) in [(320., 568.), (390., 844.), (568., 320.)] {
+            view.update(cx, |app, cx| { app.device = Some((width, height)); cx.notify(); });
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            draw(cx);
+            let overview = cx.debug_bounds("drawer-overview").unwrap();
+            let available = cx.debug_bounds("drawer-sessions").unwrap();
+            let footer = cx.debug_bounds("drawer-account").unwrap();
+            assert!(overview.size.height >= available.size.height - px(1.), "synced-only drawer wastes available space: {overview:?} {available:?}");
+            assert!(overview.bottom() <= footer.top(), "drawer must not cover account controls");
+        }
     }
 
     #[test]

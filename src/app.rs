@@ -41,6 +41,8 @@ mod stream_motion;
 #[cfg(test)]
 mod synced_render_tests;
 #[cfg(test)]
+mod simulator_keyboard_tests;
+#[cfg(test)]
 mod streaming_tests;
 #[cfg(test)]
 mod performance_tests;
@@ -2656,11 +2658,19 @@ impl MobileApp {
         cx.notify();
     }
 
+    fn settings_machine_label(&self) -> String {
+        if self.is_local_chat() {
+            self.local_chat_host().filter(|host| !host.trim().is_empty()).unwrap_or("Your computer").to_owned()
+        } else {
+            "jcode-cloud".to_owned()
+        }
+    }
+
     fn render_settings(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let s = &self.session;
         let info = [
             ("Account", self.account.as_ref().and_then(|a| a.email.clone())),
-            ("Machine", Some("jcode-cloud".to_string())),
+            ("Machine", Some(self.settings_machine_label())),
             ("Version", s.server_version.clone()),
             ("Model", s.model_name.clone()),
             ("Provider", s.provider_name.clone()),
@@ -2727,14 +2737,18 @@ impl MobileApp {
                                 this.screen = Screen::Chat;
                             },
                         )))
-                        .child(outline_button("clear", "Clear conversation", true, t).on_click(cx.listener(
+                        .child(outline_button("clear", "Clear conversation", !self.is_local_chat(), t).on_click(cx.listener(
                             |this, _, _, cx| {
+                                if this.is_local_chat() { return; }
                                 haptics::play(Haptic::Rigid);
                                 this.session.apply_intent(LocalIntent::ClearedConversation);
                                 this.send(|id| Request::Clear { id });
                                 this.screen = Screen::Chat;
                                 cx.notify()
                             },
+                        )))
+                        .when(self.is_local_chat(), |d| d.child(label(
+                            "To clear this conversation, use Jcode on your computer.", t.text_muted, 11.,
                         )))
                         .child(machine)
                         .children(apple_link)
@@ -2897,11 +2911,12 @@ impl Render for MobileApp {
         let sim_kb = self.device.is_some()
             && kb_env.as_deref() != Some("0")
             && (focused_input.is_some() || kb_env.is_some());
+        let sim_keyboard_height = self.device.map_or(0., |(w, h)| crate::sim_keyboard::height_for_viewport(w, h));
         let (top, bottom) = if self.device.is_none() {
             let e = window.window_insets().effective();
             (f32::from(e.top), f32::from(e.bottom))
         } else {
-            let kb = if sim_kb { crate::sim_keyboard::HEIGHT } else { 0. };
+            let kb = if sim_kb { sim_keyboard_height } else { 0. };
             (self.safe.top, self.safe.bottom.max(kb))
         };
         self.keyboard_up = f32::from(window.window_insets().ime.bottom) > 0. || sim_kb;
@@ -3015,12 +3030,13 @@ impl Render for MobileApp {
                         .absolute()
                         .left_0()
                         .right_0()
-                        .h(px(crate::sim_keyboard::HEIGHT))
-                        .bottom(px(bottom - crate::sim_keyboard::HEIGHT))
+                        .h(px(sim_keyboard_height))
+                        .bottom(px(bottom - sim_keyboard_height))
                         .child(crate::sim_keyboard::render(
                             &self.sim_kb,
                             &self.kb_config,
                             self.safe.bottom,
+                            sim_keyboard_height,
                             on_key,
                             &t,
                         )),
@@ -3048,20 +3064,20 @@ impl Render for MobileApp {
                         .rounded(px(48.))
                         .border_1()
                         .border_color(t.input_border)
-                        .child(
-                            // Dynamic Island and home indicator, for honest inset checks.
+                        .when(self.safe.top >= 47., |d| d.child(
+                            // Only paint hardware inside its reserved safe area.
                             div()
                                 .absolute()
                                 .top(px(11.))
                                 .left(px(w / 2. - 63.))
                                 .w(px(126.))
-                                .h(px(37.))
+                                .h(px(36.))
                                 .rounded_full()
                                 .bg(gpui::black())
                                 .border_1()
                                 .border_color(t.border),
-                        )
-                        .child(
+                        ))
+                        .when(self.safe.bottom >= 13., |d| d.child(
                             div()
                                 .absolute()
                                 .bottom(px(8.))
@@ -3070,7 +3086,7 @@ impl Render for MobileApp {
                                 .h(px(5.))
                                 .rounded_full()
                                 .bg(t.text),
-                        )
+                        ))
                         // GPUI overflow clipping is rectangular, even on a
                         // rounded div. Paint the bezel last so drawers and
                         // sheets cannot leak into the preview's corners.

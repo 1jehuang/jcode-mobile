@@ -76,6 +76,46 @@ fn every_connection_phase_has_explicit_status_and_bounded_phone_presentation(
 }
 
 #[gpui::test]
+fn local_settings_clear_cannot_erase_a_computer_transcript(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let local = serde_json::from_value(serde_json::json!({
+            "session_id":"settings-local", "source":"local", "live":true,
+            "host":"test-laptop", "title":"Computer transcript"
+        }))
+        .unwrap();
+        app.open_local_chat(local, None, cx);
+        app.session.transcript.push(TranscriptEntry {
+            id: 1,
+            role: Role::User,
+            text: "Keep computer history".into(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            is_streaming: false,
+            is_queued: false,
+        });
+        app.screen = Screen::Settings;
+        cx.notify();
+    });
+    super::account_coverage::settle_settings_fixture(&view, cx);
+    super::navigation_coverage::tap(cx, "clear");
+    view.read_with(cx, |app, _| {
+        assert_eq!(app.settings_machine_label(), "test-laptop");
+        assert_eq!(
+            app.session.transcript.len(),
+            1,
+            "unsupported local clear must never erase the transcript optimistically"
+        );
+        assert_eq!(app.session.transcript[0].text, "Keep computer history");
+        assert!(matches!(app.screen, Screen::Settings));
+    });
+    view.update(cx, |app, cx| {
+        app.focus_tab(0, cx);
+        assert_eq!(app.settings_machine_label(), "jcode-cloud");
+    });
+}
+
+#[gpui::test]
 fn settings_actions_stay_inside_narrow_phone_width(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     for width in [320., 390.] {

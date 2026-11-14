@@ -240,7 +240,7 @@
         },
         {
           "kind": "gap",
-          "note": "Every simultaneous metadata/voice gesture combination and native recording cancellation timing are not independently covered. The live-local uncertain-delivery acknowledgement handler is state-tested, but its rendered button activation has no dedicated hit-tested regression.",
+          "note": "Every simultaneous metadata/voice gesture combination and native recording cancellation timing are not independently covered.",
           "tests": []
         },
         {
@@ -250,6 +250,16 @@
             "src/app/local_control_coverage.rs::cancel_dictation_touch_clears_synthetic_busy_start_and_recovers",
             "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat",
             "src/app/voice_live_tests.rs::microphone_and_connection_status_stay_above_the_input"
+          ]
+        },
+        {
+          "kind": "hit_tested",
+          "note": "Actual drawn local-delivery-checked taps preserve a newer poll-outage or offline warning while releasing delivery uncertainty. Tab taps exercise terminal POST acknowledgement, queued/running/done transitions and independent drafts. Results are synthetic, not a socket acceptance test.",
+          "tests": [
+            "src/app/synced_chat_tests.rs::drawn_delivery_ack_preserves_poll_outage_until_recovery",
+            "src/app/synced_chat_tests.rs::drawn_delivery_ack_keeps_computer_offline_explanation",
+            "src/app/synced_chat_tests.rs::drawn_terminal_submission_across_tabs_does_not_wait_for_another_ack",
+            "src/app/synced_chat_tests.rs::drawn_parked_pending_send_keeps_new_draft_and_replaces_transcript_in_order"
           ]
         },
         {
@@ -371,9 +381,11 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Controls are scrolled into the phone viewport before raw input. New/clear/delete guard/sign-out behavior is asserted locally, not actual deletion execution.",
+          "note": "Controls are scrolled into the phone viewport before raw input. New/clear/delete guard/sign-out behavior is asserted locally, not actual deletion execution. A local-chat Clear tap preserves the computer transcript and Settings route, and the machine label identifies its host.",
           "tests": [
-            "src/app/account_coverage.rs::settings_new_clear_delete_guard_and_signout_controls_are_hit_tested"
+            "src/app/account_coverage.rs::settings_new_clear_delete_guard_and_signout_controls_are_hit_tested",
+            "src/app/status_coverage.rs::local_settings_clear_cannot_erase_a_computer_transcript",
+            "src/app/simulator_keyboard_tests.rs::simulator_keyboard_settings_narrow_save_preserves_draft"
           ]
         },
         {
@@ -1480,7 +1492,9 @@
           "tests": [
             "src/app/navigation_coverage.rs::directory_sheet_hit_test_invalid_same_valid_and_dismiss",
             "src/app/navigation_coverage.rs::directory_recent_row_and_start_suggestions_hit_test",
-            "src/app/modal_ownership_coverage.rs::directory_overlay_owns_metadata_and_header_touches"
+            "src/app/modal_ownership_coverage.rs::directory_overlay_owns_metadata_and_header_touches",
+            "src/app/simulator_keyboard_tests.rs::simulator_keyboard_directory_narrow_go_is_above_keys",
+            "src/app/simulator_keyboard_tests.rs::simulator_keyboard_landscape_directory_go_remains_reachable"
           ]
         },
         {
@@ -1723,8 +1737,9 @@
         },
         {
           "kind": "state_model_mocked",
-          "note": "Long-list header reachability and search matching use deterministic fixture metadata.",
+          "note": "Long-list header reachability and search matching use deterministic fixture metadata. Synced-only drawers use the full available list viewport at320x568,390x844 and568x320 without covering the account footer.",
           "tests": [
+            "src/app/sidebar.rs::tests::synced_only_drawer_uses_available_height_for_open_tabs",
             "src/app/sidebar.rs::tests::directory_headers_remain_visible_below_long_session_list",
             "src/app/sidebar.rs::tests::search_matches_title_label_and_dir"
           ]
