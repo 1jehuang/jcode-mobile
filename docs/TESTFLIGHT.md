@@ -7,6 +7,7 @@
 - Hosted compile check passed. Final hosted core library tests and all 19 filtered synced-session UI tests passed after fixing the expanded Live Activity capacity expectation and allowing the protocol error diagnostic. Hosted connectivity temporarily failed, then recovered. No local compilation was enabled on battery.
 - IPA SHA-256: `8958f4bf501bdf719a6d1c0169677d73e0b7538f6e46c4b9a191e95af911c39c`. IPA and unstripped binary archived under `~/.appstoreconnect/builds/1794621085/`.
 - Apple upload `COMPLETE`. Apple build ID `9d9b480b-0edb-4ae9-b226-a4df83988ca2`. Added to Public Beta with updated test notes, submission returned `WAITING_FOR_REVIEW` at approximately 18:03 Pacific (`2026-11-14T02:03:33Z`). This records submission, not approval.
+- Follow-up at 18:04 Pacific confirmed external and internal `IN_BETA_TESTING`, with automatic notifications enabled. The build is available for external testing.
 
 ## Public beta: build 1794498559 submitted November 13, 2026 (Pacific)
 
