@@ -29,6 +29,7 @@ pub enum PushEvent {
 }
 
 static TX: Mutex<Option<UnboundedSender<PushEvent>>> = Mutex::new(None);
+static PENDING: Mutex<Vec<PushEvent>> = Mutex::new(Vec::new());
 /// Session on screen. Pushes for it are not bannered while foregrounded.
 static VISIBLE: Mutex<Option<String>> = Mutex::new(None);
 /// True once an APNs token is registered, so local fallbacks stand down.
@@ -37,13 +38,19 @@ static REMOTE_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 fn emit(event: PushEvent) {
     if let Some(tx) = TX.lock().unwrap().as_ref() {
         let _ = tx.unbounded_send(event);
+    } else {
+        let mut pending = PENDING.lock().unwrap();
+        if pending.len() < 32 { pending.push(event); }
     }
 }
 
 /// Install handlers. Call once from the main thread at startup.
 pub fn install() -> UnboundedReceiver<PushEvent> {
     let (tx, rx) = unbounded();
-    *TX.lock().unwrap() = Some(tx);
+    let mut installed = TX.lock().unwrap();
+    for event in PENDING.lock().unwrap().drain(..) { let _ = tx.unbounded_send(event); }
+    *installed = Some(tx);
+    drop(installed);
     imp::install();
     rx
 }
@@ -331,7 +338,33 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+pub(crate) fn android_foreground() { emit(PushEvent::Foreground); }
+
+#[cfg(target_os = "android")]
+pub(crate) fn android_reply(session_id: String, text: String) {
+    if !session_id.is_empty() && !text.trim().is_empty() {
+        emit(PushEvent::Reply { session_id, text });
+    }
+}
+
+#[cfg(target_os = "android")]
+mod imp {
+    pub fn install() {
+        log::warn!("Android remote push is unavailable: server registration supports APNs only, not FCM");
+        let _ = crate::android_services::call_bool("notificationPermission", "");
+    }
+    pub fn clear_badge() { let _ = crate::android_services::call_bool("clearNotifications", ""); }
+    pub fn request_permission() { let _ = crate::android_services::call_bool("notificationPermission", ""); }
+    // Android does not grant arbitrary socket runtime without a foreground service.
+    pub fn keep_alive(_busy: bool) {}
+    pub fn post(alert: &super::Alert) {
+        let json = serde_json::json!({"session_id": alert.session_id, "title": alert.title, "body": alert.body});
+        let _ = crate::android_services::call_bool("postNotification", &json.to_string());
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     use super::Alert;
     pub fn install() {}

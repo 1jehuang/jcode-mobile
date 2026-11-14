@@ -22,7 +22,19 @@ pub fn close() {
     imp::close();
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    use super::*;
+    // Android's external browser shares login cookies and accepts device OAuth.
+    // It is not an app-owned sheet, so close cannot dismiss it. Keep dismissal
+    // false and let approval, expiry, or the app's explicit Cancel end polling.
+    pub fn open(url: &str, _dismissed: Arc<AtomicBool>) -> bool {
+        crate::android_services::call_bool("openUrl", url)
+    }
+    pub fn close() {}
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     use super::*;
 

@@ -57,7 +57,14 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    pub fn share_text(text: &str) -> bool {
+        crate::android_services::call_bool("shareText", text)
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     pub fn share_text(_: &str) -> bool {
         false

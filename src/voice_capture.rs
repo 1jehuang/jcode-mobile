@@ -280,14 +280,14 @@ fn current_wav(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 pub struct Recording {
-    #[cfg(any(target_os = "ios", target_os = "linux"))]
+    #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
     worker: Option<imp::Worker>,
 }
 
 impl Recording {
     /// Nonblocking capture/stream failure polling. Errors are retained until drop.
     pub fn error(&self) -> Option<String> {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         {
             self.worker
                 .as_ref()?
@@ -298,7 +298,7 @@ impl Recording {
                 .error
                 .clone()
         }
-        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
         {
             None
         }
@@ -313,11 +313,11 @@ impl Recording {
     /// Nonblocking demand/poll API. The first call requests a worker-built WAV;
     /// poll until Some, then request the next snapshot at the desired cadence.
     pub fn snapshot(&self) -> Option<Vec<u8>> {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         {
             self.worker.as_ref()?.live.snapshot()
         }
-        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
         {
             None
         }
@@ -325,7 +325,7 @@ impl Recording {
 
     /// Latest (at most 24) normalized microphone RMS amplitudes, oldest first.
     pub fn levels(&self) -> Vec<f32> {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         {
             self.worker
                 .as_ref()
@@ -333,7 +333,7 @@ impl Recording {
                 .map(|s| s.levels.iter().copied().collect())
                 .unwrap_or_default()
         }
-        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
         {
             Vec::new()
         }
@@ -344,13 +344,13 @@ impl Recording {
     }
 
     fn start_inner(pcm: Option<tokio::sync::mpsc::Sender<Vec<i16>>>) -> Result<Self, String> {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         {
             Ok(Self {
                 worker: Some(imp::start(pcm)?),
             })
         }
-        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
         {
             let _ = pcm;
             Err("Microphone recording is supported only on iOS and Linux, not on this desktop preview platform.".into())
@@ -358,14 +358,14 @@ impl Recording {
     }
 
     pub fn stop(mut self) -> Result<Vec<u8>, String> {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         {
             self.worker
                 .take()
                 .ok_or("Recording already stopped")?
                 .finish(true)
         }
-        #[cfg(not(any(target_os = "ios", target_os = "linux")))]
+        #[cfg(not(any(target_os = "ios", target_os = "linux", target_os = "android")))]
         {
             let _ = &mut self;
             Err("Microphone recording is supported only on iOS and Linux, not on this desktop preview platform.".into())
@@ -375,9 +375,124 @@ impl Recording {
 
 impl Drop for Recording {
     fn drop(&mut self) {
-        #[cfg(any(target_os = "ios", target_os = "linux"))]
+        #[cfg(any(target_os = "ios", target_os = "linux", target_os = "android"))]
         if let Some(worker) = self.worker.take() {
             worker.cancel();
+        }
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_wav(pcm: &[u8]) -> Result<Vec<u8>, String> {
+    if pcm.is_empty() || pcm.len() % 2 != 0 || pcm.len() > 9_600_000 {
+        return Err("Microphone returned empty, incomplete, or over-limit audio".into());
+    }
+    let size = pcm.len() as u32;
+    let mut bytes = Vec::with_capacity(44 + pcm.len());
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + size).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&16000u32.to_le_bytes());
+    bytes.extend_from_slice(&32000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&size.to_le_bytes());
+    bytes.extend_from_slice(pcm);
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod android_audio_tests {
+    #[test]
+    fn wav_validates_limits_and_encodes_mono_16khz() {
+        assert!(super::android_wav(&[]).is_err());
+        assert!(super::android_wav(&[1]).is_err());
+        assert!(super::android_wav(&vec![0; 9_600_002]).is_err());
+        let wav = super::android_wav(&[1, 0, 255, 127]).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16000);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        assert_eq!(&wav[44..], &[1, 0, 255, 127]);
+    }
+}
+
+#[cfg(target_os = "android")]
+mod imp {
+    use super::*;
+    use std::{sync::{Arc, mpsc}, thread, time::{Duration, Instant}};
+    static RESERVED: AtomicBool = AtomicBool::new(false);
+    struct Reservation;
+    impl Drop for Reservation {
+        fn drop(&mut self) { RESERVED.store(false, Ordering::Release); }
+    }
+    struct Capture;
+    impl Drop for Capture {
+        fn drop(&mut self) { crate::android_services::audio_stop(); }
+    }
+    pub(super) struct Worker {
+        pub(super) live: Arc<Live>,
+        command: mpsc::Sender<bool>,
+        join: thread::JoinHandle<Result<Vec<u8>, String>>,
+    }
+    impl Worker {
+        pub(super) fn cancel(self) { let _ = self.command.send(false); }
+        pub(super) fn finish(self, keep: bool) -> Result<Vec<u8>, String> {
+            let _ = self.command.send(keep);
+            self.join.join().map_err(|_| "Microphone worker panicked".to_owned())?
+        }
+    }
+    pub(super) fn start(pcm: Option<tokio::sync::mpsc::Sender<Vec<i16>>>) -> Result<Worker, String> {
+        RESERVED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "Another microphone recording is active".to_owned())?;
+        let reservation = Reservation;
+        let live = Arc::new(Live::default());
+        let worker_live = live.clone();
+        let (command, commands) = mpsc::channel();
+        let (ready, started) = mpsc::sync_channel(1);
+        let join = thread::Builder::new().name("android-audio".into()).spawn(move || {
+            let _reservation = reservation;
+            if let Err(error) = crate::android_services::audio_start() {
+                let _ = ready.send(Err(error));
+                return Ok(Vec::new());
+            }
+            let _capture = Capture;
+            if ready.send(Ok(())).is_err() { return Ok(Vec::new()); }
+            let result = (|| {
+                let mut stream = PcmStream::new(pcm);
+                let mut meter = PcmMeter::default();
+                let mut audio = Vec::new();
+                let start = Instant::now();
+                loop {
+                    match commands.try_recv() {
+                        Ok(false) | Err(mpsc::TryRecvError::Disconnected) => return Ok(Vec::new()),
+                        Ok(true) => break,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    if start.elapsed() >= Duration::from_secs(300) { break; }
+                    let bytes = crate::android_services::audio_read()?;
+                    if audio.len() + bytes.len() > 9_600_000 { break; }
+                    stream.push(&bytes)?;
+                    meter.push(&bytes, &worker_live);
+                    audio.extend_from_slice(&bytes);
+                    if worker_live.requested.swap(false, Ordering::AcqRel) {
+                        worker_live.publish(android_wav(&audio).ok());
+                    }
+                    thread::sleep(Duration::from_millis(20));
+                }
+                stream.finish()?;
+                android_wav(&audio)
+            })();
+            worker_live.complete(&result);
+            result
+        }).map_err(|e| e.to_string())?;
+        match started.recv() {
+            Ok(Ok(())) => Ok(Worker { live, command, join }),
+            Ok(Err(error)) => { let _ = join.join(); Err(error) },
+            Err(_) => { let _ = join.join(); Err("Microphone worker failed to start".into()) }
         }
     }
 }
@@ -1448,7 +1563,7 @@ mod imp {
     }
 }
 
-#[cfg(all(test, not(any(target_os = "ios", target_os = "linux"))))]
+#[cfg(all(test, not(any(target_os = "ios", target_os = "linux", target_os = "android"))))]
 mod tests {
     #[test]
     fn preview_cannot_record() {

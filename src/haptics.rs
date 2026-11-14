@@ -119,7 +119,18 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    pub fn play(h: super::Haptic) {
+        use super::Haptic::*;
+        crate::android_services::haptic(match h {
+            Light => 0, Medium => 1, Rigid => 2, Selection => 3,
+            Success => 4, Warning => 5, Error => 6,
+        });
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     pub fn play(_: super::Haptic) {}
 }

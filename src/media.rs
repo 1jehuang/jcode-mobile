@@ -37,7 +37,7 @@ pub fn install() -> UnboundedReceiver<Event> {
     rx
 }
 
-fn emit(event: Event) {
+pub(crate) fn emit(event: Event) {
     if let Some(tx) = TX.lock().unwrap().as_ref() {
         let _ = tx.unbounded_send(event);
     }
@@ -119,7 +119,14 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    pub(super) fn pick(source: super::Source, limit: usize) -> bool {
+        crate::android_services::pick(source == super::Source::Camera, limit)
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     use super::{Event, Source, emit};
     use jcode_mobile_core::SessionImage;

@@ -152,7 +152,20 @@ pub fn clear_index() {
     imp::clear_index();
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    pub fn read() -> (f32, bool, bool) { crate::android_services::settings() }
+    pub fn install() {}
+    pub fn index(sessions: &[(String, String, Option<String>)]) {
+        let json = serde_json::to_string(sessions).unwrap_or_default();
+        if !crate::android_services::call_bool("indexSessions", &json) {
+            log::debug!("Android launcher session shortcuts unavailable");
+        }
+    }
+    pub fn clear_index() { let _ = crate::android_services::call_bool("indexSessions", "[]"); }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     pub fn read() -> (f32, bool, bool) {
         let scale = std::env::var("JCODE_MOBILE_TEXT_SCALE")

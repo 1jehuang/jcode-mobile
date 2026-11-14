@@ -23,12 +23,17 @@ pub enum DeepLink {
 }
 
 static TX: Mutex<Option<UnboundedSender<DeepLink>>> = Mutex::new(None);
+// Android may deliver its launch Intent before GPUI installs the receiver.
+static PENDING: Mutex<Vec<DeepLink>> = Mutex::new(Vec::new());
 
 /// Channel of parsed deep links. Call once from the app. Also donates the
 /// "New jcode session" / "Ask jcode" Shortcuts actions.
 pub fn install() -> UnboundedReceiver<DeepLink> {
     let (tx, rx) = unbounded();
-    *TX.lock().unwrap() = Some(tx);
+    let mut installed = TX.lock().unwrap();
+    for link in PENDING.lock().unwrap().drain(..) { let _ = tx.unbounded_send(link); }
+    *installed = Some(tx);
+    drop(installed);
     imp::donate_shortcuts();
     rx
 }
@@ -40,6 +45,9 @@ pub fn handle_urls(urls: Vec<String>) {
             Some(link) => {
                 if let Some(tx) = TX.lock().unwrap().as_ref() {
                     let _ = tx.unbounded_send(link);
+                } else {
+                    let mut pending = PENDING.lock().unwrap();
+                    if pending.len() < 32 { pending.push(link); }
                 }
             }
             None => log::warn!("deep link: ignored {url}"),
@@ -238,7 +246,22 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(target_os = "android")]
+mod imp {
+    pub(super) fn install_token_callback() {
+        // No ActivityKit/FCM token is synthesized. Server transport is APNs-only.
+        let _ = super::emit_token;
+    }
+    pub(super) fn donate_shortcuts() {}
+    pub(super) fn apply(state: &super::AgentsState) {
+        let text = if state.is_empty() { String::new() } else { super::headline(state) };
+        if !crate::android_services::call_bool("syncLive", &text) {
+            log::debug!("Android ongoing agent notification unavailable");
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod imp {
     pub(super) fn install_token_callback() {
         let _ = super::emit_token;
