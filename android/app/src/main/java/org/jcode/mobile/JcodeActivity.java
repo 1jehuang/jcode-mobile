@@ -12,8 +12,9 @@ public final class JcodeActivity extends NativeActivity {
     private boolean resumed;
 
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
+        // Install app-private storage/services before NativeActivity starts Rust.
         services = new AndroidServices(this);
+        super.onCreate(state);
     }
 
     @Override protected void onResume() {
