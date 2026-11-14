@@ -13,6 +13,9 @@ STAGE="$(mktemp -d "$OUT/bundle.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 "$TOOLS/aapt2" convert --output-format proto -o "$STAGE/proto.apk" "$OUT/JcodeMobile.apk"
 python3 "$ROOT/scripts/android-bundle.py" "$STAGE/proto.apk" "$STAGE/base.zip"
+if [[ -z "${JAVA_HOME:-}" && -x "$HOME/Android/jdk-21/bin/java" ]]; then
+    export JAVA_HOME="$HOME/Android/jdk-21"
+fi
 JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}"
 "${JAVA_BIN}java" -jar "$BUNDLETOOL_JAR" build-bundle --modules="$STAGE/base.zip" --output="$OUT/JcodeMobile-unsigned.aab" --overwrite
 "${JAVA_BIN}java" -jar "$BUNDLETOOL_JAR" validate --bundle="$OUT/JcodeMobile-unsigned.aab"

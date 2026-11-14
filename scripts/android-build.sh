@@ -10,6 +10,10 @@ PLATFORM="$SDK/platforms/android-${ANDROID_API:-35}/android.jar"
 OUT="$ROOT/target/android"
 ABIS="${ANDROID_ABIS:-arm64-v8a x86_64}"
 PROFILE="${ANDROID_PROFILE:-debug}"
+# Reuse the existing SDK-local JDK when no system compiler is on PATH.
+if [[ -z "${JAVA_HOME:-}" && -x "$HOME/Android/jdk-21/bin/javac" ]]; then
+    export JAVA_HOME="$HOME/Android/jdk-21"
+fi
 JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}"
 [[ "$PROFILE" == debug || "$PROFILE" == release ]] || { echo 'ANDROID_PROFILE must be debug or release' >&2; exit 1; }
 for tool in "${JAVA_BIN}javac" "${JAVA_BIN}jar" "${JAVA_BIN}keytool" zip justrust; do

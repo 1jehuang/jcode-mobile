@@ -6,9 +6,13 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <queries>
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
+    </queries>
     <application android:label="Jcode" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true" android:theme="@android:style/Theme.Material.NoActionBar" android:extractNativeLibs="false">
+        <provider android:name=".AndroidServices$AttachmentProvider" android:authorities="org.jcode.mobile.attachments" android:exported="false" android:grantUriPermissions="true" />
         <!-- Service-only NativeActivity subclass. GPUI owns the entire window. -->
-        <activity android:name=".JcodeActivity" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
+        <activity android:name=".JcodeActivity" android:launchMode="singleTop" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="jcode_mobile" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

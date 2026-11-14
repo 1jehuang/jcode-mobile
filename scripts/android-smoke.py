@@ -36,6 +36,8 @@ def main():
     (OUT / "logcat.txt").write_text(logs)
     (OUT / "launch.png").write_bytes(adb("exec-out", "screencap", "-p", binary=True))
     assert "FATAL EXCEPTION" not in logs and "Fatal signal" not in logs, "Native launch crashed"
+    assert "shared GPUI NativeActivity bootstrap" in logs, "Shared app native bootstrap was not reached"
+    assert "jcode-mobile: window opened" in logs, "Shared MobileApp window was not opened"
     adb("shell", "input", "keyevent", "KEYCODE_HOME")
     adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
     time.sleep(2)
