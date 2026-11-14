@@ -60,6 +60,9 @@ pub use jcode_sdk::cloud::{
 pub type DeviceStart = DeviceLogin;
 
 /// Mobile identity for user agents, Apple sign-in and SSH key comments.
+#[cfg(target_os = "android")]
+pub const CLIENT_NAME: &str = "jcode-android";
+#[cfg(not(target_os = "android"))]
 pub const CLIENT_NAME: &str = "jcode-ios";
 
 /// The cloud email and device auth endpoints require this exact protocol
@@ -742,7 +745,7 @@ mod tests {
         };
         assert_eq!(client_for(&account).client_name, "jcode-cli");
         assert_eq!(client_for(&account).api_base, account.api_base);
-        assert_eq!(CLIENT_NAME, "jcode-ios");
+        assert_eq!(CLIENT_NAME, if cfg!(target_os = "android") { "jcode-android" } else { "jcode-ios" });
     }
 
     #[test]

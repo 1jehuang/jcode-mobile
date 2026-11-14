@@ -616,7 +616,7 @@ impl CloudSsh {
                     Box::new(transport),
                     ConnectOptions {
                         socket_path: Some(std::path::PathBuf::new()),
-                        client_name: concat!("jcode-ios/", env!("CARGO_PKG_VERSION")).into(),
+                        client_name: format!("{}/{}", crate::cloud::CLIENT_NAME, env!("CARGO_PKG_VERSION")),
                         ensure_runtime: false,
                         supports_user_response: false,
                         request_timeout: Some(REQUEST_TIMEOUT),

@@ -151,15 +151,17 @@ public final class SmokeInstrumentation extends Instrumentation {
             require(request("send", "text", cancelMessage).getBoolean("ok"), "cancellable send failed");
             long deadline = android.os.SystemClock.elapsedRealtime() + 10000;
             boolean sawPartial = false;
+            JSONObject partialState = new JSONObject();
             do {
-                JSONArray messages = request("poll").getJSONArray("messages");
-                if (messages.length() > 0) {
-                    JSONObject tail = messages.getJSONObject(messages.length() - 1);
-                    sawPartial = "assistant".equals(tail.optString("role")) && "actual ".equals(tail.optString("text"));
+                partialState = request("poll");
+                JSONArray messages = partialState.getJSONArray("messages");
+                for (int i = 0; i < messages.length(); i++) {
+                    JSONObject message = messages.getJSONObject(i);
+                    if ("assistant".equals(message.optString("role")) && "actual".equals(message.optString("text").trim()) && message.optBoolean("streaming")) sawPartial = true;
                 }
                 if (!sawPartial) Thread.sleep(50);
             } while (!sawPartial && android.os.SystemClock.elapsedRealtime() < deadline);
-            require(sawPartial, "slow fixture must deliver partial streaming text before cancellation");
+            require(sawPartial, "slow fixture must deliver partial streaming text before cancellation: " + partialState);
             require(request("cancel").getBoolean("ok"), "cancellation command failed");
             JSONObject cancelled = waitFor("is_processing", "false");
             JSONArray messages = cancelled.getJSONArray("messages");

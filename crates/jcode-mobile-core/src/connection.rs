@@ -157,8 +157,6 @@ impl Connection {
     }
 }
 
-const CLIENT_NAME: &str = concat!("jcode-ios/", env!("CARGO_PKG_VERSION"));
-
 enum Failure {
     /// Retrying cannot help (sign-in expired, no subscription, bad host key).
     Fatal(String),
@@ -264,7 +262,7 @@ fn open(config: &Config, inbox: &Mutex<Inbox>, emit: &dyn Fn(ConnectionOutput)) 
         }
         Endpoint::Custom(factory) => {
             let options = ConnectOptions {
-                client_name: CLIENT_NAME.into(),
+                client_name: format!("{}/{}", crate::cloud::CLIENT_NAME, env!("CARGO_PKG_VERSION")),
                 ensure_runtime: false,
                 ..Default::default()
             };

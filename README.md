@@ -2,7 +2,7 @@
 
 A native mobile client for Jcode. The iPhone UI is built in Rust with GPUI, and Android uses native framework widgets over the same Rust core. Follow coding sessions, send messages, and work with your agents from your phone.
 
-The same app also runs in a phone-sized desktop window for development. The client connects to a Jcode backend, it does not run the coding agent locally on your iPhone.
+The GPUI app also runs in a phone-sized desktop window for development. Both mobile clients connect to a Jcode backend rather than running the coding agent locally on the phone.
 
 **Try it:** join the public TestFlight beta at https://testflight.apple.com/join/ZHSYwcyf (needs a Jcode account).
 
