@@ -25,9 +25,9 @@ pub enum Mark {
 }
 
 pub fn mark(t: &TodoItem) -> Mark {
-    if policy::todo_completely_blocked(t) { return Mark::CompletelyBlocked; }
+    if policy::todo_requires_user_auth(t) { return Mark::CompletelyBlocked; }
     let incomplete = policy::is_incomplete_todo(t);
-    if incomplete && (policy::todo_has_external_blocker(t) || !t.blocked_by.is_empty()) { return Mark::Blocked; }
+    if incomplete && (!t.waiting_on.is_empty() || !t.blocked_by.is_empty()) { return Mark::Blocked; }
     if policy::todo_status_is_completed(&t.status) { return Mark::Done; }
     if policy::todo_status_is_cancelled(&t.status) { return Mark::Cancelled; }
     match t.status.as_str() {
@@ -80,11 +80,59 @@ impl Board {
         self.items().find(|t| mark(t).active()).or_else(|| self.items().find(|t| !mark(t).finished()))
     }
     pub fn blockers(&self) -> impl Iterator<Item = (&TodoItem, &str)> {
-        self.items().filter_map(|t| t.completely_blocked.as_ref().filter(|_| policy::todo_completely_blocked(t)).map(|b| (t, b.reason.as_str())))
+        self.items().filter_map(|t| t.requires_user_auth.as_ref().filter(|_| policy::todo_requires_user_auth(t)).map(|b| (t, b.reason.as_str())))
     }
 }
 
 fn clean(s: Option<&str>) -> Option<String> { s.map(str::trim).filter(|s| !s.is_empty()).map(String::from) }
+
+// These are display-only migrations. Never send the synthesized legacy wait
+// back to the server as a real background-task dependency.
+const LEGACY_EXTERNAL_WAIT: &str = "mobile:legacy-external-blocker";
+
+fn normalize_item(value: &mut Value) {
+    let Some(fields) = value.as_object_mut() else { return };
+    if !fields.contains_key("requires_user_auth") {
+        if let Some(blocker) = fields.get("completely_blocked").cloned() {
+            fields.insert("requires_user_auth".into(), blocker);
+        }
+    }
+    if let Some(wait) = fields.get("waiting_on").filter(|v| v.is_object()).cloned() {
+        fields.insert("waiting_on".into(), wait.get("ids").cloned().unwrap_or(Value::Null));
+        fields.insert("waiting_reason".into(), wait.get("reason").cloned().unwrap_or(Value::Null));
+    } else if !fields.contains_key("waiting_on") {
+        if let Some(blocker) = fields.get("external_blocker").cloned() {
+            let ids = if blocker.is_null() { serde_json::json!([]) } else { serde_json::json!([LEGACY_EXTERNAL_WAIT]) };
+            fields.insert("waiting_on".into(), ids);
+            fields.insert("waiting_reason".into(), blocker.get("reason").cloned().unwrap_or(Value::Null));
+        }
+    }
+}
+
+/// Preserve old mobile caches before the modern SDK discards legacy blockers.
+pub fn deserialize_optional_snapshot<'de, D>(deserializer: D) -> Result<Option<TodoSnapshot>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::Deserialize;
+    let Some(mut value) = Option::<Value>::deserialize(deserializer)? else { return Ok(None) };
+    if let Some(todos) = value.get_mut("todos").and_then(Value::as_array_mut) {
+        for todo in todos { normalize_item(todo); }
+    }
+    serde_json::from_value(value).map(Some).map_err(serde::de::Error::custom)
+}
+
+fn apply_pause_patch(todo: &mut TodoItem, patch: &Value) {
+    let mut patch = patch.clone();
+    normalize_item(&mut patch);
+    if let Some(auth) = patch.get("requires_user_auth") {
+        todo.requires_user_auth = serde_json::from_value(auth.clone()).ok();
+    }
+    if let Some(wait) = patch.get("waiting_on") {
+        todo.waiting_on = serde_json::from_value(wait.clone()).unwrap_or_default();
+        todo.waiting_reason = patch.get("waiting_reason").and_then(Value::as_str).map(String::from);
+    } else if let Some(reason) = patch.get("waiting_reason") {
+        todo.waiting_reason = reason.as_str().map(String::from);
+    }
+}
 
 pub fn board(snapshot: &TodoSnapshot) -> Board {
     let refs: Vec<&TodoItem> = snapshot.todos.iter().collect();
@@ -121,7 +169,12 @@ pub fn from_transcript(transcript: &[TranscriptEntry]) -> TodoSnapshot {
 }
 
 fn item(v: &Value, phase: Option<u32>, lane: Option<&str>, owner: Option<&str>) -> Option<TodoItem> {
-    let mut t: TodoItem = serde_json::from_value(v.clone()).unwrap_or_default();
+    let mut normalized = v.clone();
+    normalize_item(&mut normalized);
+    // Tool inputs omit required persisted fields such as id and priority.
+    let mut fields = serde_json::to_value(TodoItem::default()).ok()?;
+    fields.as_object_mut()?.extend(normalized.as_object()?.clone());
+    let mut t: TodoItem = serde_json::from_value(fields).ok()?;
     t.content = v.get("name").or_else(|| v.get("content")).or_else(|| v.get("title"))?.as_str()?.to_string();
     if t.status.is_empty() { t.status = "pending".into(); }
     if t.id.is_empty() { t.id = t.content.clone(); }
@@ -166,9 +219,8 @@ pub fn apply(snap: &mut TodoSnapshot, input: &str) {
         if let Some(n) = u.get("rename_to").and_then(Value::as_str) { t.content = n.into(); }
         if let Some(l) = u.get("lane").and_then(Value::as_str) { t.group = Some(l.into()); }
         if let Some(p) = u.get("phase").and_then(Value::as_u64) { t.stage = Some(p as u32); }
-        if let Some(b) = u.get("completely_blocked") { t.completely_blocked = serde_json::from_value(b.clone()).ok(); }
+        apply_pause_patch(t, u);
         if let Some(b) = u.get("blocked_by") { t.blocked_by = serde_json::from_value(b.clone()).unwrap_or_default(); }
-        if let Some(b) = u.get("external_blocker") { t.external_blocker = serde_json::from_value(b.clone()).ok(); }
     }
     if let Some(plan) = v.get("plan") {
         if let Some(i) = plan.get("user_intention").and_then(Value::as_str) { snap.plan.user_intention = Some(i.into()); }
@@ -179,6 +231,57 @@ pub fn apply(snap: &mut TodoSnapshot, input: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modern_pauses_replay_and_clear_without_losing_item_fields() {
+        let mut s = TodoSnapshot::default();
+        apply(&mut s, r#"{"todos":[{"name":"login","status":"in_progress","assigned_to":"@self","requires_user_auth":{"reason":"2FA"}},{"name":"job","status":"pending","waiting_on":{"ids":["task-1"],"reason":"build"}}]}"#);
+        assert_eq!(mark(&s.todos[0]), Mark::CompletelyBlocked);
+        assert_eq!(board(&s).blockers().next().unwrap().1, "2FA");
+        assert_eq!(s.todos[0].assigned_to.as_deref(), Some("@self"));
+        assert_eq!(mark(&s.todos[1]), Mark::Blocked);
+        assert_eq!(s.todos[1].waiting_reason.as_deref(), Some("build"));
+        apply(&mut s, r#"{"update":[{"name":"login","requires_user_auth":null},{"name":"job","waiting_on":null}]}"#);
+        assert_eq!(mark(&s.todos[0]), Mark::SelfActive);
+        assert_eq!(mark(&s.todos[1]), Mark::Open);
+        assert!(s.todos[1].waiting_reason.is_none());
+    }
+
+    #[test]
+    fn legacy_external_blockers_and_finished_items() {
+        let mut s = TodoSnapshot::default();
+        apply(&mut s, r#"{"todos":[{"name":"wait","status":"pending","external_blocker":{"reason":"API unavailable"}}]}"#);
+        assert_eq!(mark(&s.todos[0]), Mark::Blocked);
+        apply(&mut s, r#"{"update":[{"name":"wait","external_blocker":null}]}"#);
+        assert_eq!(mark(&s.todos[0]), Mark::Open);
+        apply(&mut s, r#"{"update":[{"name":"wait","completely_blocked":{"reason":"credential"},"status":"completed"}]}"#);
+        assert_eq!(mark(&s.todos[0]), Mark::Done);
+        assert_eq!(board(&s).blockers().count(), 0);
+    }
+
+    #[test]
+    fn legacy_snapshot_cache_adapter_and_modern_precedence() {
+        #[derive(serde::Deserialize)]
+        struct Cache {
+            #[serde(default, deserialize_with = "deserialize_optional_snapshot")]
+            snapshot: Option<TodoSnapshot>,
+        }
+        let mut snapshot = serde_json::to_value(TodoSnapshot::default()).unwrap();
+        let mut todo = serde_json::to_value(TodoItem::default()).unwrap();
+        todo["content"] = serde_json::json!("cached");
+        todo["status"] = serde_json::json!("pending");
+        todo["completely_blocked"] = serde_json::json!({"reason":"old credential"});
+        snapshot["todos"] = serde_json::json!([todo]);
+        let cache: Cache = serde_json::from_value(serde_json::json!({"snapshot":snapshot})).unwrap();
+        let s = cache.snapshot.unwrap();
+        assert_eq!(mark(&s.todos[0]), Mark::CompletelyBlocked);
+        assert_eq!(board(&s).blockers().next().unwrap().1, "old credential");
+        snapshot["todos"][0]["requires_user_auth"] = Value::Null;
+        let cache: Cache = serde_json::from_value(serde_json::json!({"snapshot":snapshot})).unwrap();
+        assert_eq!(mark(&cache.snapshot.unwrap().todos[0]), Mark::Open);
+        assert!(serde_json::from_str::<Cache>(r#"{"snapshot":null}"#).unwrap().snapshot.is_none());
+        assert!(serde_json::from_str::<Cache>("{}").unwrap().snapshot.is_none());
+    }
 
     #[test]
     fn phases_lanes_and_patches() {
