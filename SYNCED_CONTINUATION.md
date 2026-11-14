@@ -10,7 +10,7 @@ Local sessions without fresh presence remain read-only in the synced browser. **
 
 1. Sign in to the same account used by the computer and open the session drawer.
 2. Tap a live computer session. Mobile opens or focuses its chat tab without creating a `Connection`, leaving other tabs and their drafts intact.
-3. The tab fetches all transcript pages through account-authenticated `GET /v1/mobile/sessions/:id?after_seq=...`. Sequence numbers identify rows. Tool results appear as labeled system text.
+3. The tab fetches all transcript pages through account-authenticated `GET /v1/mobile/sessions/:id?after_seq=...`. Sequence numbers identify rows. Tool results appear as compact **Synced tool output** disclosures that expand on tap, without inventing tool identities or success status absent from the sync format. Expanded output is bounded using the normal tool-output display limit; the original synced text remains intact.
 4. Type in the normal composer and send. Mobile posts exactly one `POST /v1/mobile/commands` body with `kind: "message"`, the original `session_id`, and trimmed `text`. It never substitutes `transfer` or a cloud creation command.
 5. The computer runner picks up the command. Mobile polls its command status and the synced transcript every two seconds after the previous poll completes. `queued` and `running` keep that tab's next send disabled. `done` releases it without navigation or requiring a new session ID. Terminal `failed` releases it and leaves an error visible.
 6. Transcript snapshots replace existing rows, including rewritten assistant text at an existing sequence number. Other tabs continue to receive updates while parked.
@@ -45,6 +45,7 @@ justrust check -p jcode-mobile
 justrust test -p jcode-mobile-core mobile_sync
 justrust test -p jcode-mobile synced_chat
 justrust test -p jcode-mobile synced_sessions
+justrust test -p jcode-mobile synced_render_tests
 ```
 
 Core HTTP tests run a local mock API and verify message enqueue, account headers, paginated transcript reads, queued/running/done status, no cloud/transfer endpoint, stale presence rejection, absent presence defaults, and session/kind validation. GPUI tests cover opening/reusing a local tab without a connection, preserving per-tab drafts, parked transcript refresh and rewrites, busy/offline presence transitions, command failure/uncertainty, authentication and closed-tab fences, and hiding cloud-only composer controls.

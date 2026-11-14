@@ -138,6 +138,8 @@ impl MobileApp {
             self.tab_order.push(tab);
             self.park_active(cx);
             self.active_tab = tab;
+            self.follow = true;
+            self.stream_motion.reset();
             self.session = SessionState::default();
             self.session.session_id = Some(session.session_id.clone());
             self.session.session_title = Some(session.label().to_owned());

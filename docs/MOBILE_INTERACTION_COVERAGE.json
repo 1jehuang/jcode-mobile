@@ -1,6 +1,37 @@
 {
   "entries": [
     {
+      "owner": "src/app.rs::impl:MobileApp::render_synced_tool_output",
+      "renderer": true,
+      "handler": false,
+      "events": { "on_click": 1 },
+      "controls": {
+        "debug_selector:dynamic:block": 1,
+        "debug_selector:dynamic:toggle_id": 1,
+        "debug_selector:macro:format:literal:synced-output-body-{entry}": 1,
+        "id:dynamic:id": 1,
+        "id:dynamic:toggle_id": 1
+      },
+      "coverage_scope": "partial",
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "tests": ["src/app/synced_render_tests.rs::synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent"],
+          "note": "Raw mouse-to-touch input expands and collapses the visible 44-point output disclosure. Assertions check compact height, rendered body, untouched raw Unicode output and expansion-sensitive geometry cache identity. No real tool status is fabricated."
+        },
+        {
+          "kind": "state_model_mocked",
+          "tests": ["src/app/synced_render_tests.rs::synced_history_tail_and_reader_geometry_stay_stable_across_polls"],
+          "note": "A 90-row mixed-role synced snapshot is drawn at 320, 390 and 430 points. Tail materialization, row ordering, bounds and unchanged-poll reader offsets are asserted; these are geometry checks, not exhaustive pixel or device acceptance."
+        },
+        {
+          "kind": "platform_device_required",
+          "tests": [],
+          "note": "VoiceOver announcement and disclosure activation on an actual iPhone remain device acceptance requirements, not established by Linux mouse-to-touch tests."
+        }
+      ]
+    },
+    {
       "owner": "src/app.rs::impl:MobileApp::pinned_todos",
       "renderer": false,
       "handler": false,
@@ -174,11 +205,13 @@
       "controls": {
         "debug_selector:dynamic:if": 4,
         "debug_selector:literal:composer-connection-status": 1,
+        "debug_selector:literal:local-chat-location": 1,
         "debug_selector:literal:voice-status": 1,
         "id:literal:chat-composer": 1,
         "id:literal:chat-metadata": 1,
         "id:literal:composer-input": 1,
         "id:literal:location": 1,
+        "outline_button:literal:local-delivery-checked": 1,
         "pill:literal:pill-account": 1,
         "pill:literal:pill-effort": 1,
         "pill:literal:pill-model": 1,
@@ -207,7 +240,7 @@
         },
         {
           "kind": "gap",
-          "note": "Every simultaneous metadata/voice gesture combination and native recording cancellation timing are not independently covered.",
+          "note": "Every simultaneous metadata/voice gesture combination and native recording cancellation timing are not independently covered. The live-local uncertain-delivery acknowledgement handler is state-tested, but its rendered button activation has no dedicated hit-tested regression.",
           "tests": []
         },
         {
@@ -218,11 +251,19 @@
             "src/app/voice_controls_tests.rs::voice_phases_reuse_controls_without_resizing_chat",
             "src/app/voice_live_tests.rs::microphone_and_connection_status_stay_above_the_input"
           ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Live-local fixtures draw the computer destination and exclude cloud model controls and stop. Submission state tests acknowledge uncertainty directly and preserve drafts without an automatic retry; this does not claim a tap on the acknowledgement button.",
+          "tests": [
+            "src/app/synced_chat_tests.rs::local_composer_hides_cloud_controls_and_stop_button",
+            "src/app/synced_chat_more_tests.rs::submission_completion_preserves_new_typing_and_parked_drafts"
+          ]
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 6
+        "on_click": 7
       },
       "handler": false,
       "owner": "src/app.rs::impl:MobileApp::render_composer_for",
@@ -1733,10 +1774,11 @@
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered local session disclosure/search and continuation controls cover busy/uncertain/completed fixture states without real transfers.",
+          "note": "Rendered local session disclosure/search and continuation controls cover busy/uncertain/completed fixture states without real transfers. A live row is hit-tested into its same-computer chat tab without a cloud connection.",
           "tests": [
             "src/app/synced_sessions.rs::tests::continuation_controls_hit_test_offline_busy_uncertain_and_completed",
-            "src/app/synced_sessions.rs::tests::local_sidebar_discloses_more_and_searches_hidden_sessions"
+            "src/app/synced_sessions.rs::tests::local_sidebar_discloses_more_and_searches_hidden_sessions",
+            "src/app/synced_chat_more_tests.rs::live_drawer_row_opens_chat_instead_of_cloud_transfer"
           ]
         },
         {
@@ -1762,7 +1804,7 @@
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 4
+        "on_click": 5
       },
       "handler": false,
       "owner": "src/app/synced_sessions.rs::impl:MobileApp::render_synced_sessions",

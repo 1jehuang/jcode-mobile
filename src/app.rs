@@ -39,6 +39,8 @@ mod transcript_layout;
 mod stream_presentation;
 mod stream_motion;
 #[cfg(test)]
+mod synced_render_tests;
+#[cfg(test)]
 mod streaming_tests;
 #[cfg(test)]
 mod performance_tests;
@@ -1183,6 +1185,14 @@ struct ParkedTab {
     follow: bool,
 }
 
+fn synced_tool_output(entry: &TranscriptEntry) -> Option<&str> {
+    (entry.role == Role::System).then(|| entry.text.strip_prefix("Tool result\n")).flatten()
+}
+
+fn synced_tool_output_id(entry: u64) -> String {
+    format!("synced-output-{entry}")
+}
+
 fn label(text: impl Into<SharedString>, color: Hsla, size: f32) -> gpui::Div {
     div().text_size(crate::system::fs(size)).text_color(color).child(text.into())
 }
@@ -2207,7 +2217,13 @@ impl MobileApp {
                     )
                     .into_any_element()
             }
-            Role::System => label(e.text.clone(), t.text_muted, 12.).into_any_element(),
+            Role::System => {
+                if let Some(output) = synced_tool_output(e) {
+                    self.render_synced_tool_output(e.id, output, expanded_tools, t, cx)
+                } else {
+                    label(e.text.clone(), t.text_muted, 12.).into_any_element()
+                }
+            },
             Role::Assistant => {
                 let mut col = div().w_full().min_w_0().flex().flex_col().gap(px(6.));
                 let reasoning = visible.map_or(e.reasoning.as_str(), |row| &e.reasoning[..row.reasoning_len]);
@@ -2231,6 +2247,43 @@ impl MobileApp {
                 col.into_any_element()
             }
         }
+    }
+
+    /// Synced text has no tool-call ID or success metadata. Keep its result
+    /// inspectable without inventing a successful call or flooding the chat.
+    fn render_synced_tool_output(&self, entry: u64, output: &str, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let id = synced_tool_output_id(entry);
+        let expanded = expanded_tools.contains(&id);
+        let toggle_id = format!("{id}-toggle");
+        div()
+            .id(SharedString::from(id.clone()))
+            .debug_selector({ let id = id.clone(); move || id.clone() })
+            .w_full().min_w_0().max_w_full().flex().flex_col()
+            .child(div().id(SharedString::from(toggle_id.clone()))
+                .debug_selector(move || toggle_id.clone())
+                .a11y_button(if expanded { "Collapse synced tool output" } else { "Expand synced tool output" })
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.stream_motion.release(&this.transcript_scroll);
+                    this.follow = false;
+                    if !this.expanded_tools.remove(&id) {
+                        this.expanded_tools.insert(id.clone());
+                    }
+                    haptics::play(Haptic::Selection);
+                    cx.notify();
+                }))
+                .min_h(px(44.)).flex().items_center().gap(px(6.))
+                .text_size(crate::system::fs(12.)).text_color(t.text_muted)
+                .child(if expanded { "⌄" } else { "›" })
+                .child("Synced tool output"))
+            .when(expanded, |d| d.child(div()
+                .debug_selector(move || format!("synced-output-body-{entry}"))
+                .min_w_0().max_w_full().overflow_hidden()
+                .ml(px(6.)).pl(px(10.)).py(px(4.))
+                .border_l_1().border_color(t.border_focus)
+                .text_size(crate::system::fs(11.)).text_color(t.text_secondary)
+                .child(crate::tool_output::prefix(output, crate::tool_output::OUTPUT_BYTES).into_owned())))
+            .into_any_element()
     }
 
     /// Desktop/TUI tool row: `✓ name · headline`, tap to expand output.
