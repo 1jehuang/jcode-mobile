@@ -200,7 +200,6 @@ public final class MainActivity extends Activity {
         if (!demo && endpoint.isEmpty()) { showSettings(); return; }
         JSONObject args = new JSONObject();
         put(args, "endpoint", endpoint);
-        put(args, "token", accessToken);
         request("connect", args, true);
     }
 
@@ -440,19 +439,12 @@ public final class MainActivity extends Activity {
         endpoint.setSingleLine(true);
         endpoint.setText(preferences.getString("endpoint", ""));
         panel.addView(endpoint);
-        EditText token = new EditText(this);
-        token.setHint("Access token (kept only until app closes)");
-        token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        token.setSingleLine(true);
-        token.setText(accessToken);
-        panel.addView(token);
         TextView note = new TextView(this);
-        note.setText("Use a forwarded Jcode TCP socket. Endpoint is saved locally, token is held in memory only. This core currently rejects nonempty tokens. Demo mode never contacts a server.");
+        note.setText("Advanced direct connection: use only a trusted SSH-tunnel endpoint. This is an unencrypted raw harness socket with no token authentication. Do not expose it publicly. Use Cloud sign in for normal authenticated access. The endpoint is saved locally. Demo mode never contacts a server.");
         panel.addView(note);
         present(new AlertDialog.Builder(this).setTitle("Connection settings").setView(panel)
             .setPositiveButton("Save & connect", (dialog, which) -> {
                 preferences.edit().putString("endpoint", endpoint.getText().toString().trim()).apply();
-                accessToken = token.getText().toString();
                 demo = false;
                 connectSaved();
             })
@@ -481,7 +473,6 @@ public final class MainActivity extends Activity {
     private static void setEnabledIfChanged(View view, boolean enabled) {
         if (view.isEnabled() != enabled) view.setEnabled(enabled);
     }
-    private static String accessToken = "";
     private void updateControls() {
         setEnabledIfChanged(send, !interactiveBusy && connected && !selected.isEmpty() && !processing);
         int cancelVisibility = processing ? View.VISIBLE : View.GONE;
