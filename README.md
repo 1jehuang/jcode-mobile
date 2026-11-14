@@ -1,6 +1,6 @@
 # Jcode Mobile
 
-A native mobile client for Jcode. The iPhone UI is built in Rust with GPUI, and Android uses native framework widgets over the same Rust core. Follow coding sessions, send messages, and work with your agents from your phone.
+A native mobile client for Jcode, built in Rust with GPUI. Follow coding sessions, send messages, and work with your agents from your phone. Android support is being implemented using the same GPUI application, not a separate widget UI.
 
 The GPUI app also runs in a phone-sized desktop window for development. Both mobile clients connect to a Jcode backend rather than running the coding agent locally on the phone.
 
@@ -83,19 +83,9 @@ For the managed Linux VM, see [Cloud iOS builds](docs/CLOUD_IOS_BUILD.md). The i
 
 ### Android builds and emulators
 
-Android has a native Java UI and a Rust JNI adapter using the shared connection/session core. The pinned GPUI fork does not have an Android backend. This initial Android interface supports cloud email sign-in, session switching, history, and streamed chat, but does not implement the iOS-only integrations or full visual parity.
+Android is being rebuilt around the same GPUI application used by iOS, with a new Android platform backend in the shared GPUI fork. The separate Java widget interface and its JNI session adapter have been withdrawn. Earlier Java-shell test results are not validation of the replacement GPUI application.
 
-With the Android SDK/NDK, a full JDK, and Rust Android targets installed:
-
-```sh
-./scripts/android-build.sh
-# target/android/JcodeMobile.apk (ARM64 phones and x86_64 emulators)
-ANDROID_DEMO=1 ./scripts/android-emulator.sh
-ANDROID_SERIAL=emulator-5554 ./scripts/android-test.sh
-ANDROID_SERIAL=emulator-5554 python3 scripts/android-smoke.py
-```
-
-See [Android development](docs/ANDROID.md) for exact prerequisites, headless emulator testing, a local protocol fixture, credential handling, and the remaining validation limits. No physical Android phone is required for these workflows.
+The Android SDK, NDK, JDK, and API 30/35 emulator images remain installed for development. Release readiness and publication require fresh validation of the actual shared GPUI application.
 
 ## Repository layout
 
@@ -106,8 +96,7 @@ See [Android development](docs/ANDROID.md) for exact prerequisites, headless emu
 | `assets/` | Bundled fonts and icons |
 | `ios-res/` | iOS resources and privacy manifest |
 | `ios-ext/` | iOS extension sources |
-| `android/` | Native Android UI, manifest, and emulator instrumentation |
-| `crates/jcode-mobile-android/` | Shared-core JNI adapter and local protocol fixture |
+| `android/` | Android native application packaging and platform services |
 | `scripts/` | Preview, testing, packaging, and device tooling |
 | `docs/` | Focused development and integration guides |
 | `appstore/` | App Store assets and metadata |
