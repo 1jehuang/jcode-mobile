@@ -2,6 +2,9 @@ use super::*;
 use jcode_mobile_core::session::Role;
 use crate::app::{self, lifecycle_coverage::fixture_app};
 
+#[path = "synced_chat_latency_tests.rs"]
+mod latency_tests;
+
 #[path = "synced_chat_more_tests.rs"]
 mod more_tests;
 

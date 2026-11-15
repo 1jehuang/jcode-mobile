@@ -15,6 +15,14 @@ const COMPUTER_OFFLINE: &str =
 #[path = "synced_chat_tests.rs"]
 mod tests;
 
+enum LocalPoll {
+    Transcript(Result<SyncedTranscript, String>),
+    Command {
+        expected: String,
+        result: Result<Command, String>,
+    },
+}
+
 pub(super) struct LocalChat {
     session: SyncedSession,
     submitting: bool,
@@ -260,71 +268,92 @@ impl MobileApp {
         };
         chat.poll_generation = chat.poll_generation.wrapping_add(1);
         let poll_generation = chat.poll_generation;
-        cx.spawn(async move |this, cx| {
-            loop {
-                let state = this
-                    .update(cx, |this, _| {
-                        if !this.local_chat_current(tab, &account, generation) {
-                            return None;
-                        }
-                        let chat = this.synced.chats.get(&tab)?;
-                        if chat.poll_generation != poll_generation {
-                            return None;
-                        }
-                        Some((
-                            chat.session.session_id.clone(),
-                            chat.pending.clone(),
-                            this.offline,
-                        ))
-                    })
-                    .ok()
-                    .flatten();
-                let Some((id, pending, offline)) = state else {
-                    break;
-                };
-                if !offline {
-                    let request_account = account.clone();
-                    let result = cx
-                        .background_spawn(async move {
-                            // A snapshot includes all pages, so seq updates and rewritten
-                            // assistant messages replace rather than duplicate rows.
-                            let transcript = mobile_sync::transcript(&request_account, &id);
-                            let command = pending
-                                .map(|command| mobile_sync::command(&request_account, &command));
-                            (transcript, command)
-                        })
-                        .await;
-                    let keep = this
-                        .update(cx, |this, cx| {
-                            if !this.local_chat_current(tab, &account, generation)
-                                || this.synced.chats[&tab].poll_generation != poll_generation
-                            {
-                                return false;
+        // Joining requests would still block receipts behind slow history.
+        for command_poll in [false, true] {
+            let account = account.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let state = this
+                        .update(cx, |this, _| {
+                            if !this.local_chat_current(tab, &account, generation) {
+                                return None;
                             }
-                            this.apply_local_poll(tab, result.0, result.1);
-                            cx.notify();
-                            true
+                            let chat = this.synced.chats.get(&tab)?;
+                            if chat.poll_generation != poll_generation {
+                                return None;
+                            }
+                            Some((
+                                chat.session.session_id.clone(),
+                                chat.pending.clone(),
+                                this.offline,
+                            ))
                         })
-                        .unwrap_or(false);
-                    if !keep {
+                        .ok()
+                        .flatten();
+                    let Some((id, pending, offline)) = state else {
                         break;
+                    };
+                    if !offline && (!command_poll || pending.is_some()) {
+                        let request_account = account.clone();
+                        let result = cx
+                            .background_spawn(async move {
+                                if command_poll {
+                                    LocalPoll::Command {
+                                        expected: pending.clone().unwrap(),
+                                        result: mobile_sync::command(
+                                            &request_account,
+                                            &pending.unwrap(),
+                                        ),
+                                    }
+                                } else {
+                                    // Complete snapshots retain rewritten assistant rows.
+                                    LocalPoll::Transcript(mobile_sync::transcript(
+                                        &request_account,
+                                        &id,
+                                    ))
+                                }
+                            })
+                            .await;
+                        let keep = this
+                            .update(cx, |this, cx| {
+                                if !this.local_chat_current(tab, &account, generation)
+                                    || this.synced.chats[&tab].poll_generation != poll_generation
+                                {
+                                    return false;
+                                }
+                                match result {
+                                    LocalPoll::Transcript(transcript) => {
+                                        this.apply_local_poll(tab, transcript, None)
+                                    }
+                                    LocalPoll::Command { expected, result } => {
+                                        if this.synced.chats[&tab].pending.as_ref()
+                                            == Some(&expected)
+                                        {
+                                            this.apply_local_command(tab, Some(result));
+                                        }
+                                    }
+                                }
+                                cx.notify();
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !keep {
+                            break;
+                        }
                     }
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
                 }
-                cx.background_executor().timer(Duration::from_secs(2)).await;
-            }
-        })
-        .detach();
+            })
+            .detach();
+        }
     }
 
-    pub(in crate::app) fn apply_local_poll(
+    fn apply_local_command(
         &mut self,
         tab: u64,
-        transcript: Result<SyncedTranscript, String>,
         command: Option<Result<Command, String>>,
-    ) {
-        let Some(chat) = self.synced.chats.get_mut(&tab) else {
-            return;
-        };
+    ) -> Option<String> {
+        let chat = self.synced.chats.get_mut(&tab)?;
         let mut error = chat.delivery_error.clone();
         let mut delivered_images = Vec::new();
         if let Some(command) = command {
@@ -353,6 +382,25 @@ impl MobileApp {
                 Err(e) => error = Some(e),
             }
         }
+        self.remove_submitted_photos(tab, &delivered_images);
+        if let Some(error) = &error {
+            if let Some(state) = self.local_session_mut(tab) {
+                state.error_banner = Some(error.clone());
+            }
+        }
+        error
+    }
+
+    pub(in crate::app) fn apply_local_poll(
+        &mut self,
+        tab: u64,
+        transcript: Result<SyncedTranscript, String>,
+        command: Option<Result<Command, String>>,
+    ) {
+        let error = self.apply_local_command(tab, command);
+        let Some(chat) = self.synced.chats.get_mut(&tab) else {
+            return;
+        };
         match transcript {
             Ok(transcript) => {
                 if transcript.session.source != "local"
@@ -370,7 +418,6 @@ impl MobileApp {
                 let uncertain = chat.uncertain;
                 let title = Some(chat.session.label().to_owned());
                 let live = chat.session.live;
-                self.remove_submitted_photos(tab, &delivered_images);
                 if let Some(state) = self.local_session_mut(tab) {
                     state.phase = if live {
                         ConnectionPhase::Connected
@@ -392,7 +439,6 @@ impl MobileApp {
                 }
             }
             Err(e) => {
-                self.remove_submitted_photos(tab, &delivered_images);
                 if let Some(state) = self.local_session_mut(tab) {
                     state.phase = ConnectionPhase::Disconnected;
                     state.error_banner = Some(format!("Computer sync unavailable: {e}"));
