@@ -36,7 +36,12 @@ public final class NativeInstrumentation extends Instrumentation {
     private ClipData previousClip;
     private boolean clipboardSaved;
     private ClipboardManager clipboard;
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    private Bundle arguments = new Bundle();
+    @Override public void onCreate(Bundle args) {
+        super.onCreate(args);
+        if (args != null) arguments = new Bundle(args);
+        start();
+    }
     private static void check(boolean value, String message) { StorageInstrumentation.check(value, message); }
     private <T> T ui(Callable<T> action) throws Exception {
         FutureTask<T> task = new FutureTask<>(action); runOnMainSync(task); return task.get();
@@ -176,18 +181,61 @@ public final class NativeInstrumentation extends Instrumentation {
         }
         throw new AssertionError("UNTESTABLE: no empty native editable demo field observable within 10 seconds with real accessibility enabled. No IME success claimed.");
     }
+    private static String accessibilityPreferences(Context context) throws Exception {
+        // Compare existing user preferences without logging service identities or
+        // ever writing settings. UiAutomation registration is separate from them.
+        android.content.ContentResolver resolver = context.getContentResolver();
+        String state = android.provider.Settings.Secure.getString(resolver,
+                android.provider.Settings.Secure.ACCESSIBILITY_ENABLED);
+        String services = android.provider.Settings.Secure.getString(resolver,
+                android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                ("state=" + state + "\nservices=" + services).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder();
+        for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        return hex.toString();
+    }
+    private void verifyPostFinishCleanup() {
+        Bundle result = new Bundle();
+        try {
+            check("org.jcode.mobile".equals(getTargetContext().getPackageName()), "Wrong cleanup-probe target");
+            String expected = arguments.getString("expected_accessibility");
+            String preferences = arguments.getString("expected_preferences");
+            check("true".equals(expected) || "false".equals(expected), "Cleanup probe requires expected enabled state");
+            check(preferences != null && preferences.matches("[0-9a-f]{64}"), "Cleanup probe requires original preferences fingerprint");
+            AccessibilityManager manager = (AccessibilityManager)getTargetContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+            // A fresh instrumentation invocation intentionally never calls
+            // getUiAutomation(), launches an Activity, or changes user settings.
+            awaitAccessibility(manager, Boolean.parseBoolean(expected));
+            check(preferences.equals(accessibilityPreferences(getTargetContext())), "Accessibility user preferences changed during instrumentation");
+            result.putString("accessibility_connection", "PASS: after framework finish, real enabled state and original user preferences restored");
+            result.putString("result", "PASS");
+            finish(Activity.RESULT_OK, result);
+        } catch (Throwable error) {
+            result.putString("result", "FAIL");
+            result.putString("failure", android.util.Log.getStackTraceString(error));
+            finish(Activity.RESULT_CANCELED, result);
+        }
+    }
     @Override public void onStart() {
+        if ("true".equals(arguments.getString("cleanup_probe"))) {
+            verifyPostFinishCleanup();
+            return;
+        }
         Bundle result = new Bundle();
         Throwable failure = null;
         AccessibilityManager accessibility = (AccessibilityManager)getTargetContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
         boolean originalAccessibility = false;
+        String originalPreferences = null;
         boolean automationRequested = false;
+        boolean cleanupProbeRequired = false;
         try {
             check("org.jcode.mobile".equals(getTargetContext().getPackageName()), "Wrong instrumentation target");
             check((getTargetContext().getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, "Debug APK required");
             // A real, temporary framework accessibility connection drives nativeStatus.
             // Preserve existing accessibility services, and never force production state.
             originalAccessibility = ui(() -> accessibility.isEnabled());
+            originalPreferences = accessibilityPreferences(getTargetContext());
             automationRequested = true;
             UiAutomation automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
             check(automation != null, "Cannot establish real instrumentation accessibility connection");
@@ -266,18 +314,32 @@ public final class NativeInstrumentation extends Instrumentation {
             } catch (Throwable cleanup) { if (failure == null) failure = cleanup; else failure.addSuppressed(cleanup); }
             try {
                 if (automationRequested) {
-                    // UiAutomation.disconnect/destroy are hidden SDK APIs. Changing flags
-                    // uses Instrumentation's public API to disconnect accessibility first.
-                    // finish() below performs the framework-owned final disconnection.
-                    check(getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY
-                            | UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES) != null,
-                            "Cannot release temporary accessibility connection");
-                    awaitAccessibility(accessibility, originalAccessibility);
-                    result.putString("accessibility_connection", "PASS: real temporary UiAutomation accessibility enabled and original enabled state restored");
+                    if (android.os.Build.VERSION.SDK_INT >= 31) {
+                        // The no-accessibility flag was introduced in Android 12.
+                        // Use only supported public API, then framework finish
+                        // below performs final connection destruction.
+                        check(getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY
+                                | UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES) != null,
+                                "Cannot release temporary accessibility connection");
+                        awaitAccessibility(accessibility, originalAccessibility);
+                        check(originalPreferences.equals(accessibilityPreferences(getTargetContext())),
+                                "Accessibility user preferences changed during instrumentation");
+                        result.putString("accessibility_connection", "PASS: temporary accessibility released, original enabled state and user preferences restored");
+                    } else {
+                        // Android 11 and earlier ignore DONT_USE_ACCESSIBILITY,
+                        // so reconnecting with it would keep accessibility ON.
+                        // Public finish() disconnects the framework-owned client
+                        // but also terminates this process. A NEW invocation must
+                        // verify restoration after finish, never assume success.
+                        cleanupProbeRequired = true;
+                        result.putString("accessibility_connection", "PENDING: framework finish must disconnect accessibility, separate cleanup probe required");
+                        result.putString("cleanup_expected_state", Boolean.toString(originalAccessibility));
+                        result.putString("cleanup_expected_preferences", originalPreferences);
+                    }
                 }
             } catch (Throwable cleanup) { if (failure == null) failure = cleanup; else failure.addSuppressed(cleanup); }
         }
-        result.putString("result", failure == null ? "PASS" : "FAIL");
+        result.putString("result", failure != null ? "FAIL" : cleanupProbeRequired ? "NEEDS_CLEANUP_PROBE" : "PASS");
         if (failure != null) result.putString("failure", android.util.Log.getStackTraceString(failure));
         finish(failure == null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);
     }
