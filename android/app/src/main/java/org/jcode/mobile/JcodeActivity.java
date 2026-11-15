@@ -76,6 +76,13 @@ public final class JcodeActivity extends NativeActivity {
             return true;
         }, false);
     }
+    public boolean gpuiTextInputConfiguration(int inputType, int imeOptions, String autofillHint) {
+        return gpuiUi(() -> {
+            if (input == null) return false;
+            input.setTextInputConfiguration(inputType, imeOptions, autofillHint);
+            return true;
+        }, false);
+    }
     public boolean gpuiOpenUrl(String url) {
         return services != null && services.openUrl(url);
     }

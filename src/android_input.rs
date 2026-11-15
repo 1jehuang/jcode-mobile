@@ -1,6 +1,8 @@
 //! Activity bootstrap glue for Android's composing InputConnection.
 //! JNI callbacks enqueue edits. Only GPUI's native UI loop mutates text state.
-use gpui_platform::android::{AndroidPlatformServices, AndroidTextInput, dispatch_text_input};
+use gpui_platform::android::{
+    AndroidPlatformServices, AndroidTextInput, AndroidTextInputConfiguration, dispatch_text_input,
+};
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JClass, JObject, JString, JValue},
@@ -73,6 +75,23 @@ impl AndroidPlatformServices for Services {
                 "gpuiKeyboardVisible",
                 "(Z)Z",
                 &[JValue::Bool(u8::from(visible))],
+            )?
+            .z()
+        })
+        .unwrap_or(false)
+    }
+    fn set_text_input_configuration(&self, configuration: AndroidTextInputConfiguration) -> bool {
+        with_activity(|env, activity| {
+            let hint = env.new_string(configuration.autofill_hint)?;
+            env.call_method(
+                activity,
+                "gpuiTextInputConfiguration",
+                "(IILjava/lang/String;)Z",
+                &[
+                    JValue::Int(configuration.input_type),
+                    JValue::Int(configuration.ime_options),
+                    JValue::Object(hint.as_ref()),
+                ],
             )?
             .z()
         })

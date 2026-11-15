@@ -10,6 +10,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.Selection;
+import android.text.SpannableStringBuilder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -17,6 +21,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
 import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.InputConnection;
 import java.lang.reflect.Field;
 import java.util.concurrent.Callable;
@@ -59,6 +64,76 @@ public final class NativeInstrumentation extends Instrumentation {
             check(host != null && "android.app.NativeActivity$NativeContentView".equals(host.getClass().getName()),
                     "Actual NativeActivity takeSurface owner not found");
             check(host != activity.getWindow().getDecorView() && host != field(activity, "input"), "Unsafe host selected");
+            return null;
+        });
+    }
+    private void checkKeyboardConfiguration() throws Exception {
+        ui(() -> {
+            View input = (View)field(activity, "input");
+            java.lang.reflect.Method configure = activity.getClass().getMethod(
+                    "gpuiTextInputConfiguration", int.class, int.class, String.class);
+            EditorInfo originalInfo = new EditorInfo();
+            BaseInputConnection connection = (BaseInputConnection)input.onCreateInputConnection(originalInfo);
+            check(connection != null, "Missing production input connection for EditorInfo checks");
+            Editable editable = connection.getEditable();
+            SpannableStringBuilder saved = new SpannableStringBuilder(editable);
+            String[] hints = input.getAutofillHints();
+            String originalHint = hints == null || hints.length == 0 ? "" : hints[0];
+            int flags = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+            try {
+                int email = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                        | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+                check(Boolean.TRUE.equals(configure.invoke(activity, email, flags | EditorInfo.IME_ACTION_NEXT,
+                        "emailAddress")), "Email configuration rejected");
+                EditorInfo info = new EditorInfo();
+                input.onCreateInputConnection(info);
+                check(info.inputType == email && (info.imeOptions & EditorInfo.IME_MASK_ACTION) == EditorInfo.IME_ACTION_NEXT,
+                        "Production EditorInfo discarded email/Next configuration");
+                check((info.inputType & (InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)) == 0,
+                        "Email inherited sentence capitalization or multiline flags");
+                check(input.getAutofillHints() != null && "emailAddress".equals(input.getAutofillHints()[0]),
+                        "Email autofill hint not forwarded");
+                check(Boolean.FALSE.equals(field(input, "configurationDirty")), "Fresh EditorInfo left dirty hints");
+                configure.invoke(activity, email, flags | EditorInfo.IME_ACTION_NEXT, "emailAddress");
+                check(Boolean.FALSE.equals(field(input, "configurationDirty")), "Unchanged hints scheduled an input restart");
+
+                // Mutate only the InputConnection's Android bookkeeping, not GPUI
+                // or nativeEdit. Restore all text/spans before returning to the app.
+                editable.replace(0, editable.length(), "draft-é");
+                Selection.setSelection(editable, editable.length());
+                BaseInputConnection.setComposingSpans(editable);
+                int composingStart = BaseInputConnection.getComposingSpanStart(editable);
+                int composingEnd = BaseInputConnection.getComposingSpanEnd(editable);
+                int otpOptions = flags | EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
+                configure.invoke(activity, InputType.TYPE_CLASS_NUMBER, otpOptions, "smsOTPCode");
+                check(Boolean.TRUE.equals(field(input, "configurationDirty")), "Changed attributes were not queued");
+                check("draft-é".contentEquals(editable), "Configuration replaced the composing shadow draft");
+                check(BaseInputConnection.getComposingSpanStart(editable) == composingStart
+                        && BaseInputConnection.getComposingSpanEnd(editable) == composingEnd,
+                        "Configuration removed composing spans");
+                info = new EditorInfo();
+                BaseInputConnection recreated = (BaseInputConnection)input.onCreateInputConnection(info);
+                check(recreated.getEditable() == editable, "Connection recreation lost shared composing bookkeeping");
+                check(info.inputType == InputType.TYPE_CLASS_NUMBER && info.imeOptions == otpOptions,
+                        "OTP numeric/Go/private-learning hints not applied");
+                check(info.initialSelStart == editable.length() && info.initialSelEnd == editable.length(),
+                        "Connection recreation reset shadow selection");
+                check(input.getAutofillHints() != null && "smsOTPCode".equals(input.getAutofillHints()[0]),
+                        "OTP autofill hint not forwarded");
+                BaseInputConnection.removeComposingSpans(editable);
+                int composer = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                configure.invoke(activity, composer, flags | EditorInfo.IME_ACTION_SEND, "");
+                info = new EditorInfo(); input.onCreateInputConnection(info);
+                check(info.inputType == composer && (info.imeOptions & EditorInfo.IME_MASK_ACTION) == EditorInfo.IME_ACTION_SEND,
+                        "Composer assistance/Send configuration not applied");
+                check(input.getAutofillHints() == null || input.getAutofillHints().length == 0,
+                        "Content-specific autofill hint leaked into composer");
+            } finally {
+                editable.clear(); editable.clearSpans(); editable.append(saved);
+                configure.invoke(activity, originalInfo.inputType, originalInfo.imeOptions, originalHint);
+                input.onCreateInputConnection(new EditorInfo());
+            }
             return null;
         });
     }
@@ -123,6 +198,8 @@ public final class NativeInstrumentation extends Instrumentation {
             check(activity instanceof NativeActivity, "Not the real NativeActivity");
             checkHostDiscovery();
             result.putString("host", "PASS: production discovery finds NativeContentView, rejects IME/generic containers, supports alternate SurfaceView");
+            checkKeyboardConfiguration();
+            result.putString("keyboard_configuration", "PASS: production EditorInfo email/OTP/composer hints, unchanged-hint suppression, composing shadow preservation across connection recreation (not IME restart timing parity)");
             for (int n = 0; n < 100 && provider == null; n++) {
                 provider = ui(() -> { View host = nativeHost(activity.findViewById(android.R.id.content)); return host == null ? null : host.getAccessibilityNodeProvider(); });
                 if (provider == null) SystemClock.sleep(50);
