@@ -8,8 +8,8 @@ license = "MIT"
 
 [workspace.dependencies]
 # Shared GPUI fork, including NativeActivity Android and the Vulkan naming fix.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "c249c6cefd4f578867f6277c20fe037fb5523435" }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "c249c6cefd4f578867f6277c20fe037fb5523435" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "3331b057e83e559ce0e7954886ac477d19c83e84" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "3331b057e83e559ce0e7954886ac477d19c83e84" }
 jcode-mobile-core = { path = "crates/jcode-mobile-core" }
 
 [package]
@@ -55,8 +55,8 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance the app uses.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "c249c6cefd4f578867f6277c20fe037fb5523435" }
-cgl = { git = "https://github.com/1jehuang/gpui", rev = "c249c6cefd4f578867f6277c20fe037fb5523435" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "3331b057e83e559ce0e7954886ac477d19c83e84" }
+cgl = { git = "https://github.com/1jehuang/gpui", rev = "3331b057e83e559ce0e7954886ac477d19c83e84" }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
