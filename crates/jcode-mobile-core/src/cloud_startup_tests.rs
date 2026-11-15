@@ -7,6 +7,58 @@ use std::sync::{
     mpsc,
 };
 
+#[test]
+fn connection_lock_cancellation_does_not_wait_for_or_interrupt_owner() {
+    let mutex = Arc::new(Mutex::new(7usize));
+    let owner = mutex.lock().unwrap();
+    let (attempted, observed) = mpsc::channel();
+    let (completed, result) = mpsc::channel();
+    let worker_mutex = mutex.clone();
+    let worker = std::thread::spawn(move || {
+        let result = lock_with_cancellation(&worker_mutex, &|| {
+            attempted.send(()).unwrap();
+            true
+        });
+        completed.send(result.err().map(|error| error.kind)).unwrap();
+    });
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), Some(jcode_sdk::ErrorKind::Cancelled));
+    assert_eq!(*owner, 7, "cancelled waiter changed the active opener");
+    assert!(mutex.try_lock().is_err(), "owner must still hold provisioning lock");
+    drop(owner);
+    worker.join().unwrap();
+}
+
+#[test]
+fn connection_lock_waiter_observes_cancellation_after_contention() {
+    let mutex = Arc::new(Mutex::new(()));
+    let owner = mutex.lock().unwrap();
+    let (attempted, observed) = mpsc::channel();
+    let (completed, result) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let worker_mutex = mutex.clone();
+    let worker = std::thread::spawn(move || {
+        let checks = AtomicUsize::new(0);
+        let result = lock_with_cancellation(&worker_mutex, &|| {
+            if checks.fetch_add(1, Ordering::Relaxed) == 0 {
+                attempted.send(()).unwrap();
+                return false;
+            }
+            worker_cancel.load(Ordering::Acquire)
+        });
+        completed.send(result.err().map(|error| error.kind)).unwrap();
+    });
+    // The held owner is the causal barrier. Cancellation must complete before
+    // releasing it, regardless of how long real provisioning takes.
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancel.store(true, Ordering::Release);
+    assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), Some(jcode_sdk::ErrorKind::Cancelled));
+    drop(owner);
+    worker.join().unwrap();
+    assert!(lock_with_cancellation(&mutex, &|| false).is_ok());
+}
+
 fn busy() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }

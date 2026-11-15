@@ -34,6 +34,34 @@ struct FailedPrewarm {
     finished: Instant,
 }
 
+/// Waiting behind another host opener must remain cancellable, even while
+/// that opener is waiting for a sleeping machine. Never cancel its work.
+fn lock_cold_connect(
+    cancelled: &dyn Fn() -> bool,
+) -> jcode_sdk::Result<std::sync::MutexGuard<'static, Option<FailedPrewarm>>> {
+    lock_with_cancellation(&COLD_CONNECT, cancelled)
+}
+
+fn lock_with_cancellation<'a, T>(
+    mutex: &'a Mutex<T>,
+    cancelled: &dyn Fn() -> bool,
+) -> jcode_sdk::Result<std::sync::MutexGuard<'a, T>> {
+    loop {
+        if cancelled() {
+            return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"));
+        }
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                // Match the existing fail-closed poisoned-lock behavior.
+                drop(error.into_inner());
+                return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Disconnected, "Connection coordinator unavailable"));
+            }
+        }
+    }
+}
+
 /// Share only a failed speculative attempt that overlapped this foreground
 /// call. This is not a negative cache: a later call still tries direct SSH,
 /// and a different account can never suppress this account's attempt.
@@ -483,7 +511,7 @@ pub fn connect(
     // Concurrent new tabs must not all register new keys and hit the cloud's
     // instance-connect rate limit. Recheck after waiting for another opener.
     let lock_started = Instant::now();
-    let mut opening = COLD_CONNECT.lock().unwrap();
+    let mut opening = lock_cold_connect(cancelled)?;
     crate::timing::stage("cold connect lock wait", lock_started.elapsed());
     check_cancelled()?;
     let prewarm_failed = take_overlapping_prewarm_failure(&mut opening, account, connect_started);
@@ -548,6 +576,9 @@ pub fn connect(
         HostWait::Direct(ssh) => {
             crate::timing::stage("control plane wake + direct ssh", control_started.elapsed());
             let ssh = cache_master(account, ssh);
+            // Provisioning is serialized, independent API hello is not. A
+            // second tab may use the authenticated master immediately.
+            drop(opening);
             progress("Opening your Jcode session…");
             let client = ssh.open_client()?;
             check_cancelled()?;
@@ -565,6 +596,7 @@ pub fn connect(
         std::thread::spawn(move || crate::cloud_direct::remember(&account, &master, &target));
     }
     let ssh = cache_master(account, master);
+    drop(opening);
     progress("Opening your Jcode session…");
     let client = ssh.open_client()?;
     check_cancelled()?;
