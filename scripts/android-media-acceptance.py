@@ -41,12 +41,15 @@ def find_node(xml, predicate):
 
 
 def fixture_node(xml):
-    # DocumentsUI decorates the exact filename with type/date/size metadata.
-    # Match the full filename token, never a generic photo or a coordinate guess.
+    # The selectable file tile starts with the filename and metadata. Its
+    # nested preview action also mentions the filename, but opens a preview
+    # instead of selecting it. Require the tile shape, not any matching node.
     return find_node(
         xml, lambda a: a.get("package") in ("com.google.android.documentsui", "com.android.documentsui")
-        and bool(re.search(r"(?<![\w.-])" + re.escape(FIXTURE) + r"(?![\w.-])",
-                           a.get("content-desc", ""))))
+        and a.get("class") in ("android.widget.LinearLayout", "android.widget.RelativeLayout", "android.widget.FrameLayout")
+        and a.get("enabled") == "true" and a.get("focusable") == "true"
+        and not a.get("resource-id", "").endswith(":id/preview_icon")
+        and bool(re.match(re.escape(FIXTURE) + r"(?:,|$)", a.get("content-desc", ""))))
 
 
 def shared_activity_resumed(activities):
@@ -306,8 +309,21 @@ def self_test():
             pass
         else:
             raise AssertionError("Invalid bounds accepted")
-    node = ('<node package="com.google.android.documentsui" '
-            'content-desc="Photo, jcode-emulator-photo.jpg, 96 x 64" bounds="[1,2][5,8]"/>')
+    node = ('<node package="com.google.android.documentsui" class="android.widget.LinearLayout" '
+            'enabled="true" focusable="true" '
+            'content-desc="jcode-emulator-photo.jpg, 359 B, 11:20 PM" bounds="[1,2][5,8]"/>')
+    preview = ('<node package="com.google.android.documentsui" class="android.widget.FrameLayout" '
+               'enabled="true" focusable="true" clickable="true" '
+               'resource-id="com.google.android.documentsui:id/preview_icon" '
+               'content-desc="Preview the file jcode-emulator-photo.jpg" bounds="[3,2][5,4]"/>')
+    nested = "<hierarchy>" + node.replace("/>", ">" + preview + "</node>") + "</hierarchy>"
+    assert fixture_node(nested)["bounds"] == "[1,2][5,8]"
+    try:
+        fixture_node("<hierarchy>" + preview + "</hierarchy>")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Preview-only action accepted as file tile")
     assert fixture_node("<hierarchy>" + node + "</hierarchy>")["bounds"] == "[1,2][5,8]"
     for xml in ("<hierarchy/>", "<hierarchy>" + node + node + "</hierarchy>",
                 "<hierarchy>" + node.replace(".jpg,", ".jpg.bak,") + "</hierarchy>",
