@@ -86,6 +86,10 @@ Actual API36/16KiB testing passed the strict two-native-focus traversal check in
 
 The release AAB-derived APK `3396bca60dfe7eb32d3a4e013cfe2fc297bff67963980c20c96d29a832a7848a` has **not passed** API36/16KiB onboarding acceptance. Actual runs saved under `target/android/release-runtime-aab-api36-16k/` and `target/android/release-runtime-aab-api36-visible-ime/` reached the real shared onboarding without a bootstrap crash, but the InputMethod frame had zero visible content height. OCR also observed `easedraft` after injecting `releasedraft`. Explicitly enabling the simulator's software keyboard with a hardware keyboard attached did not resolve the failure. The original secure setting was restored and the debug target reinstalled afterward. The visible-keyboard parser remains strict. A source-level focused-input-handler readiness repair is in progress, and earlier API26/30/35 successes are not being transferred to this failing run.
 
+## Post-paint input backend integration
+
+The app now pins published GPUI `3331b057e83e559ce0e7954886ac477d19c83e84`, preserving the prior iOS/backend history. The dual-ABI debug APK `target/android/JcodeMobile-gpui-3331b05-input-ready-debug.apk`, SHA256 `b675ce0ab266e03fce97ae6c07bd3696d6fa69df3fb8bf4b0d41b72adbb7f9a4`, built successfully and passed all14 shared-UI checks on API35 in44.9s. API36 still fails the visual email-prefix assertion. Crucially, a genuine UIAutomator native semantic snapshot reports the **complete exact value `paritydraft sample`**, despite OCR reading `itydraft sample`. For this rebuilt artifact the observation is therefore a visual rendering/viewport problem, not proof of dropped input. Evidence: `target/android/input-3331b05-viewport-diagnostic/semantic.xml` and `target/android/acceptance-3331b05-api36-input-ready/`. That distinction is retained while the rendering and zero-height IME observations are investigated separately.
+
 ## Publishing boundary
 
 Actual offline release inspection of the test AAB with official bundletool configured rejects it with `Debuggable/test-only bundle is not releasable`. No network or publication operation is needed for that gate.
