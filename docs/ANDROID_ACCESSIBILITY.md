@@ -32,7 +32,7 @@ Do not describe this as complete Android accessibility parity.
 
 ## Backend hook contract
 
-Backend owner must register the module and dependencies and forward window hooks:
+Backend hooks are now present in the integration working tree. The contract is:
 
 ```rust
 // lib.rs, including test builds
@@ -58,8 +58,11 @@ classloader. No Activity application-UI changes are necessary.
 
 AccessKit coordinates are physical pixels relative to the native surface. The
 Java provider adds the host's screen location for `boundsInScreen`. Do not apply
-density scaling a second time. `set_scale` exists only for a caller whose tree
-actually uses logical coordinates. Verify hit rectangles on the actual device.
+density scaling a second time. Integration review caught a density multiplier
+in the window hook and the backend owner corrected it to `set_scale(1.0)`:
+GPUI's `element.rs` already multiplies layout bounds by the window scale factor
+before publishing AccessKit bounds. `set_scale` exists only for a caller whose
+tree actually uses logical coordinates. Verify hit rectangles on the device.
 
 ## Validation commands and evidence boundary
 
