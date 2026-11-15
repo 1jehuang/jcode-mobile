@@ -32,6 +32,7 @@ struct Options {
     ssh_port: u16,
     cp: u64,
     auth: u64,
+    handshake: u64,
     hello: u64,
     attach: u64,
     history: u64,
@@ -59,7 +60,7 @@ impl Options {
             }
             if key == "--help" {
                 println!(
-                    "mobile_latency_fixture [--self-test] [--http-port 0] [--ssh-port 0] [--cp-delay-ms 0] [--ssh-auth-delay-ms 0] [--hello-delay-ms 0] [--attach-delay-ms 0] [--history-delay-ms 0] [--history-size 20] [--boot-polls 0] [--duration-secs 3600] [--log JSONL] [--stop-file PATH]\nStop gracefully by creating stop-file, writing a newline to stdin, or waiting duration-secs. History size counts messages (max 10000). Delays max 60000ms. Only loopback is bound. Ready stdout contains a fake account suitable for the native app's account injection."
+                    "mobile_latency_fixture [--self-test] [--http-port 0] [--ssh-port 0] [--handshake-ms 0] [--cp-delay-ms 0] [--ssh-auth-delay-ms 0] [--hello-delay-ms 0] [--attach-delay-ms 0] [--history-delay-ms 0] [--history-size 20] [--boot-polls 0] [--duration-secs 3600] [--log JSONL] [--stop-file PATH]\nStop gracefully by creating stop-file, writing a newline to stdin, or waiting duration-secs. History size counts messages (max 10000). Delays max 60000ms. Only loopback is bound. Ready stdout contains a fake account suitable for the native app's account injection."
                 );
                 std::process::exit(0);
             }
@@ -72,6 +73,7 @@ impl Options {
                 "--ssh-port" => o.ssh_port = v.parse()?,
                 "--cp-delay-ms" | "--cp-ms" => o.cp = v.parse()?,
                 "--ssh-auth-delay-ms" | "--auth-ms" => o.auth = v.parse()?,
+                "--handshake-ms" => o.handshake = v.parse()?,
                 "--hello-delay-ms" | "--hello-ms" => o.hello = v.parse()?,
                 "--attach-delay-ms" | "--attach-ms" => o.attach = v.parse()?,
                 "--history-delay-ms" | "--history-ms" => o.history = v.parse()?,
@@ -84,7 +86,7 @@ impl Options {
                 _ => return Err("unknown option (use --help)".into()),
             }
         }
-        if [o.cp, o.auth, o.hello, o.attach, o.history]
+        if [o.cp, o.auth, o.handshake, o.hello, o.attach, o.history]
             .into_iter()
             .any(|v| v > 60000)
             || o.size > 10000
@@ -586,6 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if tasks.len()<32 {
                         let config=config.clone(); let state=state.clone(); let mut stopped=shutdown.subscribe();
                         tasks.spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(state.options.handshake)).await;
                             let handler=Harness { state,buffers:HashMap::new(),attached:HashMap::new(),pending:Arc::new(tokio::sync::Semaphore::new(64)) };
                             if let Ok(mut session)=server::run_stream(config,stream,handler).await {
                                 let handle=session.handle();
