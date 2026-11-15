@@ -27,9 +27,9 @@ class DriverTests(unittest.TestCase):
         self.assertIsNone(latency.parse_trace("startup_trace session connect error auth"))
 
     def test_env_cannot_inherit_real_login_autosend_or_url(self):
-        with patch.dict(os.environ, {"JCODE_MOBILE_USE_CLI_ACCOUNT": "1", "JCODE_MOBILE_SEND": "real work", "JCODE_MOBILE_OPEN_URL": "jcode://new?text=bad", "OPENAI_API_KEY": "secret", "WAYLAND_DISPLAY": "wayland-1", "ZED_HEADLESS": "1"}):
+        with patch.dict(os.environ, {"JCODE_MOBILE_USE_CLI_ACCOUNT": "1", "JCODE_MOBILE_SEND": "real work", "JCODE_MOBILE_OPEN_URL": "jcode://new?text=bad", "OPENAI_API_KEY": "secret", "WAYLAND_DISPLAY": "wayland-1", "ZED_HEADLESS": "1", "HTTP_PROXY": "http://external.invalid", "all_proxy": "socks5://external.invalid"}):
             env = latency.isolated_env(Path("/isolated"), ":123")
-        for name in ("JCODE_MOBILE_USE_CLI_ACCOUNT", "JCODE_MOBILE_SEND", "JCODE_MOBILE_OPEN_URL", "OPENAI_API_KEY", "WAYLAND_DISPLAY", "ZED_HEADLESS"):
+        for name in ("JCODE_MOBILE_USE_CLI_ACCOUNT", "JCODE_MOBILE_SEND", "JCODE_MOBILE_OPEN_URL", "OPENAI_API_KEY", "WAYLAND_DISPLAY", "ZED_HEADLESS", "HTTP_PROXY", "all_proxy"):
             self.assertNotIn(name, env)
         self.assertEqual(env["XDG_DATA_HOME"], "/isolated/data")
         self.assertEqual(env["XDG_CACHE_HOME"], "/isolated/cache")
@@ -64,17 +64,39 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(latency.wait_render(events, Running(), time.monotonic() + .5)["ui open to transcript render"]["observed_ms"], 3)
 
     def test_visible_confirmation_rejects_blank_frame(self):
-        with patch.object(latency, "capture"), patch.object(latency.subprocess, "run") as ocr:
+        with patch.object(latency, "capture"), patch.object(latency.shutil, "copyfile"), patch.object(latency.subprocess, "run") as ocr:
             ocr.return_value.stdout = "Loading conversation"
             with self.assertRaises(TimeoutError):
                 latency.visible_transcript({}, Path("/unused.png"), time.monotonic(), timeout=.001)
 
+    def test_visible_confirmation_rejects_another_sessions_frame(self):
+        with patch.object(latency, "capture"), patch.object(latency.shutil, "copyfile"), patch.object(latency.subprocess, "run") as ocr:
+            ocr.return_value.stdout = "SIMULATOR FRESH fixture-1"
+            with self.assertRaises(TimeoutError):
+                latency.visible_transcript({}, Path("/unused.png"), time.monotonic(), timeout=.001, expected_session="fixture-2")
+
     def test_visible_confirmation_requires_fresh_fixture_text(self):
-        with patch.object(latency, "capture"), patch.object(latency.subprocess, "run") as ocr:
+        with patch.object(latency, "capture"), patch.object(latency.shutil, "copyfile"), patch.object(latency.subprocess, "run") as ocr:
             ocr.return_value.stdout = "SIMULATOR FRESH fixture-1"
             result = latency.visible_transcript({}, Path("/unused.png"), time.monotonic())
             self.assertGreaterEqual(result["frame_capture_upper_bound_ms"], 0)
             self.assertGreaterEqual(result["ocr_completed_ms"], result["frame_capture_upper_bound_ms"])
+
+    def test_burst_preserves_first_verified_fresh_frame_without_waiting_for_ocr(self):
+        order = []
+        with patch.object(latency, "capture", side_effect=lambda *args: order.append("capture")), \
+             patch.object(latency.time, "sleep"), \
+             patch.object(latency.shutil, "copyfile") as copy, \
+             patch.object(latency.subprocess, "run") as ocr:
+            def recognize(*args, **kwargs):
+                from types import SimpleNamespace
+                order.append("ocr")
+                return SimpleNamespace(stdout="Loading" if ocr.call_count == 1 else "SIMULATOR FRESH fixture-2")
+            ocr.side_effect = recognize
+            latency.visible_transcript({}, Path("/unused.png"), time.monotonic(), expected_session="fixture-2")
+            self.assertEqual(order[:3], ["capture"] * 3)
+            self.assertEqual(copy.call_args.args[0], Path("/unused.frame1.png"))
+            self.assertEqual(ocr.call_count, 2)
 
     def test_loopback_scenarios_never_include_send_or_production_endpoint(self):
         for options in latency.SCENARIOS.values():
