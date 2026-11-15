@@ -46,6 +46,8 @@ mod simulator_keyboard_tests;
 #[cfg(test)]
 mod streaming_tests;
 #[cfg(test)]
+mod open_latency_tests;
+#[cfg(test)]
 mod performance_tests;
 #[cfg(test)]
 mod interaction_fuzz;
@@ -108,7 +110,7 @@ pub struct MobileApp {
     /// Soft keyboard currently covers the bottom of the screen.
     keyboard_up: bool,
     screen: Screen,
-    /// When the active tab started connecting, until its transcript is painted.
+    /// Active connection-open epoch. Empty history completes it without a transcript.
     open_started: Option<std::time::Instant>,
     /// First frame after launch not yet logged.
     first_frame_pending: bool,
@@ -747,6 +749,26 @@ impl MobileApp {
         self.pump(self.active_tab, rx, cx);
     }
 
+    /// Empty history is a completed open, not a wait for a future first message.
+    /// Retries and terminal failures also cannot retain an initial-open epoch.
+    fn retire_open_latency_for(&mut self, output: &ConnectionOutput) {
+        let retire = match output {
+            ConnectionOutput::Event(jcode_mobile_core::ApiEvent::History { messages, .. }) => messages.is_empty(),
+            ConnectionOutput::Phase(ConnectionPhase::Failed { .. } | ConnectionPhase::Disconnected | ConnectionPhase::Reconnecting { .. }) => true,
+            _ => false,
+        };
+        if retire { self.open_started = None; }
+    }
+
+    fn take_transcript_open_latency(&mut self) -> Option<Duration> {
+        if self.screen != Screen::Chat {
+            self.open_started = None;
+            return None;
+        }
+        if self.session.transcript.is_empty() { return None; }
+        self.open_started.take().map(|opened| opened.elapsed())
+    }
+
     fn reconnect(&mut self, cx: &mut Context<Self>) {
         if self.is_local_chat() {
             return;
@@ -781,6 +803,7 @@ impl MobileApp {
     }
 
     fn park_active(&mut self, cx: &mut Context<Self>) {
+        self.open_started = None;
         self.scroll_perf_started = None;
         self.cancel_voice(cx);
         let draft = self.composer.read(cx).save_draft();
@@ -837,6 +860,7 @@ impl MobileApp {
         self.forget_local_chat(id);
         self.tab_motion.remove(&id);
         if id == self.active_tab {
+            self.open_started = None;
             self.cancel_voice(cx);
             if let Some(c) = self.connection.take() {
                 c.stop();
@@ -981,11 +1005,11 @@ impl MobileApp {
                         matches!(o, ConnectionOutput::Event(jcode_mobile_core::ApiEvent::History { .. }))
                     });
                 let apply_start = std::time::Instant::now();
-                let ok = this
+                let applied = this
                     .update(cx, |this, cx| {
                         // Stopped sockets can still have queued events. Tab ids
                         // survive logout, so a tab match alone is not ownership.
-                        if this.auth_generation != auth_generation { return; }
+                        if this.auth_generation != auth_generation { return false; }
                         if tab != this.active_tab {
                             if let Some(p) = this.parked.iter_mut().find(|p| p.id == tab) {
                                 for o in batch {
@@ -997,10 +1021,11 @@ impl MobileApp {
                             }
                             this.sync_live_activity();
                             cx.notify();
-                            return;
+                            return false;
                         }
                         let was = this.session.is_processing;
                         for o in batch {
+                            this.retire_open_latency_for(&o);
                             this.session.apply(o);
                         }
                         ios_feel::turn_haptic(was, &this.session);
@@ -1014,16 +1039,18 @@ impl MobileApp {
                         this.flush_pending_send(cx);
                         // Presentation releases visible blocks in render_chat; raw data is already current.
                         cx.notify();
+                        true
                     })
-                    .is_ok();
+                    .ok();
                 if has_history {
                     history_logged = true;
-                    // UI side of open latency: main-thread apply cost and
-                    // total time from tab open to transcript in state.
-                    jcode_mobile_core::timing::stage("ui_history_apply", apply_start.elapsed());
-                    jcode_mobile_core::timing::stage("ui_open_to_history", opened.elapsed());
+                    if applied == Some(true) {
+                        // Only active, auth-owned history application is UI latency.
+                        jcode_mobile_core::timing::stage("ui_history_apply", apply_start.elapsed());
+                        jcode_mobile_core::timing::stage("ui_open_to_history", opened.elapsed());
+                    }
                 }
-                if !ok {
+                if applied.is_none() {
                     break;
                 }
             }
@@ -2896,11 +2923,8 @@ impl Render for MobileApp {
         if std::mem::take(&mut self.first_frame_pending) {
             jcode_mobile_core::timing::stage("app first render", jcode_mobile_core::timing::process_start().elapsed());
         }
-        if let Some(opened) = self.open_started
-            && !self.session.transcript.is_empty()
-        {
-            self.open_started = None;
-            jcode_mobile_core::timing::stage("ui open to transcript render", opened.elapsed());
+        if let Some(elapsed) = self.take_transcript_open_latency() {
+            jcode_mobile_core::timing::stage("ui open to transcript render", elapsed);
             jcode_mobile_core::timing::event("ui transcript render", &format!("entries={}", self.session.transcript.len()));
         }
         if !self.offline { crate::notify::set_visible_session(self.session.session_id.clone()); }

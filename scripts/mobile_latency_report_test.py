@@ -58,6 +58,15 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result['ignored_samples'], 1)
         self.assertNotIn('private', json.dumps(result))
 
+    def test_precise_startup_labels_are_fixed_and_private(self):
+        names = ['cold_connect_lock_wait', 'control_plane_request',
+                 'wake_direct_ssh_probe', 'control_plane_poll_delay', 'ssh_public_key_auth']
+        result = latency.report(payload([(name, 1) for name in names]
+                                        + [(name + '_private_error', 100) for name in names]))
+        self.assertEqual({row['name'] for row in result['latency']}, set(names))
+        self.assertEqual(result['ignored_samples'], len(names))
+        self.assertNotIn('private_error', json.dumps(result))
+
     def test_empty_queue(self):
         self.assertEqual(latency.report('{"batches": []}'),
                          {'latency': [], 'lifetime': [], 'ignored_samples': 0})

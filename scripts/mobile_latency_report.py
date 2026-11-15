@@ -12,6 +12,8 @@ import sys
 LABELS = set("""app_launched app_fonts_loaded app_first_render app_prewarm
  direct_ssh direct_ssh_failed control_plane_wake_direct_ssh control_plane_ready
  prewarm_direct_ssh master_revalidated master_revalidation_failed ssh_handshake
+ cold_connect_lock_wait control_plane_request wake_direct_ssh_probe
+ control_plane_poll_delay ssh_public_key_auth
  ssh_authenticated channel_opened api_hello session_connect session_fork
  session_attach session_ready session_lost_after session_connect_failed
  session_connect_error session_history wake_probe_failed wake_probe_timed_out

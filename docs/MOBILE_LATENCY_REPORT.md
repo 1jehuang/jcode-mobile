@@ -179,7 +179,30 @@ interval. This is an instrumentation interpretation concern to investigate,
 not a measured latency improvement. The original table above remains the
 **earlier snapshot**, not an assertion about all subsequently arriving events.
 
-Validation: eight offline synthetic tests pass, covering ranking and nearest
+## Measurement epoch correction
+
+The UI marker previously remained armed after a successful **empty** history,
+so a message rendered minutes later could be labeled open-to-transcript latency.
+The measurement now retires that epoch on empty history, retry, disconnect or
+failure, when parking/closing the active tab, and when rendering a non-chat
+screen. Normal nonempty transcript rendering consumes its epoch exactly once.
+The history-application timings now exclude parked-tab and stale-auth batches;
+a background first history also consumes its first-history accounting so a
+later refresh cannot include tab-idle time. These changes correct telemetry,
+not connection speed, and add no timeout-based censoring of real slow opens.
+
+Six dedicated GPUI regressions cover empty history, the real asynchronous pump,
+normal one-shot consumption, hidden screens, retry/terminal phases and tab
+parking. They are added but **not yet run**, pending the coordinator's hosted
+mirror-repair signal. No hosted Rust build was launched for this change yet.
+
+The offline report now additionally accepts the five reviewed fixed stages
+`cold_connect_lock_wait`, `control_plane_request`, `wake_direct_ssh_probe`,
+`control_plane_poll_delay` and `ssh_public_key_auth`, while rejecting dynamic
+suffixes. These will help separate the previously uninstrumented pre-SSH gap
+and cumulative authentication markers in future builds.
+
+Validation: nine offline synthetic tests pass, covering ranking and nearest
 rank percentiles, lifetime separation, malformed/unknown/private labels,
 nonfinite values, overlapping batches, independent runs, plain-text parsing,
 empty inputs and privacy-safe CLI errors.
