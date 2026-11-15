@@ -195,6 +195,7 @@ struct ObserverFixture {
     heights: super::Heights,
     scroll: gpui::ScrollHandle,
     observer: bool,
+    tab: u64,
     width: f32,
 }
 
@@ -207,7 +208,7 @@ impl Render for ObserverFixture {
             if entry.role == Role::User {
                 prompt += 1;
             }
-            let key = super::key(7, entry, prompt, &self.expanded, self.width - 28.);
+            let key = super::key(self.tab, entry, prompt, &self.expanded, self.width - 28.);
             let body = self.app.update(cx, |app, cx| {
                 app.render_entry(entry, prompt, &self.expanded, None, &[], &theme, cx)
             });
@@ -274,6 +275,199 @@ struct ObserverSnapshot {
     heights: Vec<Pixels>,
 }
 
+#[gpui::test]
+fn identical_prose_reuses_real_geometry_across_ids_and_tabs_but_not_changed_inputs(
+    cx: &mut TestAppContext,
+) {
+    let _settings = crate::system::settings_fixture(1., false, false);
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        let app = cx.new(|cx| {
+            MobileApp::new_offline(
+                SafeArea {
+                    top: 20.,
+                    bottom: 0.,
+                },
+                window,
+                cx,
+            )
+        });
+        let entries = (0..4)
+            .map(|index| {
+                let mut entry = long_entry(index);
+                entry.role = if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
+                entry.reasoning.clear();
+                entry
+            })
+            .collect();
+        ObserverFixture {
+            app,
+            entries,
+            expanded: Default::default(),
+            heights: Default::default(),
+            scroll: Default::default(),
+            observer: true,
+            tab: 7,
+            width: 390.,
+        }
+    });
+    cx.simulate_resize(gpui::size(px(390.), px(844.)));
+    draw(cx);
+    let original = observer_snapshot(&view, cx);
+    assert!(
+        original.max.y > px(0.),
+        "fixture must exercise actual scrolling geometry"
+    );
+    view.update(cx, |fixture, cx| {
+        fixture.tab = 91;
+        let mut prompt = 0;
+        for (index, entry) in fixture.entries.iter_mut().enumerate() {
+            entry.id += 1000;
+            if entry.role == Role::User {
+                prompt += 1;
+            }
+            let key = super::key(
+                fixture.tab,
+                entry,
+                prompt,
+                &fixture.expanded,
+                fixture.width - 28.,
+            );
+            assert!(
+                !fixture
+                    .heights
+                    .0
+                    .borrow()
+                    .contains_key(&(fixture.tab, entry.id)),
+                "new identities cannot hit the primary cache"
+            );
+            assert_eq!(
+                fixture.heights.get(key),
+                Some(original.heights[index]),
+                "secondary hit must contain the exact height measured by real layout"
+            );
+        }
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(
+        observer_snapshot(&view, cx),
+        original,
+        "cross-tab/id reuse must agree with a subsequent actual native layout"
+    );
+    view.read_with(cx, |fixture, _| {
+        let entry = &fixture.entries[0];
+        let heights = &fixture.heights;
+        let key = |entry: &TranscriptEntry, prompt, width| {
+            super::key(123, entry, prompt, &fixture.expanded, width)
+        };
+        assert_eq!(
+            heights.get(key(entry, 9, 362.)),
+            Some(original.heights[0]),
+            "same-width prompt badges can reuse measured geometry"
+        );
+        assert_eq!(
+            heights.get(key(entry, 10, 362.)),
+            None,
+            "extra badge digit changes available text width"
+        );
+        assert_eq!(
+            heights.get(key(entry, 1, 334.)),
+            None,
+            "resizing cannot reuse old wrapping"
+        );
+        assert_eq!(
+            heights.get(key(entry, 1, 362.).with_window_scale(2.)),
+            None,
+            "device pixel density must invalidate pixel-snapped shared geometry"
+        );
+        let mut edited = entry.clone();
+        edited.text.replace_range(..1, "X");
+        assert_eq!(edited.text.len(), entry.text.len());
+        assert_eq!(
+            heights.get(key(&edited, 1, 362.)),
+            None,
+            "same-byte-length edits invalidate geometry"
+        );
+        let mut role = entry.clone();
+        role.role = Role::Assistant;
+        assert_eq!(
+            heights.get(key(&role, 1, 362.)),
+            None,
+            "role changes alter rendered structure"
+        );
+        let _scale = crate::system::settings_fixture(1.5, false, false);
+        assert_eq!(
+            heights.get(key(entry, 1, 362.)),
+            None,
+            "font scale must invalidate secondary geometry"
+        );
+    });
+    view.read_with(cx, |fixture, _| {
+        let base = fixture.entries[1].clone();
+        let mut excluded = Vec::new();
+        let mut reasoning = base.clone();
+        reasoning.reasoning = "Identity-specific reasoning".into();
+        excluded.push(reasoning);
+        let mut streaming = base.clone();
+        streaming.is_streaming = true;
+        excluded.push(streaming);
+        let mut system = base.clone();
+        system.role = Role::System;
+        excluded.push(system);
+        let mut tools = base.clone();
+        tools.tool_calls.push(jcode_mobile_core::ToolCall {
+            id: "identity-tool".into(),
+            name: "read".into(),
+            input: "{}".into(),
+            output: String::new(),
+            status: jcode_mobile_core::ToolStatus::Running,
+        });
+        excluded.push(tools);
+        for mut entry in excluded {
+            let measured = super::Heights::default();
+            let source = super::key(1, &entry, 1, &fixture.expanded, 362.);
+            assert!(
+                source.geometry().is_none(),
+                "ineligible rows must not enter the secondary cache"
+            );
+            measured.record(source, original.heights[1]);
+            assert_eq!(
+                measured.get(source),
+                Some(original.heights[1]),
+                "primary cache remains usable"
+            );
+            entry.id += 9000;
+            assert_eq!(
+                measured.get(super::key(2, &entry, 1, &fixture.expanded, 362.)),
+                None,
+                "identity-sensitive rows must be freshly measured for another identity"
+            );
+        }
+        let images = [jcode_mobile_core::SessionImage::new(
+            "image/png",
+            vec![1, 2, 3],
+        )];
+        let measured = super::Heights::default();
+        let source = super::key(1, &base, 1, &fixture.expanded, 362.).with_images(&images);
+        assert!(
+            source.geometry().is_none(),
+            "asynchronous image dimensions exclude shared geometry"
+        );
+        measured.record(source, original.heights[1]);
+        let mut another = base;
+        another.id += 9000;
+        assert_eq!(
+            measured.get(super::key(2, &another, 1, &fixture.expanded, 362.).with_images(&images)),
+            None
+        );
+    });
+}
+
 fn observer_snapshot(
     view: &Entity<ObserverFixture>,
     cx: &mut VisualTestContext,
@@ -290,7 +484,7 @@ fn observer_snapshot(
                 fixture
                     .heights
                     .get(super::key(
-                        7,
+                        fixture.tab,
                         entry,
                         prompt,
                         &fixture.expanded,
@@ -381,6 +575,7 @@ fn observer_matches_legacy_canvas_across_changes_widths_and_font_scales(cx: &mut
             heights: Default::default(),
             scroll: Default::default(),
             observer: false,
+            tab: 7,
             width: 390.,
         }
     });
