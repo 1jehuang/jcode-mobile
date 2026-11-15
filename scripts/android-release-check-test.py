@@ -75,6 +75,13 @@ class ReleaseTests(unittest.TestCase):
             publish.publish(None, 'unused.aab', self.report, approval, False, {})
         request.assert_not_called()
 
+    def test_talkback_unverified_stops_before_network(self):
+        approval = copy.deepcopy(self.approval)
+        approval['android_parity_evidence']['checks']['talkback_accessibility']['status'] = 'not_tested'
+        with patch.object(publish, 'request') as request, self.assertRaisesRegex(ValueError, 'talkback_accessibility'):
+            publish.publish(None, 'unused.aab', self.report, approval, False, {})
+        request.assert_not_called()
+
     def test_template_is_not_approved(self):
         template = json.loads((Path(__file__).parent.parent / 'playstore/approval.template.json').read_text())
         with self.assertRaises(ValueError):

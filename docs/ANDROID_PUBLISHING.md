@@ -111,7 +111,7 @@ publish is not a substitute for this tested-artifact gate.
 Booleans and a free-form evidence string alone are not accepted. The approval
 must also contain `android_parity_evidence` bound to the same AAB SHA-256,
 `renderer=shared_gpui_native`, a source revision, and coordinating root acceptance
-with the same approver identity. All 12 named checks in the template must have
+with the same approver identity. All 13 named checks in the template must have
 `status=passed`, a nonempty real evidence file path, and its exact SHA-256. Paths
 are resolved from the invocation directory, so absolute local paths are safest.
 Reports may cover multiple checks, but must actually document each covered
@@ -119,7 +119,9 @@ check. Keep screenshots, emulator logs, interaction reports, native build/source
 trace and device-service results as reviewable evidence. Missing, blocked,
 failed, skipped, changed, empty or absent evidence rejects the remote operation.
 This intentionally includes notification **device push**, not merely local
-notifications. FCM being unconfigured is a blocker, not a passing test.
+notifications. FCM being unconfigured is a blocker, not a passing test. The
+`talkback_accessibility` check requires actual native GPUI device/TalkBack
+acceptance, not adapter compilation, synthetic trees, or prior Java-shell tests.
 Hash verification establishes evidence integrity, not its truth. Root must read
 and accept genuine results rather than generating synthetic passing reports.
 

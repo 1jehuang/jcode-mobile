@@ -32,7 +32,8 @@
       "notifications_and_device_push": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
       "authentication_and_deep_links": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
       "release_aab_install": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
-      "native_16k_runtime": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""}
+      "native_16k_runtime": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""},
+      "talkback_accessibility": {"status": "not_tested", "evidence_path": "", "evidence_sha256": ""}
     }
   }
 }

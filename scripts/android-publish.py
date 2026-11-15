@@ -21,7 +21,8 @@ REQUIRED = ('emulator_validated', 'gpui_parity_validated', 'release_artifact_tes
 PARITY_CHECKS = ('shared_gpui_native_renderer', 'no_legacy_java_ui', 'emulator_launch',
                  'navigation_and_chat', 'keyboard_and_text_input', 'attachments_and_share',
                  'voice_and_media', 'haptics', 'notifications_and_device_push',
-                 'authentication_and_deep_links', 'release_aab_install', 'native_16k_runtime')
+                 'authentication_and_deep_links', 'release_aab_install', 'native_16k_runtime',
+                 'talkback_accessibility')
 
 
 def parity_gate(report, approval):
