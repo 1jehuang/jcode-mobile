@@ -304,6 +304,7 @@ class Campaign(unittest.TestCase):
             with self.subTest(dump=dump), self.assertRaises(AssertionError):
                 self.runner.snapshot()
             self.assertFalse(self.runner.changed)
+            self.assertEqual((self.args.out / "original-uimode.txt").read_text(), dump + "\n")
 
     def test_snapshot_never_overwrites_original_dump_during_restore(self):
         def shell(*args):

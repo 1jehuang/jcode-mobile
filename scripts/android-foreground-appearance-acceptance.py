@@ -239,6 +239,8 @@ class Acceptance:
     def snapshot(self, name="original"):
         mode = night_mode(self.shell("cmd", "uimode", "night"))
         raw_service = self.shell("dumpsys", "uimode")
+        # Keep actual unsupported layouts for diagnosis without any mutation.
+        (self.out / (name + "-uimode.txt")).write_text(raw_service + "\n")
         state = service_state(raw_service)
         expected_mode, expected_bits = ("2", 0x20) if mode == "yes" else ("1", 0x10)
         try:
@@ -248,7 +250,6 @@ class Acceptance:
         if state["mNightMode"] != expected_mode or current_bits != expected_bits:
             raise AssertionError("Night command/service/effective state is inconsistent")
         settings = night_settings(self.shell("settings", "list", "secure"))
-        (self.out / (name + "-uimode.txt")).write_text(raw_service + "\n")
         return {"mode": mode, "service": state, "settings": settings}
 
     def exercise(self):
