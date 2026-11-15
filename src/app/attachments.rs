@@ -147,6 +147,8 @@ impl MobileApp {
 
     /// Adds the prompt locally and sends it, queued when a turn is running.
     pub(super) fn send_prompt(&mut self, text: String, images: Vec<SessionImage>) {
+        #[cfg(any(test, all(target_os = "android", debug_assertions)))]
+        { self.debug_share_probe.submitted_count += 1; }
         let queued = self.session.is_processing;
         self.session.apply_intent(if queued {
             LocalIntent::UserQueuedInterrupt(text.clone())

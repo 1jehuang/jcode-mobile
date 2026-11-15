@@ -166,7 +166,7 @@ impl MobileApp {
         .detach();
     }
 
-    fn on_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
+    pub(super) fn on_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
         // External share contents and requested prompts can contain secrets.
         log::info!("deep link: {}", match &link {
             DeepLink::OpenSession { .. } => "session",

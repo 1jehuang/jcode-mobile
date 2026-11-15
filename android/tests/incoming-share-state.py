@@ -9,13 +9,15 @@ import json
 
 def read_state(value):
     state = json.loads(value)
-    required = {"offline": bool, "connectionPresent": bool, "autoSendPending": bool,
+    required = {"probe": str, "offline": bool, "syntheticAccount": bool, "connectionPresent": bool, "autoSendPending": bool,
                 "activeTab": int, "tabCount": int, "composer": str,
                 "submittedCount": int, "frame": int}
     for key, kind in required.items():
         if key not in state or type(state[key]) is not kind:
             raise AssertionError(f"Missing/invalid observed shared state: {key}")
-    if not state["offline"] or state["connectionPresent"]:
+    if state["probe"] != "incoming-share-state-v1":
+        raise AssertionError("Unsupported or unrelated shared-state probe")
+    if not state["offline"] or not state["syntheticAccount"] or state["connectionPresent"]:
         raise AssertionError("Refusing non-offline or connected app state")
     if state["autoSendPending"]:
         raise AssertionError("Shared draft queued automatic submission")

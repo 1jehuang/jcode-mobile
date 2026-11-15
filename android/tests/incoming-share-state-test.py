@@ -13,7 +13,7 @@ spec.loader.exec_module(state)
 
 class StateTests(unittest.TestCase):
     def fixture(self, **updates):
-        value = dict(offline=True, connectionPresent=False, autoSendPending=False,
+        value = dict(probe="incoming-share-state-v1", offline=True, syntheticAccount=True, connectionPresent=False, autoSendPending=False,
                      activeTab=1, tabCount=1, composer="", submittedCount=0, frame=1)
         value.update(updates)
         return value
@@ -28,7 +28,7 @@ class StateTests(unittest.TestCase):
         state.require_unchanged(after, self.read(activeTab=2, tabCount=2, composer="draft + & ✓", frame=9))
 
     def test_invalid_or_unsafe_state_never_passes(self):
-        for updates in ({"offline": False}, {"connectionPresent": True}, {"autoSendPending": True},
+        for updates in ({"probe": "wrong"}, {"offline": False}, {"syntheticAccount": False}, {"connectionPresent": True}, {"autoSendPending": True},
                         {"frame": 0}, {"frame": True}, {"tabCount": 0}, {"submittedCount": -1},
                         {"composer": None}, {"offline": "true"}):
             with self.subTest(updates=updates), self.assertRaises(AssertionError):

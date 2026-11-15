@@ -21,6 +21,7 @@ public final class JcodeActivity extends NativeActivity {
     private native void nativeInitInput();
     private boolean resumed;
     private static native void nativeConfigureDebugDemo(String mode);
+    private static native void nativeConfigureDebugShareProbe(String directory);
     private static native void nativeWindowInsets(int left, int top, int right, int bottom,
             int imeLeft, int imeTop, int imeRight, int imeBottom);
 
@@ -47,6 +48,9 @@ public final class JcodeActivity extends NativeActivity {
         if (BuildConfig.DEBUG && getIntent() != null) {
             String demo = getIntent().getStringExtra("gpui_demo");
             if (demo != null) nativeConfigureDebugDemo(demo);
+            if ("todos".equals(demo) && getIntent().getBooleanExtra("gpui_share_probe", false)) {
+                nativeConfigureDebugShareProbe(getFilesDir().getAbsolutePath());
+            }
         }
         // Install app-private storage/services before NativeActivity starts Rust.
         nativeInitInput();

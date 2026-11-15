@@ -22,6 +22,8 @@ mod push_glue;
 mod deep_link_glue;
 mod attachments;
 mod a11y;
+#[cfg(any(test, all(target_os = "android", debug_assertions)))]
+mod android_debug_probe;
 use a11y::A11yExt as _;
 mod recent_dirs;
 mod default_dir;
@@ -213,6 +215,8 @@ pub struct MobileApp {
     status_orb: Entity<gpui_thinking_orbs::ThinkingOrb>,
     /// Dev hook (JCODE_MOBILE_SEND): message sent once connected.
     auto_send: Option<String>,
+    #[cfg(any(test, all(target_os = "android", debug_assertions)))]
+    debug_share_probe: android_debug_probe::Probe,
     attach: attachments::State,
     /// APNs device token (hex) once iOS hands it over.
     push_token: Option<String>,
@@ -250,7 +254,10 @@ pub struct MobileApp {
 
 impl MobileApp {
     pub fn new(safe: SafeArea, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let offline = cfg!(test) || std::env::var("JCODE_MOBILE_DEMO").is_ok();
+        // The opt-in Android share probe must be offline before reading any
+        // persisted account, not merely replace the rendered transcript.
+        let offline = cfg!(test) || crate::android_debug_share_probe_enabled()
+            || std::env::var("JCODE_MOBILE_DEMO").is_ok();
         use gpui::{Autocapitalize, TextInputAction, TextInputConfiguration, TextInputPurpose};
         let email = cx.new(|cx| {
             let mut t = TextInput::new("you@example.com", cx);
@@ -440,6 +447,8 @@ impl MobileApp {
             activity_orb: cx.new(|_| inline_orb()),
             status_orb: cx.new(|_| inline_orb()),
             auto_send: (!offline).then(|| std::env::var("JCODE_MOBILE_SEND").ok()).flatten(),
+            #[cfg(any(test, all(target_os = "android", debug_assertions)))]
+            debug_share_probe: Default::default(),
             attach: Default::default(),
             push_token: None,
             agents_status: None,
@@ -467,6 +476,14 @@ impl MobileApp {
             app.install_push(cx);
             app.install_deep_links(cx);
             app.install_media(cx);
+        }
+        #[cfg(all(target_os = "android", debug_assertions))]
+        if let Some(path) = crate::android_debug_share_probe_path() {
+            app.prepare_debug_share_fixture();
+            // Same platform queue/parser/shared route as real shares. The only
+            // fixture substitution is a noncredential synthetic offline account.
+            app.install_deep_links(cx);
+            app.start_debug_share_probe(path.to_path_buf(), cx);
         }
         // Dev hook: JCODE_MOBILE_DRAFT=text prefills the composer.
         if let Ok(draft) = std::env::var("JCODE_MOBILE_DRAFT") {

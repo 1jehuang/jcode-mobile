@@ -2,15 +2,24 @@
 
 ## Status
 
+The probe wiring passed hosted full-library tests **489 passed, zero failed,
+11 ignored**, run `20261115-003358763-779602`. Hosted ordinary check
+`20261115-003351660-779009` and release check
+`20261115-003425671-780736` passed. Four Rust probe tests cover real draft
+routing, real submission mutation/count retention across tabs, parked automatic
+send detection, atomic sampling/freshness and release cfg boundaries. Actual SDK
+Java DEBUG false/true compilation and bytecode exclusion tests passed. These
+checks do not substitute for Android target builds or emulator acceptance.
+
 The harness is implemented and its synthetic safety tests pass. It has **not**
 been run on any device. It intentionally refuses APKs without an explicit native
 `incoming-share-state-v1` probe marker, before even invoking adb. The existing
 `gpui_demo=todos` route alone is not proof of offline/account safety.
 
-The shared-app source owner must supply the read-only probe contract below and
-ensure the Android demo is offline **before** any account load or connection.
-The debug demo also needs draft routing enabled despite having no real account.
-Do not bypass these prerequisites or replace the observed state with fixtures.
+The explicitly opted-in debug probe implements the read-only contract below.
+The Android share-probe demo is offline **before** any account load or connection. Only
+the share probe creates a synthetic noncredential account and installs the real
+shared deep-link receiver. Do not replace the observed state with fixtures.
 
 ## Commands
 
@@ -45,7 +54,9 @@ to app-private `files/incoming-share-state.json`:
 
 ```json
 {
+  "probe": "incoming-share-state-v1",
   "offline": true,
+  "syntheticAccount": true,
   "connectionPresent": false,
   "autoSendPending": false,
   "activeTab": 2,
@@ -56,10 +67,11 @@ to app-private `files/incoming-share-state.json`:
 }
 ```
 
-- `offline`, `connectionPresent`, `autoSendPending` must read actual shared
+- `offline`, `syntheticAccount`, `connectionPresent`, `autoSendPending` read actual shared
   application fields, including any parked tab's pending automatic sends.
-- `submittedCount` is a monotonic process-wide count of actual outgoing submit
-  attempts, across all tabs. It is not the active transcript length, which can
+- `submittedCount` is a monotonic app-lifetime count of actual outgoing submit
+  mutations, across all tabs. Both the cloud prompt LocalIntent mutation and
+  local-computer submission mutation increment it. It is not the active transcript length, which can
   decrease after changing tabs or include seeded user entries.
 - `frame` is a monotonically increasing snapshot sequence emitted by actual
   GPUI rendering/pumping. It must continue updating during observation periods.
@@ -67,6 +79,24 @@ to app-private `files/incoming-share-state.json`:
 - Production/release builds must not expose this probe, write user content to
   this file, or accept the debug opt-in. Probe output contains only synthetic
   fixture text in the opted-in offline mode.
+
+## Release exclusion gates
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/android-share-probe-release-test.py
+python3 scripts/android-share-probe-release-check.py --apk /path/to/release.apk \
+  --report /path/to/probe-absence.json
+```
+
+The SDK test compiles the actual Java sources twice, with constant DEBUG false
+and true, then inspects actual `javap` instructions and class bytes. The release
+branch must contain neither the probe Intent key nor an invocation of either
+debug JNI configurator. Rust syntax tests enforce Android+debug_assertions cfg
+on the JNI export, private probe path, probe module and app state. Hosted release
+compilation checks the excluded configuration. The artifact gate scans every
+packaged native ABI and all DEX members for the probe export, version/path,
+fixture credential marker and debug Intent key. It is a narrow absence gate,
+not a substitute for the normal signing/manifest/runtime release checks.
 
 The harness rejects any invalid/missing field, connected/nonoffline state or
 pending automatic send. Cold delivery must yield exactly two tabs and zero

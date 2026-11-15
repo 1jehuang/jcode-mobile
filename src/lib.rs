@@ -82,6 +82,36 @@ impl gpui::AssetSource for Assets {
 
 #[cfg(all(target_os = "android", debug_assertions))]
 static ANDROID_DEBUG_DEMO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+#[cfg(all(target_os = "android", debug_assertions))]
+static ANDROID_DEBUG_SHARE_PROBE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(all(target_os = "android", debug_assertions))]
+pub(crate) fn android_debug_share_probe_path() -> Option<&'static std::path::Path> {
+    ANDROID_DEBUG_SHARE_PROBE.get().map(std::path::PathBuf::as_path)
+}
+
+pub(crate) fn android_debug_share_probe_enabled() -> bool {
+    #[cfg(all(target_os = "android", debug_assertions))]
+    { return android_debug_share_probe_path().is_some(); }
+    #[cfg(not(all(target_os = "android", debug_assertions)))]
+    { false }
+}
+
+/// Explicit debug opt-in only. Java supplies its own private files directory,
+/// never a path from an external Intent or a persisted account.
+#[cfg(all(target_os = "android", debug_assertions))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_jcode_mobile_JcodeActivity_nativeConfigureDebugShareProbe(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+    directory: jni::objects::JString,
+) {
+    if !android_debug_demo_enabled() { return; }
+    if let Ok(directory) = env.get_string(&directory) {
+        let directory: String = directory.into();
+        let _ = ANDROID_DEBUG_SHARE_PROBE.set(std::path::PathBuf::from(directory).join("incoming-share-state.json"));
+    }
+}
 
 fn android_debug_demo() -> Option<&'static str> {
     #[cfg(all(target_os = "android", debug_assertions))]

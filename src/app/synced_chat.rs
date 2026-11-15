@@ -511,6 +511,8 @@ impl MobileApp {
         {
             return;
         }
+        #[cfg(any(test, all(target_os = "android", debug_assertions)))]
+        { self.debug_share_probe.submitted_count += 1; }
         chat.submitting = true;
         chat.submitted_images = images.clone();
         chat.delivery_error = None;
