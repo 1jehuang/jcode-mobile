@@ -1008,7 +1008,7 @@ mod tests {
                 match output {
                     ConnectionOutput::Event(ApiEvent::RuntimeInfo { .. }) => runtime_seen = true,
                     ConnectionOutput::Event(ApiEvent::History { messages, .. }) => {
-                        assert_eq!(messages[0]["content"], "pushed transcript");
+                        assert_eq!(messages[0].content, "pushed transcript");
                         history_seen = true;
                         break;
                     }
