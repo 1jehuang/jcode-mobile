@@ -15,13 +15,37 @@ struct WarmTarget<T> {
     account: Account,
     ssh: T,
     expires: Instant,
+    identity: std::sync::Arc<()>,
 }
 
 impl<T: Clone> WarmTarget<T> {
-    fn for_account(&self, account: &Account, now: Instant) -> Option<T> {
-        (self.account.api_key == account.api_key && self.account.api_base == account.api_base && self.expires > now)
-            .then(|| self.ssh.clone())
+    fn for_account(&mut self, account: &Account, now: Instant) -> Option<T> {
+        if self.account.api_key != account.api_key || self.account.api_base != account.api_base || self.expires <= now {
+            return None;
+        }
+        // Five minutes of inactivity, not five minutes since authentication.
+        // Only a matching, still-live cache entry can extend its idle window.
+        self.expires = now + TARGET_TTL;
+        Some(self.ssh.clone())
     }
+}
+
+/// Return this generation's next idle deadline, or retire it. A timer from an
+/// old account/cache generation must never evict its replacement.
+fn expire_idle_master<T>(
+    cache: &mut Option<WarmTarget<T>>,
+    identity: &std::sync::Arc<()>,
+    now: Instant,
+) -> Option<Instant> {
+    let entry = cache.as_ref()?;
+    if !std::sync::Arc::ptr_eq(&entry.identity, identity) {
+        return None;
+    }
+    if entry.expires > now {
+        return Some(entry.expires);
+    }
+    *cache = None;
+    None
 }
 
 type CachedSsh = WarmTarget<crate::cloud_ssh::PreparedSsh>;
@@ -60,6 +84,16 @@ fn lock_with_cancellation<'a, T>(
             }
         }
     }
+}
+
+/// An authenticated cached channel is independent of host provisioning. Keep
+/// this handoff explicit so a stalled API hello cannot retain the cold lock.
+fn open_after_provisioning_unlock<T, R>(
+    guard: std::sync::MutexGuard<'_, T>,
+    open: impl FnOnce() -> R,
+) -> R {
+    drop(guard);
+    open()
 }
 
 /// Share only a failed speculative attempt that overlapped this foreground
@@ -140,8 +174,8 @@ const INSPECTION_CONNECT: Duration = Duration::from_secs(10);
 /// then the control plane, with a short deadline instead of provisioning's.
 pub(crate) fn inspection_ssh(account: &Account) -> Result<crate::cloud_ssh::CloudSsh, String> {
     let cached = {
-        let cache = warm_target().lock().unwrap();
-        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
+        let mut cache = warm_target().lock().unwrap();
+        cache.as_mut().and_then(|entry| entry.for_account(account, Instant::now()))
     };
     if let Some(ssh) = cached.filter(|ssh| !ssh.is_closed()) {
         return Ok(ssh.master().clone());
@@ -484,8 +518,8 @@ pub fn connect(
     };
     check_cancelled()?;
     let cached = {
-        let cache = warm_target().lock().unwrap();
-        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
+        let mut cache = warm_target().lock().unwrap();
+        cache.as_mut().and_then(|entry| entry.for_account(account, Instant::now()))
     };
     if let Some(ssh) = cached {
         progress("Opening your Jcode session…");
@@ -510,31 +544,37 @@ pub fn connect(
     }
     // Concurrent new tabs must not all register new keys and hit the cloud's
     // instance-connect rate limit. Recheck after waiting for another opener.
-    let lock_started = Instant::now();
-    let mut opening = lock_cold_connect(cancelled)?;
-    crate::timing::stage("cold connect lock wait", lock_started.elapsed());
-    check_cancelled()?;
-    let prewarm_failed = take_overlapping_prewarm_failure(&mut opening, account, connect_started);
-    let cached = {
-        let cache = warm_target().lock().unwrap();
-        cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
-    };
-    if let Some(ssh) = cached {
-        progress("Opening your Jcode session…");
-        match ssh.open_client() {
+    let mut prewarm_failed = false;
+    let opening = loop {
+        let lock_started = Instant::now();
+        let mut opening = lock_cold_connect(cancelled)?;
+        crate::timing::stage("cold connect lock wait", lock_started.elapsed());
+        check_cancelled()?;
+        prewarm_failed |= take_overlapping_prewarm_failure(&mut opening, account, connect_started);
+        let cached = {
+            let mut cache = warm_target().lock().unwrap();
+            cache.as_mut().and_then(|entry| entry.for_account(account, Instant::now()))
+        };
+        let Some(ssh) = cached else { break opening };
+        // This lock protects host/key provisioning, not independent API
+        // channels. Release it before a potentially cold API hello. If this
+        // master is dead, retry acquisition and recheck a replacement rather
+        // than provisioning concurrently with another opener.
+        let client = open_after_provisioning_unlock(opening, || {
+            progress("Opening your Jcode session…");
+            ssh.open_client()
+        });
+        match client {
             Ok(client) => {
                 check_cancelled()?;
                 return Ok(client);
             }
-            // But a socket that died while the app was suspended also just
-            // times out. Prove the master before keeping it, or every retry
-            // would wait out the full open timeout on a dead connection.
             Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
                 return Err(error);
             }
             Err(_) => forget_master(&ssh),
         }
-    }
+    };
     check_cancelled()?;
     // Fast path: the machine is usually still awake. SSH straight to the last
     // control-plane-validated address with this device's authorized key and
@@ -837,8 +877,8 @@ pub fn prewarm(account: &Account) {
     let account = account.clone();
     let _ = std::thread::Builder::new().name("jcode-cloud-prewarm".into()).spawn(move || {
         let cached = {
-            let cache = warm_target().lock().unwrap();
-            cache.as_ref().and_then(|entry| entry.for_account(&account, Instant::now()))
+            let mut cache = warm_target().lock().unwrap();
+            cache.as_mut().and_then(|entry| entry.for_account(&account, Instant::now()))
         };
         if let Some(ssh) = cached.filter(|s| !s.is_closed()) {
             // Foregrounding after suspension leaves sockets that look open
@@ -875,20 +915,25 @@ pub fn prewarm(account: &Account) {
 fn cache_master(account: &Account, master: crate::cloud_ssh::CloudSsh) -> crate::cloud_ssh::PreparedSsh {
     let ssh = crate::cloud_ssh::PreparedSsh::new(master);
     let expires = Instant::now() + TARGET_TTL;
+    let identity = std::sync::Arc::new(());
     // Cache authentication before API startup, which may need longer on a
     // waking host. A failed API hello must not throw away successful SSH.
     *warm_target().lock().unwrap() = Some(WarmTarget {
         account: account.clone(),
         ssh: ssh.clone(),
         expires,
+        identity: identity.clone(),
     });
-    // Expire idle masters even when the user never opens another tab. Live
-    // channels retain their own master handles and are not interrupted.
+    // One timer per published master, not one per reuse. Matching activity
+    // extends the idle deadline; sign-out/replacement retires this generation.
+    // The timer retains no authenticated connection or account credentials.
     std::thread::spawn(move || {
-        std::thread::sleep(TARGET_TTL);
-        let mut cache = warm_target().lock().unwrap();
-        if cache.as_ref().is_some_and(|entry| entry.expires == expires) {
-            *cache = None;
+        let mut deadline = expires;
+        loop {
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            let next = expire_idle_master(&mut warm_target().lock().unwrap(), &identity, Instant::now());
+            let Some(next) = next else { break };
+            deadline = next;
         }
     });
     ssh
@@ -1063,7 +1108,7 @@ mod tests {
     fn warm_master_is_scoped_to_credentials_endpoint_and_expiry() {
         let account = Account { given_name: None, name: None, api_key: "key-a".into(), email: None, api_base: DEFAULT_API_BASE.into() };
         let now = Instant::now();
-        let entry = WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL };
+        let mut entry = WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL, identity: std::sync::Arc::new(()) };
         assert_eq!(entry.for_account(&account, now), Some(7));
         let mut profile_updated = account.clone();
         profile_updated.given_name = Some("Jeremy".into());

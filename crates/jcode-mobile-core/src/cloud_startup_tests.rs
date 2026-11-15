@@ -63,6 +63,68 @@ fn busy() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+#[test]
+fn warm_cache_reuse_renews_idle_deadline_not_authentication() {
+    let account = Account { given_name: None, name: None, api_key: "fixture".into(), email: None, api_base: "https://fixture.invalid".into() };
+    let now = Instant::now();
+    let identity = Arc::new(());
+    let master = Arc::new(());
+    let mut cache = Some(WarmTarget { account: account.clone(), ssh: master.clone(), expires: now + TARGET_TTL, identity: identity.clone() });
+    for minute in [4, 8, 12] {
+        let at = now + Duration::from_secs(minute * 60);
+        let reused = cache.as_mut().unwrap().for_account(&account, at).expect("active master was expired by creation age");
+        assert!(Arc::ptr_eq(&master, &reused), "reuse replaced the authenticated master");
+        assert_eq!(expire_idle_master(&mut cache, &identity, at), Some(at + TARGET_TTL));
+    }
+    let idle_end = now + Duration::from_secs(17 * 60);
+    assert!(cache.as_mut().unwrap().for_account(&account, idle_end).is_none(), "expired cache must not revive");
+    assert_eq!(expire_idle_master(&mut cache, &identity, idle_end), None);
+    assert!(cache.is_none());
+}
+
+#[test]
+fn warm_cache_wrong_account_and_old_timer_cannot_extend_or_evict_replacement() {
+    let account = Account { given_name: None, name: None, api_key: "fixture".into(), email: None, api_base: "https://fixture.invalid".into() };
+    let now = Instant::now();
+    let identity = Arc::new(());
+    let mut cache = Some(WarmTarget { account: account.clone(), ssh: 7, expires: now + TARGET_TTL, identity: identity.clone() });
+    for other in [Account { api_key: "different".into(), ..account.clone() }, Account { api_base: "https://other.invalid".into(), ..account.clone() }] {
+        assert_eq!(cache.as_mut().unwrap().for_account(&other, now + Duration::from_secs(240)), None);
+        assert_eq!(cache.as_ref().unwrap().expires, now + TARGET_TTL);
+    }
+    let retired_identity = Arc::new(());
+    assert_eq!(expire_idle_master(&mut cache, &retired_identity, now + TARGET_TTL), None);
+    assert!(cache.is_some(), "old generation evicted its replacement");
+    cache = None; // sign-out: a late timer must not restore anything.
+    assert_eq!(expire_idle_master(&mut cache, &identity, now + TARGET_TTL), None);
+    assert!(cache.is_none());
+}
+
+#[test]
+fn cached_api_open_releases_provisioning_before_blocked_hello() {
+    let mutex = Arc::new(Mutex::new(0usize));
+    let worker_mutex = mutex.clone();
+    let (started, opening) = mpsc::channel();
+    let (release, gate) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let guard = worker_mutex.lock().unwrap();
+        open_after_provisioning_unlock(guard, || {
+            started.send(()).unwrap();
+            gate.recv_timeout(Duration::from_secs(5)).unwrap();
+            42
+        })
+    });
+    opening.recv_timeout(Duration::from_secs(5)).unwrap();
+    // A simulated API hello is still blocked. Other callers can acquire the
+    // real production handoff's lock and recheck the authenticated cache now.
+    let mut guard = mutex.try_lock().expect("API hello retained provisioning lock");
+    *guard = 1;
+    drop(guard);
+    release.send(()).unwrap();
+    assert_eq!(worker.join().unwrap(), 42);
+    assert_eq!(*mutex.lock().unwrap(), 1);
+}
+
 fn await_permit_release(permit: &AtomicBool) {
     let watchdog = Instant::now() + Duration::from_secs(10);
     while permit.load(Ordering::Acquire) {
