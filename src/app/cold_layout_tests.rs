@@ -10,6 +10,7 @@ fn long_entry(index: usize) -> TranscriptEntry {
     while text.len() < 4096 {
         text.push_str(paragraph);
     }
+    text.truncate(4096); // The repeated ASCII suffix makes this a UTF-8 boundary.
     TranscriptEntry {
         id: index as u64,
         role: if index % 5 == 0 {
@@ -81,6 +82,15 @@ fn cold_long_rows_preserve_exact_geometry_through_jumps_edits_and_resize(cx: &mu
         app.session.phase = ConnectionPhase::Connected;
         app.follow = false;
         app.session.transcript = (0..COUNT).map(long_entry).collect();
+        app.session.transcript[1]
+            .tool_calls
+            .push(jcode_mobile_core::ToolCall {
+                id: "cold-layout-tool".into(),
+                name: "read".into(),
+                input: r#"{"path":"fixture.rs"}"#.into(),
+                output: "An expanded output line.\n".repeat(40),
+                status: jcode_mobile_core::ToolStatus::Running,
+            });
         app.transcript_heights = Default::default();
         cx.notify();
     });
@@ -94,7 +104,7 @@ fn cold_long_rows_preserve_exact_geometry_through_jumps_edits_and_resize(cx: &mu
             app.session
                 .transcript
                 .iter()
-                .all(|entry| entry.text.len() >= 4096)
+                .all(|entry| entry.text.len() == 4096)
         );
     });
     view.update(cx, |_, cx| cx.notify());
@@ -111,6 +121,25 @@ fn cold_long_rows_preserve_exact_geometry_through_jumps_edits_and_resize(cx: &mu
         compare_with_full_layout(&view, cx, COUNT);
     }
     view.update(cx, |app, cx| {
+        app.expanded_tools.insert("cold-layout-tool".into());
+        cx.notify();
+    });
+    draw(cx);
+    view.update(cx, |_, cx| cx.notify());
+    draw(cx);
+    compare_with_full_layout(&view, cx, COUNT);
+    view.update(cx, |app, cx| {
+        let call = &mut app.session.transcript[1].tool_calls[0];
+        call.output = "Replacement output with different wrapping and height. ".repeat(200);
+        call.status = jcode_mobile_core::ToolStatus::Succeeded;
+        cx.notify();
+    });
+    draw(cx);
+    view.update(cx, |_, cx| cx.notify());
+    draw(cx);
+    compare_with_full_layout(&view, cx, COUNT);
+    view.update(cx, |app, cx| {
+        app.expanded_tools.remove("cold-layout-tool");
         // Same byte length, different line structure: byte counts cannot stand in for geometry.
         app.session.transcript[1].text = "\n".repeat(app.session.transcript[1].text.len());
         app.session.transcript[COUNT - 1]
