@@ -156,6 +156,23 @@ impl TextInput {
         cx.notify();
     }
 
+    fn set_accessible_value(
+        &mut self,
+        data: Option<&gpui::accesskit::ActionData>,
+        cx: &mut Context<Self>,
+    ) {
+        // Recheck mutable state at dispatch time, not just when the action was
+        // advertised. A stale accessibility request must not edit a viewer.
+        if self.read_only {
+            return;
+        }
+        if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+            // Use the ordinary full-draft replacement path: reset composition,
+            // clamp the caret, emit Changed, and never synthesize Submit.
+            self.set_text(value.as_ref().to_owned(), cx);
+        }
+    }
+
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
         cx.notify();
@@ -774,7 +791,23 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let focused = self.focus_handle.is_focused(window);
+        let input = cx.entity().downgrade();
         div()
+            .id(("text-input", cx.entity_id()))
+            .role(if self.secure {
+                gpui::Role::PasswordInput
+            } else {
+                gpui::Role::TextInput
+            })
+            .aria_label(self.placeholder.clone())
+            .aria_placeholder(self.placeholder.clone())
+            // Never give secret text (or its length) to an accessibility node.
+            .when(!self.secure, |field| field.aria_value(self.content.clone()))
+            .when(!self.read_only, |field| {
+                field.on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                    let _ = input.update(cx, |input, cx| input.set_accessible_value(data, cx));
+                })
+            })
             .key_context("TextInput")
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
@@ -947,6 +980,110 @@ mod ios_keyboard_tests {
         let a = offset(range.start);
         let b = offset(range.end);
         a.min(b)..a.max(b)
+    }
+
+    fn rendered_accessibility(
+        input: &Entity<TextInput>,
+        cx: &mut VisualTestContext,
+    ) -> (ElementId, gpui::accesskit::Node) {
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                let field = input.render(window, cx).into_element();
+                let id = field
+                    .id()
+                    .expect("text inputs need stable accessibility IDs");
+                let mut node = gpui::accesskit::Node::new(field.a11y_role().unwrap());
+                field.write_a11y_info(&mut node);
+                (id, node)
+            })
+        })
+    }
+
+    #[gpui::test]
+    fn accessibility_render_exposes_real_text_and_stable_entity_id(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        input.update(cx, |input, cx| {
+            input.placeholder = "Message".into();
+            input.set_text("日本😀\nsecond line", cx);
+        });
+        let (id, node) = rendered_accessibility(&input, cx);
+        assert_eq!(node.role(), gpui::Role::TextInput);
+        assert_eq!(node.label(), Some("Message"));
+        assert_eq!(node.placeholder(), Some("Message"));
+        assert_eq!(node.value(), Some("日本😀\nsecond line"));
+        assert!(node.supports_action(gpui::AccessibleAction::Focus));
+        assert!(node.supports_action(gpui::AccessibleAction::SetValue));
+        input.update(cx, |input, cx| input.set_text("replacement", cx));
+        let (next_id, node) = rendered_accessibility(&input, cx);
+        assert_eq!(id, next_id);
+        assert_eq!(node.value(), Some("replacement"));
+        let other = cx.new(|cx| TextInput::new("Message", cx));
+        assert_ne!(id, rendered_accessibility(&other, cx).0);
+    }
+
+    #[gpui::test]
+    fn accessibility_secure_fields_never_publish_value_or_secret_length(cx: &mut TestAppContext) {
+        let (input, cx) = setup(cx);
+        for secret in ["", "s", "private-credential-😀"] {
+            input.update(cx, |input, cx| {
+                input.secure = true;
+                input.placeholder = "Password".into();
+                input.set_text(secret, cx);
+            });
+            let (_, node) = rendered_accessibility(&input, cx);
+            assert_eq!(node.role(), gpui::Role::PasswordInput);
+            assert_eq!(node.label(), Some("Password"));
+            assert_eq!(node.placeholder(), Some("Password"));
+            assert_eq!(node.value(), None);
+            assert!(node.supports_action(gpui::AccessibleAction::SetValue));
+        }
+    }
+
+    #[gpui::test]
+    fn accessibility_set_value_resets_composition_and_rejects_read_only_or_wrong_payload(
+        cx: &mut TestAppContext,
+    ) {
+        let (input, cx) = setup(cx);
+        let changes = std::rc::Rc::new(std::cell::Cell::new((0, 0)));
+        let events = changes.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&input, move |_, event, _| {
+                let (changed, submitted) = events.get();
+                events.set(match event {
+                    TextInputEvent::Changed => (changed + 1, submitted),
+                    TextInputEvent::Submit => (changed, submitted + 1),
+                });
+            })
+            .detach();
+        });
+        with_handler(cx, |input, window, cx| {
+            input.replace_and_mark_text_in_range(None, "draft", None, window, cx);
+            input.scroll_y = px(60.);
+            input.selection_anchor = Some(1);
+            input.set_accessible_value(
+                Some(&gpui::accesskit::ActionData::Value("日本😀".into())),
+                cx,
+            );
+            assert_eq!(input.text(), "日本😀");
+            assert_eq!(input.selected_range, "日本😀".len().."日本😀".len());
+            assert_eq!(input.marked_range, None);
+            assert_eq!(input.selection_anchor, None);
+            assert_eq!(input.scroll_y, px(0.));
+            input.set_accessible_value(None, cx);
+            input.set_accessible_value(Some(&gpui::accesskit::ActionData::NumericValue(5.)), cx);
+            assert_eq!(input.text(), "日本😀");
+            // The handler rechecks current read_only for an already queued request.
+            input.read_only = true;
+            input.set_accessible_value(
+                Some(&gpui::accesskit::ActionData::Value("must not edit".into())),
+                cx,
+            );
+            assert_eq!(input.text(), "日本😀");
+        });
+        assert_eq!(changes.get(), (1, 0), "SetValue changes text without submitting");
+        let (_, node) = rendered_accessibility(&input, cx);
+        assert!(!node.supports_action(gpui::AccessibleAction::SetValue));
+        assert_eq!(node.value(), Some("日本😀"));
     }
 
     #[derive(Default)]
