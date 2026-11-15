@@ -77,8 +77,14 @@ signatures. These artifacts are debug/test only and must not be published:
 
 | Artifact under `target/android/` | SHA256 |
 | --- | --- |
-| `JcodeMobile-gpui-5198b79-api36-debug.apk` | `5f585641caa71f6ec7e87f5a763d996e62565f27cea41ede8c60a12b1ebdbfea` |
-| `JcodeMobile-gpui-5198b79-api36-debug-UNSIGNED-TEST-ONLY.aab` | `5848ea128628051d39303c74b2c6c134a57fb902651e0521704780790ca35178` |
+| `JcodeMobile-gpui-5198b79-api36-a11y-debug.apk` | `1ac3fbedb05a16a95d11227ee2b20ca9df8f450fe49f6d4dd563ec0d6c4be450` |
+| `JcodeMobile-gpui-5198b79-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab` | `405987cd67d7be49ff01a16fcfbc45fe2b278dd325fde54f0074a0dbf4dcc7f3` |
+
+These supersede the earlier `api36-debug` pair. They include app commit
+`dd343b9`, attaching the semantic provider to NativeActivity's real native
+content host rather than requiring a `SurfaceView`. The locked dual-ABI APK
+rebuild passed in 16.9 seconds, and the matching actual AAB build/validation
+passed in 28.7 seconds. The AAB remains unsigned.
 
 The actual AAB was built from that APK, not mocked: `aapt2 convert
 --output-format proto`, `scripts/android-bundle.py`, then Google bundletool
