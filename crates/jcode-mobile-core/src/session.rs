@@ -131,6 +131,14 @@ impl ToolCall {
     }
 }
 
+fn tool_input_text(input: serde_json::Value) -> String {
+    match input {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s,
+        value => serde_json::to_string_pretty(&value).unwrap_or_default(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssistantPhase {
     Text,
@@ -192,38 +200,99 @@ pub struct TranscriptEntry {
     pub is_queued: bool,
 }
 
-/// Decode a synced snapshot without inventing metadata lost by desktop sync.
-/// Unlike harness history, sync flattens tool uses into prose and omits tool
-/// identities and reasoning blocks. Keep those summaries and result rows visible.
+/// Decode synced metadata into the same prose/tool phases as cloud history.
+/// Old snapshots retain visible summaries rather than guessed tool identities.
 pub fn synced_transcript_entries(
     messages: Vec<crate::mobile_sync::SyncedMessage>,
 ) -> Vec<TranscriptEntry> {
-    messages.into_iter().filter_map(|message| {
+    synced_snapshot(messages).0
+}
+
+fn synced_snapshot(
+    messages: Vec<crate::mobile_sync::SyncedMessage>,
+) -> (Vec<TranscriptEntry>, HashMap<u64, Vec<SessionImage>>) {
+    let mut entries: Vec<TranscriptEntry> = Vec::new();
+    let mut images: HashMap<u64, Vec<SessionImage>> = HashMap::new();
+    let mut used: HashSet<u64> = messages.iter().map(|m| m.seq).collect();
+    for message in messages {
+        let structured = message.display_text.is_some()
+            || !message.tool_calls.is_empty() || !message.tool_results.is_empty();
         let role = match message.role.as_str() {
             "user" => Role::User,
             "assistant" => Role::Assistant,
             "tool" if !message.images.is_empty() => Role::Assistant,
             "system" | "tool" => Role::System,
-            _ => return None,
+            _ => continue,
         };
-        if message.content.is_empty() && message.images.is_empty() {
-            return None;
+        let text = message.display_text.unwrap_or_else(|| {
+            if structured { String::new() } else { message.content }
+        });
+        let mut anchor = None;
+        let mut seq_available = true;
+        if !text.is_empty() {
+            let (text, reasoning) = match message.role.as_str() {
+                "assistant" => history_assistant_content(text),
+                "tool" if !structured => (format!("Tool result\n{text}"), String::new()),
+                _ => (text, String::new()),
+            };
+            entries.push(TranscriptEntry { id: message.seq, role, text, reasoning,
+                tool_calls: vec![], is_streaming: false, is_queued: false });
+            anchor = Some(message.seq);
+            seq_available = false;
         }
-        let (text, reasoning) = match message.role.as_str() {
-            "assistant" => history_assistant_content(message.content),
-            "tool" => (format!("Tool result\n{}", message.content), String::new()),
-            _ => (message.content, String::new()),
-        };
-        Some(TranscriptEntry {
-            id: message.seq,
-            role,
-            text,
-            reasoning,
-            tool_calls: vec![],
-            is_streaming: false,
-            is_queued: false,
-        })
-    }).collect()
+        let mut cards: Vec<ToolCall> = message.tool_calls.into_iter().map(|tool| {
+            let mut card = ToolCall::new(tool.id, tool.name, ToolStatus::Running);
+            card.input = tool_input_text(tool.input);
+            card
+        }).collect();
+        for result in message.tool_results {
+            let status = if result.is_error { ToolStatus::Failed(result.content.clone()) }
+                else { ToolStatus::Succeeded };
+            if let Some(card) = cards.iter_mut().find(|c| c.id == result.tool_use_id) {
+                card.output = result.content;
+                card.status = status;
+            } else if let Some(entry) = entries.iter_mut().rev()
+                .find(|e| e.tool_calls.iter().any(|c| c.id == result.tool_use_id)) {
+                let card = entry.tool_calls.iter_mut().find(|c| c.id == result.tool_use_id).unwrap();
+                card.output = result.content;
+                card.status = status;
+                anchor = Some(entry.id);
+            } else {
+                // A paged snapshot may begin after the tool use.
+                let mut card = ToolCall::new(result.tool_use_id, "tool", status);
+                card.output = result.content;
+                cards.push(card);
+            }
+        }
+        if !cards.is_empty() {
+            if let Some(entry) = entries.last_mut().filter(|e| e.role == Role::Assistant && !e.tool_calls.is_empty()) {
+                entry.tool_calls.extend(cards);
+                anchor = Some(entry.id);
+            } else {
+                // Mixed prose + tool messages need two phase rows. Keep the
+                // stored sequence for prose and a stable disjoint ID for tools.
+                let mut id = message.seq;
+                if !seq_available {
+                    id ^= 1 << 63;
+                    while !used.insert(id) { id = id.wrapping_add(1); }
+                }
+                entries.push(TranscriptEntry { id, role: Role::Assistant, text: String::new(),
+                    reasoning: String::new(), tool_calls: cards, is_streaming: false, is_queued: false });
+                anchor = Some(id);
+            }
+        }
+        let photos: Vec<_> = message.images.iter()
+            .filter_map(|image| SessionImage::from_wire(&image.media_type, &image.data)).collect();
+        if !photos.is_empty() {
+            let id = anchor.unwrap_or_else(|| {
+                entries.push(TranscriptEntry { id: message.seq, role, text: String::new(),
+                    reasoning: String::new(), tool_calls: vec![], is_streaming: false, is_queued: false });
+                message.seq
+            });
+            images.entry(id).or_default().extend(photos);
+        }
+    }
+    (entries, images)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,12 +413,7 @@ pub enum LocalIntent {
 impl SessionState {
     /// Replace a synced snapshot and its inline media as one reducer update.
     pub fn apply_synced_messages(&mut self, messages: Vec<crate::mobile_sync::SyncedMessage>) {
-        self.images = messages.iter().filter_map(|message| {
-            let photos: Vec<_> = message.images.iter()
-                .filter_map(|image| SessionImage::from_wire(&image.media_type, &image.data)).collect();
-            (!photos.is_empty()).then_some((message.seq, photos))
-        }).collect();
-        self.transcript = synced_transcript_entries(messages);
+        (self.transcript, self.images) = synced_snapshot(messages);
     }
     pub fn title_for(&self, session_id: &str) -> Option<&str> {
         self.session_titles.get(session_id).map(String::as_str)
@@ -800,11 +864,7 @@ impl SessionState {
             if m.role == "tool" {
                 let Some(tool) = m.tool else { continue };
                 let mut card = ToolCall::new(tool.id, tool.name, ToolStatus::Succeeded);
-                card.input = match tool.input {
-                    serde_json::Value::Null => String::new(),
-                    serde_json::Value::String(s) => s,
-                    v => serde_json::to_string_pretty(&v).unwrap_or_default(),
-                };
+                card.input = tool_input_text(tool.input);
                 card.output = m.content;
                 match transcript.last_mut() {
                     Some(e) if e.role == Role::Assistant && !e.tool_calls.is_empty() => e.tool_calls.push(card),
@@ -985,6 +1045,58 @@ mod tests {
         assert_eq!(entries[2].text, "Tool result\noutput\n… (truncated)");
         assert!(entries.iter().all(|e| e.reasoning.is_empty() && e.tool_calls.is_empty()
             && !e.is_streaming && !e.is_queued));
+    }
+
+    #[test]
+    fn structured_sync_matches_cloud_history_tool_phases() {
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":0,"role":"user","text":"go"},
+            {"seq":2,"role":"assistant","text":"on it\n\n🔧 bash: ls",
+             "display_text":"on it", "tool_calls":[
+                 {"id":"a","name":"bash","input":{"command":"ls"}},
+                 {"id":"b","name":"bash","input":{"command":"ls"}}]},
+            {"seq":3,"role":"tool","text":"x\n\ny","display_text":"", "tool_results":[
+                {"tool_use_id":"a","content":"x","is_error":false},
+                {"tool_use_id":"b","content":"y","is_error":false}]},
+            {"seq":4,"role":"assistant","text":"**done**"}
+        ])).unwrap();
+        let mut synced = synced_transcript_entries(messages);
+        let tool = |id: &str, output: &str| HistoryMessage {
+            response_stats: None, role: "tool".into(), content: output.into(),
+            tool: Some(jcode_sdk::HistoryTool { id: id.into(), name: "bash".into(),
+                input: serde_json::json!({"command":"ls"}) }),
+        };
+        let mut cloud = SessionState::default();
+        ev(&mut cloud, E::History { session_id: sid(), images: vec![], messages: vec![
+            hm("user", "go"), hm("assistant", "on it"), tool("a", "x"), tool("b", "y"),
+            hm("assistant", "**done**")], });
+        assert_eq!(synced.len(), 4);
+        // Cloud IDs are allocation IDs, sync IDs are stable stored sequences.
+        for entry in synced.iter_mut().chain(cloud.transcript.iter_mut()) { entry.id = 0; }
+        assert_eq!(synced, cloud.transcript);
+    }
+
+    #[test]
+    fn structured_sync_resolves_late_errors_and_keeps_grouped_image_anchor() {
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":1,"role":"assistant","text":"legacy summary", "display_text":"",
+             "reasoning":"private hidden thought", "thinking":"also private",
+             "tool_calls":[{"id":"a","name":"image","input":null}]},
+            {"seq":2,"role":"assistant","text":"Still working"},
+            {"seq":3,"role":"tool","text":"legacy result", "display_text":"",
+             "tool_results":[{"tool_use_id":"a","content":"failed","is_error":true}],
+             "images":[{"media_type":"image/png","data":"AQID"}]},
+            {"seq":4,"role":"tool","text":"missing earlier page", "display_text":"",
+             "tool_results":[{"tool_use_id":"orphan","content":"ok"}]}
+        ])).unwrap();
+        let mut state = SessionState::default();
+        state.apply_synced_messages(messages);
+        assert_eq!(state.transcript.len(), 3);
+        assert_eq!(state.transcript[0].tool_calls[0].status, ToolStatus::Failed("failed".into()));
+        assert_eq!(state.images_for(1)[0].bytes.as_slice(), [1, 2, 3]);
+        assert!(state.images_for(3).is_empty());
+        assert_eq!(state.transcript[2].tool_calls[0].id, "orphan");
+        assert!(state.transcript.iter().all(|e| e.role == Role::Assistant && e.reasoning.is_empty()));
     }
 
     #[test]

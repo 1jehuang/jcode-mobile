@@ -25,6 +25,48 @@ fn snapshot() -> SyncedTranscript {
 }
 
 #[gpui::test]
+fn structured_sync_uses_cloud_tool_cards_at_phone_widths(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::tap;
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    view.update(cx, |app, cx| {
+        let mut history = snapshot();
+        history.messages = serde_json::from_value(serde_json::json!([
+            {"seq":0,"role":"user","text":"Inspect the file"},
+            {"seq":1,"role":"assistant","text":"Checking\n\n🔧 Read: path",
+             "display_text":"Checking", "tool_calls":[
+                 {"id":"synced-card","name":"Read_with_an_extremely_long_tool_name",
+                  "input":{"file_path":"/workspace/long/".to_owned() + &"界🦀path".repeat(90)}}]},
+            {"seq":2,"role":"tool","text":"legacy output", "display_text":"",
+             "tool_results":[{"tool_use_id":"synced-card","content":"output line\n".repeat(15)}]},
+            {"seq":3,"role":"assistant","text":"**Done**"}
+        ])).unwrap();
+        app.open_local_chat(history.session.clone(), None, cx);
+        app.apply_local_poll(app.active_tab, Ok(history), None);
+        assert_eq!(app.session.transcript.len(), 4);
+        assert_eq!(app.session.transcript[2].tool_calls[0].name, "Read_with_an_extremely_long_tool_name");
+        assert!(app.session.transcript.iter().all(|e| e.role != Role::System));
+        cx.notify();
+    });
+    for width in [320., 390., 430.] {
+        view.update(cx, |app, cx| { app.device = Some((width, 844.)); cx.notify(); });
+        cx.simulate_resize(size(px(width), px(844.)));
+        cx.update(|window, cx| { window.set_emulate_touch_from_mouse(true); window.draw(cx).clear(cx); });
+        let collapsed = cx.debug_bounds("tool-synced-card").expect("shared cloud tool control");
+        let viewport = view.read_with(cx, |app, _| app.transcript_scroll.bounds());
+        assert!(collapsed.left() >= viewport.left() && collapsed.right() <= viewport.right(),
+            "tool card overflows {width}px phone: {collapsed:?} in {viewport:?}");
+        assert!(cx.debug_bounds("synced-output-2").is_none(), "structured result must not render legacy System prose");
+        tap(cx, "tool-synced-card");
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert!(cx.debug_bounds("tool-synced-card").unwrap().size.height > collapsed.size.height);
+        tap(cx, "tool-synced-card");
+        cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        assert_eq!(cx.debug_bounds("tool-synced-card").unwrap().size.height, collapsed.size.height);
+    }
+}
+
+#[gpui::test]
 fn newly_opened_synced_chat_follows_tail_without_changing_previous_reader(cx: &mut TestAppContext) {
     cx.update(init);
     let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);

@@ -3,7 +3,7 @@ use super::{MobileApp, same_account};
 use gpui::{AppContext, Context};
 use jcode_mobile_core::{
     mobile_sync::{self, Command, SyncedSession, SyncedTranscript},
-    session::{ConnectionPhase, SessionState, synced_transcript_entries},
+    session::{ConnectionPhase, SessionState},
 };
 use std::time::Duration;
 

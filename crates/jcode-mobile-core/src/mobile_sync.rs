@@ -77,6 +77,29 @@ pub struct SyncedMessage {
     /// Inline bytes from the owning computer, never a computer-local path.
     #[serde(default)]
     pub images: Vec<SyncedImage>,
+    /// Visible prose only, excluding legacy flattened tool summaries. No reasoning.
+    #[serde(default)]
+    pub display_text: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<SyncedToolCall>,
+    #[serde(default)]
+    pub tool_results: Vec<SyncedToolResult>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SyncedToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SyncedToolResult {
+    pub tool_use_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -2313,6 +2313,9 @@ impl MobileApp {
             .debug_selector({ let id = call.id.clone(); move || format!("tool-{id}") })
             .flex()
             .flex_col()
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.expanded_tools.remove(&id) {
@@ -2324,11 +2327,13 @@ impl MobileApp {
             .child(
                 div()
                     .flex()
+                    .w_full()
+                    .min_w_0()
                     .items_center()
                     .gap(px(6.))
                     .text_size(crate::system::fs(12.))
                     .child(div().flex_none().text_color(color).child(glyph))
-                    .child(div().flex_none().text_color(t.text).child(call.name.clone()))
+                    .child(div().flex_shrink_0().max_w(px(104.)).truncate().text_color(t.text).child(call.name.clone()))
                     .when(!headline.is_empty(), |d| {
                         d.child(div().flex_none().text_color(t.text_muted).child("·"))
                             .child(div().flex_1().min_w_0().truncate().text_color(t.text_secondary).child(headline))
