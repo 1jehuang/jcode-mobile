@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Match the iOS donated activities exactly: routes only, no supplied text. -->
+    <shortcut android:shortcutId="new-session" android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_new_session"
+        android:icon="@android:drawable/ic_menu_add">
+        <intent android:action="android.intent.action.VIEW" android:data="jcode://new"
+            android:targetPackage="org.jcode.mobile" android:targetClass="org.jcode.mobile.JcodeActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="ask" android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_ask"
+        android:icon="@android:drawable/ic_menu_send">
+        <intent android:action="android.intent.action.VIEW" android:data="jcode://ask"
+            android:targetPackage="org.jcode.mobile" android:targetClass="org.jcode.mobile.JcodeActivity" />
+    </shortcut>
+</shortcuts>

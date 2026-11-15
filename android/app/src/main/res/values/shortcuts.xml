@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_new_session">New jcode session</string>
+    <string name="shortcut_ask">Ask jcode</string>
+</resources>

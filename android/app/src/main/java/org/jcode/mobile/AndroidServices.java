@@ -435,7 +435,11 @@ public final class AndroidServices {
             if (rows.length() == 0) { manager.removeAllDynamicShortcuts(); return true; }
             if (manager.isRateLimitingActive()) return false;
             ArrayList<ShortcutInfo> shortcuts = new ArrayList<>();
-            int count = Math.min(rows.length(), manager.getMaxShortcutCountPerActivity());
+            // Static New/Ask entries share the per-activity quota with sessions.
+            // Keep this count in sync with res/xml/shortcuts.xml.
+            final int staticShortcutCount = 2;
+            int capacity = Math.max(0, manager.getMaxShortcutCountPerActivity() - staticShortcutCount);
+            int count = Math.min(rows.length(), capacity);
             for (int i = 0; i < count; i++) {
                 JSONArray row = rows.getJSONArray(i);
                 String id = row.getString(0), title = row.getString(1);

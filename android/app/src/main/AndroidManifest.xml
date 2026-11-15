@@ -16,6 +16,7 @@
         <!-- Service-only NativeActivity subclass. GPUI owns the entire window. -->
         <activity android:name=".JcodeActivity" android:launchMode="singleTop" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="jcode_mobile" />
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
