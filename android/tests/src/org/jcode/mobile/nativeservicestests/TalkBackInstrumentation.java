@@ -65,7 +65,19 @@ public final class TalkBackInstrumentation extends Instrumentation {
             return -1;
         });
     }
+    private void requireTargetWindow() throws Exception {
+        // Permission prompts, TalkBack onboarding and other system windows must be
+        // handled explicitly by the coordinator. Never dismiss or grant them here.
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (ui(() -> activity != null && !activity.isFinishing() && !activity.isDestroyed()
+                    && activity.hasWindowFocus()
+                    && activity.getWindow().getDecorView().hasWindowFocus())) return;
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("UNTESTABLE_SETUP_OBSTRUCTION: real target Activity lacks window focus; an external permission/tutorial/system window may be active. Coordinator must inspect and resolve setup explicitly, then rerun. No traversal established.");
+    }
     private void swipeRight() throws Exception {
+        requireTargetWindow();
         int[] size = ui(() -> new int[] {activity.getWindow().getDecorView().getWidth(), activity.getWindow().getDecorView().getHeight()});
         long down = SystemClock.uptimeMillis();
         for (int i = 0; i <= 12; i++) {
@@ -73,7 +85,13 @@ public final class TalkBackInstrumentation extends Instrumentation {
             MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action,
                     size[0] * (0.25f + i * 0.5f / 12), size[1] * 0.5f, 0);
             event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-            try { sendPointerSync(event); } finally { event.recycle(); }
+            try {
+                require(ui(() -> activity.hasWindowFocus() && activity.getWindow().getDecorView().hasWindowFocus()),
+                        "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus during gesture; no traversal established");
+                sendPointerSync(event);
+            } catch (IllegalArgumentException | SecurityException injectionFailure) {
+                throw new AssertionError("UNTESTABLE_SETUP_OBSTRUCTION: targeted input injection was rejected, possibly because an external window owns focus. Coordinator must resolve setup explicitly; no traversal established.", injectionFailure);
+            } finally { event.recycle(); }
             SystemClock.sleep(15);
         }
     }
@@ -108,6 +126,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
             require(installedEnabled && manager.isEnabled() && manager.isTouchExplorationEnabled(), "UNTESTABLE: real installed TalkBack not bound with touch exploration");
             activity = startActivitySync(new Intent().setClassName("org.jcode.mobile", "org.jcode.mobile.JcodeActivity")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("gpui_demo", "todos"));
+            requireTargetWindow();
             for (int i = 0; i < 200; i++) {
                 provider = ui(() -> { View view = host(activity.findViewById(android.R.id.content)); return view == null ? null : view.getAccessibilityNodeProvider(); });
                 if (provider != null && ui(() -> ids().size()) >= 2) break;
