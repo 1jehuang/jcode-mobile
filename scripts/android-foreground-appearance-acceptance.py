@@ -25,6 +25,65 @@ LIFECYCLE = re.compile(r"(?:am|wm)_(?:(?:on_)?(?:create|start|restart|resume|res
 APP = re.compile(r"(?<![\w.])org\.jcode\.mobile(?=(?:/|\.JcodeActivity(?![\w.$])|[ ,\]}]|$))")
 SERVICE_FIELDS = ("mNightMode", "mNightModeLocked", "mUiModeLocked", "mComputedNightMode",
                   "mOverrideNightModeOn", "mOverrideNightModeOff", "mCurUiMode")
+SHELL_REQUIRED_PERMISSIONS = ("android.permission.MODIFY_DAY_NIGHT_MODE", "android.permission.CHANGE_CONFIGURATION")
+
+
+def shell_capability(uid, dump):
+    """Actual shell UID and concordant package/shared-UID install grants, never requests."""
+    if uid.strip() != "2000":
+        raise AssertionError("Require actual adb shell UID 2000, not root or an inferred package UID")
+    def section(name):
+        matches = re.findall(r"^" + re.escape(name) + r":[ \t]*\n(.*?)(?=^\S|\Z)", dump, re.MULTILINE | re.DOTALL)
+        if len(matches) != 1:
+            raise AssertionError("Missing/ambiguous shell package section " + name)
+        return matches[0]
+    packages = section("Packages")
+    headers = re.findall(r"^  Package \[([^\]]+)\] \(([a-f0-9]+)\):[ \t]*$", packages, re.MULTILINE)
+    if len(headers) != 1 or headers[0][0] != "com.android.shell":
+        raise AssertionError("Require uniquely scoped com.android.shell package record")
+    package_token = headers[0][1]
+    if re.findall(r"^    appId=(\d+)[ \t]*$", packages, re.MULTILINE) != ["2000"]:
+        raise AssertionError("Actual shell package appId does not match caller UID")
+    shared = re.findall(r"^    sharedUser=SharedUserSetting\{([a-f0-9]+) android\.uid\.shell/2000\}[ \t]*$", packages, re.MULTILINE)
+    if len(shared) != 1:
+        raise AssertionError("Cannot establish shell shared UID ownership")
+    users = re.findall(r"^    User 0:([^\n]*)$", packages, re.MULTILINE)
+    if len(users) != 1 or not all(re.search(r"\b" + value + r"\b", users[0]) for value in ("installed=true", "hidden=false", "suspended=false")):
+        raise AssertionError("Shell package is not explicitly installed/available for primary user 0")
+    shared_users = section("Shared users")
+    shared_headers = re.findall(r"^  SharedUser \[([^\]]+)\] \(([a-f0-9]+)\):[ \t]*$", shared_users, re.MULTILINE)
+    if shared_headers != [("android.uid.shell", shared[0])]:
+        raise AssertionError("Ambiguous/mismatched shell shared UID permission record")
+    if re.findall(r"^    appId=(\d+)[ \t]*$", shared_users, re.MULTILINE) != ["2000"]:
+        raise AssertionError("Shared UID appId does not match actual shell caller")
+    member = r"^      PackageSetting\{" + package_token + r" com\.android\.shell/2000\}[ \t]*$"
+    if len(re.findall(member, shared_users, re.MULTILINE)) != 1:
+        raise AssertionError("Shell package is not linked to this shared UID grant record")
+    def install_grants(block):
+        headers = list(re.finditer(r"^    install permissions:[ \t]*$", block, re.MULTILINE))
+        if len(headers) != 1:
+            raise AssertionError("Cannot isolate shell install-permission grants")
+        lines = []
+        for line in block[headers[0].end():].splitlines():
+            if not line.strip():
+                continue
+            if not line.startswith("      "):
+                break
+            lines.append(line)
+        body = "\n".join(lines)
+        for permission in SHELL_REQUIRED_PERMISSIONS:
+            values = re.findall(r"^      " + re.escape(permission) + r": ([^\n]*)$", body, re.MULTILINE)
+            if len(values) != 1 or not re.fullmatch(r"granted=true(?:, flags=\[[^\]\n]*\])?", values[0]):
+                raise AssertionError("Missing/denied/ambiguous actual shell grant: " + permission)
+    install_grants(packages)
+    install_grants(shared_users)
+    for permission in SHELL_REQUIRED_PERMISSIONS:
+        records = re.findall(r"^\s*" + re.escape(permission) + r": ([^\n]*)$", dump, re.MULTILINE)
+        if len(records) != 2 or not all(re.fullmatch(r"granted=true(?:, flags=\[[^\]\n]*\])?", value) for value in records):
+            raise AssertionError("Conflicting or unexplained shell permission records: " + permission)
+    return {"uid": "2000", "app_id": "2000", "package": "com.android.shell",
+            "permissions": {permission: True for permission in SHELL_REQUIRED_PERMISSIONS}}
+
 
 
 def night_mode(text):
@@ -49,7 +108,7 @@ def night_settings(text):
     return values
 
 
-def service_state(text):
+def service_state(text, capability=None):
     result = {}
     override_fields = ("mOverrideNightModeOn", "mOverrideNightModeOff")
     for field in SERVICE_FIELDS:
@@ -84,8 +143,14 @@ def service_state(text):
             raise AssertionError("Unknown uimode boolean encoding: " + key)
     if any(result[key] != "false" for key in ("mOverrideNightModeOn", "mOverrideNightModeOff")):
         raise AssertionError("Active night override is outside safe restoration scope")
-    if result["mNightModeLocked"] != "false" or result["mUiModeLocked"] != "false":
-        raise AssertionError("Night/UI mode locked: privileged caller capability is not verified by this harness; refusing mutation")
+    if result["mUiModeLocked"] != "false":
+        raise AssertionError("UI mode locked remains outside supported appearance acceptance")
+    if result["mNightModeLocked"] != "false":
+        authorized = (isinstance(capability, dict) and capability.get("uid") == "2000"
+                      and capability.get("app_id") == "2000" and capability.get("package") == "com.android.shell"
+                      and all(capability.get("permissions", {}).get(permission) is True for permission in SHELL_REQUIRED_PERMISSIONS))
+        if not authorized:
+            raise AssertionError("Night mode locked: actual shell caller capability must be verified before mutation")
     return result
 
 
@@ -205,6 +270,7 @@ class Acceptance:
         self.events = None
         self.observations = []
         self.metadata = {}
+        self.capability = None
 
     def command(self, *args):
         result = subprocess.run([self.adb, "-s", self.args.run, *args], capture_output=True, timeout=20)
@@ -264,12 +330,22 @@ class Acceptance:
         require_background(fractions, mode)
         return observation
 
+    def verify_caller(self):
+        uid = self.shell("id", "-u")
+        (self.out / "shell-caller-uid.txt").write_text(uid + "\n")
+        if uid != "2000":
+            raise AssertionError("Require actual adb shell UID 2000, not root or another UID")
+        raw = self.shell("dumpsys", "package", "com.android.shell")
+        (self.out / "shell-package-permissions.txt").write_text(raw + "\n")
+        self.capability = shell_capability(uid, raw)
+        self.metadata["verified_caller"] = self.capability
+
     def snapshot(self, name="original"):
         mode = night_mode(self.shell("cmd", "uimode", "night"))
         raw_service = self.shell("dumpsys", "uimode")
         # Keep actual unsupported layouts for diagnosis without any mutation.
         (self.out / (name + "-uimode.txt")).write_text(raw_service + "\n")
-        state = service_state(raw_service)
+        state = service_state(raw_service, self.capability)
         expected_mode, expected_bits = ("2", 0x20) if mode == "yes" else ("1", 0x10)
         try:
             current_bits = int(state["mCurUiMode"], 0) & 0x30
@@ -292,6 +368,7 @@ class Acceptance:
         ime = self.shell("dumpsys", "input_method")
         if "mInputShown=false" not in ime or "mInputShown=true" in ime:
             raise AssertionError("Require keyboard already hidden, never inject Back to conceal lifecycle")
+        self.verify_caller()
         self.metadata["sdk"] = self.shell("getprop", "ro.build.version.sdk")
         apk = self.shell("pm", "path", PACKAGE)
         if not re.fullmatch(r"package:/[^\n]+\.apk", apk):
@@ -373,7 +450,7 @@ class Acceptance:
                       "font_scale_accepted": False, "reduce_motion_accepted": False,
                       "full_parity": False, "release_accepted": False,
                       "limits": ["Sampled dumpsys plus continuous retained OS event-buffer evidence, not a native callback probe",
-                                 "Explicit yes/no modes only; auto/custom/overrides/locked state fail before mutation",
+                                 "Explicit yes/no modes only; auto/custom/active overrides/UI lock/unverified night lock fail before mutation",
                                  "No font-scale or reduced-motion mutation/acceptance", "No authentication, account, model, network or physical-device acceptance"]}
             (self.out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         if error:

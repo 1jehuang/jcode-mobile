@@ -40,6 +40,37 @@ def service():
     return "mNightMode=1 (no)\nmNightModeLocked=false mUiModeLocked=false\nmComputedNightMode=false\nmOverrideNightModeOn=false mOverrideNightModeOff=false\nmCurUiMode=0x11\n"
 
 
+def permissions():
+    return """Packages:
+  Package [com.android.shell] (abc):
+    appId=2000
+    sharedUser=SharedUserSetting{def android.uid.shell/2000}
+    requested permissions:
+      android.permission.MODIFY_DAY_NIGHT_MODE
+      android.permission.CHANGE_CONFIGURATION
+    install permissions:
+      android.permission.MODIFY_DAY_NIGHT_MODE: granted=true
+      android.permission.CHANGE_CONFIGURATION: granted=true
+    User 0: installed=true hidden=false suspended=false
+Queries:
+  queryable via interaction:
+    User 0:
+Shared users:
+  SharedUser [android.uid.shell] (def):
+    appId=2000
+    Packages
+      PackageSetting{abc com.android.shell/2000}
+    install permissions:
+      android.permission.MODIFY_DAY_NIGHT_MODE: granted=true
+      android.permission.CHANGE_CONFIGURATION: granted=true
+    User 0:
+      runtime permissions:
+        android.permission.CAMERA: granted=true, flags=[ SYSTEM_FIXED]
+Dexopt state:
+  [com.android.shell]
+"""
+
+
 def event(index, tag="notification_enqueue", data="[other.app,1]", pid=900):
     return f"1794730000.{index:03d} {pid:5d} {pid:5d} I {tag}: {data}"
 
@@ -115,6 +146,50 @@ class Parsing(unittest.TestCase):
         for key in ("mNightModeLocked", "mUiModeLocked", "mComputedNightMode"):
             with self.subTest(key=key), self.assertRaises(AssertionError):
                 m.service_state(service().replace(key + "=false", key + "=unknown"))
+
+    def test_actual_shell_capability_requires_consistent_scoped_grants(self):
+        capability = m.shell_capability("2000", permissions())
+        self.assertEqual(capability["uid"], "2000")
+        self.assertTrue(all(capability["permissions"][p] for p in m.SHELL_REQUIRED_PERMISSIONS))
+        locked = service().replace("mNightModeLocked=false", "mNightModeLocked=true")
+        self.assertEqual(m.service_state(locked, capability)["mNightModeLocked"], "true")
+        with self.assertRaisesRegex(AssertionError, "UI mode locked"):
+            m.service_state(locked.replace("mUiModeLocked=false", "mUiModeLocked=true"), capability)
+
+    def test_root_other_uid_and_package_identity_never_inferred_as_shell(self):
+        for uid in ("0", "1000", "2000 0", "uid=2000(shell)", "", "102000"):
+            with self.subTest(uid=uid), self.assertRaises(AssertionError):
+                m.shell_capability(uid, permissions())
+        for dump in (permissions().replace("com.android.shell", "com.android.shell.other"),
+                     permissions().replace("appId=2000", "appId=1000", 1),
+                     permissions().replace("android.uid.shell/2000", "android.uid.shell/1000"),
+                     permissions().replace("SharedUser [android.uid.shell] (def)", "SharedUser [android.uid.shell] (bad)"),
+                     permissions().replace("PackageSetting{abc", "PackageSetting{bad"),
+                     permissions().replace("installed=true", "installed=false"),
+                     permissions().replace("User 0: installed", "User 10: installed")):
+            with self.subTest(dump=dump), self.assertRaises(AssertionError):
+                m.shell_capability("2000", dump)
+
+    def test_permission_requests_partial_conflicting_or_duplicate_grants_refused(self):
+        record = "      android.permission.MODIFY_DAY_NIGHT_MODE: granted=true"
+        for dump in ("", permissions().replace(record, "      android.permission.MODIFY_DAY_NIGHT_MODE"),
+                     permissions().replace(record, record.replace("true", "false"), 1),
+                     permissions().replace(record, record.replace("true", "unknown"), 1),
+                     permissions().replace(record, record + "\n" + record, 1),
+                     permissions().replace("    install permissions:", "    requested permissions:", 1),
+                     permissions().split("Shared users:")[0],
+                     permissions() + "\nUnrelated user:\n" + record.replace("true", "false") + "\n"):
+            with self.subTest(dump=dump), self.assertRaises(AssertionError):
+                m.shell_capability("2000", dump)
+
+    def test_missing_or_forged_capability_never_authorizes_night_lock(self):
+        locked = service().replace("mNightModeLocked=false", "mNightModeLocked=true")
+        actual = m.shell_capability("2000", permissions())
+        wrong_grant = copy.deepcopy(actual)
+        wrong_grant["permissions"]["android.permission.MODIFY_DAY_NIGHT_MODE"] = False
+        for capability in (None, {}, dict(actual, uid="0"), dict(actual, app_id="1000"), wrong_grant):
+            with self.subTest(capability=capability), self.assertRaisesRegex(AssertionError, "Night mode locked"):
+                m.service_state(locked, capability)
 
     def test_activity_exact_top_identity_and_config(self):
         before = m.activity_state(activities(), "1234")
@@ -249,6 +324,20 @@ class Campaign(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "restoration mismatch"):
                 self.runner.restore()
 
+    def test_locked_flag_is_preserved_and_still_part_of_exact_restoration(self):
+        capability = m.shell_capability("2000", permissions())
+        locked = service().replace("mNightModeLocked=false", "mNightModeLocked=true")
+        original_service = m.service_state(locked, capability)
+        self.runner.original = {"mode": "no", "service": original_service, "settings": {}}
+        self.runner.changed = True
+        self.runner.capability = capability
+        self.runner.shell = lambda *args: ""
+        changed_service = m.service_state(service(), capability)
+        self.assertEqual(original_service["mNightModeLocked"], "true")
+        with patch.object(self.runner, "snapshot", return_value={"mode": "no", "service": changed_service, "settings": {}}):
+            with self.assertRaisesRegex(AssertionError, "restoration mismatch"):
+                self.runner.restore()
+
     def test_interruption_always_restores_and_failure_persists(self):
         for failure in (AssertionError("injected workflow failure"), KeyboardInterrupt("interrupted")):
             with self.subTest(failure=type(failure).__name__):
@@ -293,6 +382,10 @@ class Campaign(unittest.TestCase):
                 return "mWakefulness=Awake"
             if args == ("dumpsys", "input_method"):
                 return "mInputShown=false"
+            if args == ("id", "-u"):
+                return "2000"
+            if args == ("dumpsys", "package", "com.android.shell"):
+                return permissions()
             if args == ("getprop", "ro.build.version.sdk"):
                 return "35"
             if args == ("pm", "path", m.PACKAGE):
@@ -348,6 +441,29 @@ class Campaign(unittest.TestCase):
                 self.runner.snapshot()
             self.assertFalse(self.runner.changed)
             self.assertEqual((self.args.out / "original-uimode.txt").read_text(), dump + "\n")
+
+    def test_live_caller_evidence_preserved_even_when_permission_check_fails(self):
+        bad_dump = permissions().replace("android.permission.MODIFY_DAY_NIGHT_MODE: granted=true", "android.permission.MODIFY_DAY_NIGHT_MODE: granted=false", 1)
+        calls = []
+        def shell(*args):
+            calls.append(args)
+            return "2000" if args == ("id", "-u") else bad_dump
+        self.runner.shell = shell
+        with self.assertRaisesRegex(AssertionError, "actual shell grant"):
+            self.runner.verify_caller()
+        self.assertEqual((self.args.out / "shell-caller-uid.txt").read_text(), "2000\n")
+        self.assertEqual((self.args.out / "shell-package-permissions.txt").read_text(), bad_dump + "\n")
+        self.assertIsNone(self.runner.capability)
+        self.assertEqual(calls, [("id", "-u"), ("dumpsys", "package", "com.android.shell")])
+        self.assertFalse(self.runner.changed)
+
+    def test_actual_non_shell_uid_refuses_before_permission_or_mutation_commands(self):
+        with patch.object(self.runner, "shell", return_value="0") as shell:
+            with self.assertRaisesRegex(AssertionError, "actual adb shell UID 2000"):
+                self.runner.verify_caller()
+            shell.assert_called_once_with("id", "-u")
+        self.assertEqual((self.args.out / "shell-caller-uid.txt").read_text(), "0\n")
+        self.assertIsNone(self.runner.capability)
 
     def test_snapshot_never_overwrites_original_dump_during_restore(self):
         def shell(*args):
