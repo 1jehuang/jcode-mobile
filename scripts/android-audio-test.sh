@@ -69,7 +69,20 @@ CLEANUP_TEST_PACKAGE=true
 # Older package-manager shells do not expose this command. Probe advertised
 # capability, not an arbitrary failed mutation. An advertised command failure
 # remains fatal, and instrumentation still verifies the real no-rationale state.
-PM_HELP="$(timeout 10s "$ADB" -s "$SERIAL" shell pm help)"
+PM_HELP_STATUS=0
+PM_HELP="$(timeout 10s "$ADB" -s "$SERIAL" shell pm help | tr -d '\r')" || PM_HELP_STATUS=$?
+# API30's package shell can emit valid help with status 255. Accept that
+# specific compatibility case only with the expected header and body. This
+# exception never applies to installs, permission mutations or instrumentation.
+if [[ "$PM_HELP_STATUS" != 0 && "$PM_HELP_STATUS" != 255 ]]; then
+  echo "Package-manager help failed with status $PM_HELP_STATUS" >&2
+  exit "$PM_HELP_STATUS"
+fi
+if ! grep -Fxq 'Package manager (package) commands:' <<< "$PM_HELP" ||
+   ! grep -Eq '^[[:space:]]+[^[:space:]]' <<< "$PM_HELP"; then
+  echo 'Package-manager help missing expected exact header or nonempty body' >&2
+  exit 1
+fi
 CAN_CLEAR_PERMISSION_FLAGS=false
 if grep -Eq '^[[:space:]]*clear-permission-flags([[:space:]]|$)' <<< "$PM_HELP"; then
   CAN_CLEAR_PERMISSION_FLAGS=true
