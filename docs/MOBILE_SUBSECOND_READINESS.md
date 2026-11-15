@@ -21,9 +21,16 @@ SSH handshake, or attach work that precedes that connection.
 
 Synced local-computer chat follows a different path: authenticated HTTP command
 submission plus independent two-second history and command-status poll loops in
-`src/app/synced_chat.rs`. A persistent resumable event feed could remove that
-polling delay. It must not change routing to a cloud computer or create another
-conversation. The offline channel prototype studies this path only.
+`src/app/synced_chat.rs`. Desktop source already has an optional account-scoped
+WebSocket command-wakeup hint (`mobile_runner_events.rs`), with HTTP claims
+remaining authoritative and a five-second fallback. Reuse that mechanism rather
+than introduce a second command authority. Its presence in source does not prove
+that it is enabled in production. Transcript persistence also notifies the
+uploader after a bounded 150 ms coalescing window; the 20-second sync interval is
+reconciliation, not a fixed delay for every saved response. A persistent
+resumable phone event feed could remove mobile polling delay. It must not change
+routing to a cloud computer or create another conversation. The offline channel
+prototype studies this path only.
 
 ## Baseline acceptance, November 15, 2026
 
@@ -41,8 +48,9 @@ python3 -B scripts/mobile_readiness_budget.py /protected/device-export.json \
   --budget-ms 1000 --minimum-samples 20
 ```
 
-Exit 0 means every supplied required milestone is strictly below the budget and
-has enough samples. Exit 1 means missing/slow samples. Exit 2 means invalid input.
+Exit 0 means every supplied required milestone is strictly below the budget,
+has enough samples, and there are no supplied `session_connect_failed` samples.
+Exit 1 means missing/slow/failed samples. Exit 2 means invalid input.
 The gate does not sum overlapping cumulative timings, accept cached UI markers,
 or print identifiers or raw input. It checks these connection-attempt samples,
 not launch-to-paint, command completion, or all network conditions.
@@ -77,6 +85,28 @@ A production candidate needs all of the following before routing real traffic:
   connection state. Keep existing HTTP fallback for older deployments.
 
 ## Startup scheduling improvement
+
+The initial `0f92008` candidate was held after review found that a slow
+subsequent control-plane request could still block an already successful SSH
+probe. **Use the follow-up `7166e86` plus causal tests `e5b6e0a`, not the initial
+commit alone.** Both request and probe now run as individually bounded workers;
+whichever validated readiness path completes first can win. Cancellation drops
+late results without adopting them into another account or session. A
+control-plane error is deferred until an active pinned probe succeeds or fails.
+The global request permit may temporarily serialize an inspection/retry behind
+an already draining HTTP request, but never adopts that other caller's result.
+
+Final hosted acceptance: **13 causal fixtures passed**, receipt
+`20261114-225350753-289664`; **152 core tests passed, zero failed, three ignored**,
+receipt `20261114-225437398-293650`. The gated tests cover both slow-path winners,
+late HTTP errors, cancellation, permit cleanup and polling cadence without
+fragile speed assertions. Final controlled scheduling measurements were
+**1453.480 ms serial versus 273.823 ms concurrent**, with two requests each;
+the full suite repeated at 1453.866 ms versus 274.176 ms. These are still not
+real-device end-to-end measurements. The final integrated hosted
+`justrust check --workspace --tests` also passed, receipt
+`20261114-225538277-298731`. It compiled the current working dependency graph,
+not a separately signed release artifact.
 
 Mobile commit `0f92008` moves the existing bounded, pinned SSH readiness probe
 off the serial control-plane poll path. At most one speculative probe or unread
