@@ -13,6 +13,7 @@ import android.media.*;
 import android.net.Uri;
 import android.os.*;
 import android.provider.*;
+import android.service.notification.StatusBarNotification;
 import android.view.HapticFeedbackConstants;
 import org.json.*;
 import java.io.*;
@@ -393,6 +394,124 @@ public final class AndroidServices {
         }
         return true;
     }
+    // Account-wide local agent notifications. Keep syncLive below for legacy callers.
+    private static final String AGENT_CHILD_PREFIX = "agents.session.", AGENT_GROUP = "jcode.agents";
+    private static final int MAX_AGENTS = 6, MAX_AGENT_JSON = 128 * 1024;
+    private final Set<String> agentNotificationTags = new HashSet<>();
+    private static long agentCount(JSONObject object, String key) throws JSONException {
+        long value = object.getLong(key);
+        if (value < 0 || value > 0xffffffffL) throw new JSONException("Invalid agent count");
+        return value;
+    }
+    private static String agentText(JSONObject object, String key, int limit) {
+        String value = object.optString(key, "").trim();
+        return value.substring(0, Math.min(value.length(), limit));
+    }
+    private static String agentHeadline(long running, long waiting, long errored) {
+        ArrayList<String> parts = new ArrayList<>();
+        if (waiting > 0) parts.add(waiting + (waiting == 1 ? " needs input" : " need input"));
+        if (errored > 0) parts.add(errored + " failed");
+        if (running > 0) parts.add(running + " running");
+        return String.join(", ", parts);
+    }
+    private static boolean ownedAgentNotification(StatusBarNotification notification) {
+        String tag = notification.getTag();
+        return notification.getId() == 1 && ("agents".equals(tag) || (tag != null && tag.startsWith(AGENT_CHILD_PREFIX)));
+    }
+    private void cancelObsoleteAgents(NotificationManager manager, Set<String> keep, boolean keepSummary) {
+        // notify() can enqueue asynchronously. Remember at most six attempted
+        // child tags so a fast teardown also cancels rows not yet enumerated.
+        Set<String> known = new HashSet<>(agentNotificationTags);
+        for (StatusBarNotification notification : manager.getActiveNotifications()) {
+            if (!ownedAgentNotification(notification)) continue;
+            String tag = notification.getTag();
+            if (!"agents".equals(tag)) known.add(tag);
+        }
+        for (String tag : known) if (!keep.contains(tag)) manager.cancel(tag, 1);
+        agentNotificationTags.retainAll(keep);
+        if (!keepSummary) manager.cancel("agents", 1);
+    }
+    private Notification.Builder agentNotification(Notification publicVersion, boolean summary) {
+        return new Notification.Builder(activity, "jcode-agents")
+                .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).setOnlyAlertOnce(true)
+                .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion)
+                .setLocalOnly(true).setShowWhen(false).setSound(null).setDefaults(0)
+                .setGroup(AGENT_GROUP).setGroupSummary(summary)
+                // Mute both kinds, including first publication, without modifying channel settings.
+                .setGroupAlertBehavior(summary ? Notification.GROUP_ALERT_CHILDREN : Notification.GROUP_ALERT_SUMMARY);
+    }
+    public boolean syncAgents(String json) {
+        return ui(() -> {
+            if (json == null || json.length() > MAX_AGENT_JSON) return false;
+            JSONObject state = new JSONObject(json);
+            long running = agentCount(state, "running"), waiting = agentCount(state, "waiting"), errored = agentCount(state, "errored");
+            NotificationManager manager = (NotificationManager)activity.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager == null) return false;
+            Set<String> keep = new HashSet<>();
+            // Teardown is never gated by notification permission or channel availability.
+            if (running + waiting + errored == 0) { cancelObsoleteAgents(manager, keep, false); return true; }
+            JSONArray items = state.getJSONArray("items");
+            LinkedHashMap<String, JSONObject> selected = new LinkedHashMap<>();
+            for (int i = 0; i < Math.min(items.length(), MAX_AGENTS); i++) {
+                JSONObject item = items.getJSONObject(i);
+                String id = item.getString("id"), status = item.getString("state");
+                if (id.isEmpty() || id.length() > 1024 || !("running".equals(status) || "waiting".equals(status) || "error".equals(status))) return false;
+                String tag = AGENT_CHILD_PREFIX + Uri.encode(id);
+                selected.put(tag, item); keep.add(tag);
+            }
+            // Remove stale private rows even when replacements cannot be published.
+            cancelObsoleteAgents(manager, keep, true);
+            if (!manager.areNotificationsEnabled()) { cancelObsoleteAgents(manager, Collections.emptySet(), false); return false; }
+            NotificationChannel channel = new NotificationChannel("jcode-agents", "Active agents", NotificationManager.IMPORTANCE_LOW);
+            channel.setShowBadge(false);
+            manager.createNotificationChannel(channel);
+            channel = manager.getNotificationChannel("jcode-agents");
+            if (channel == null || channel.getImportance() == NotificationManager.IMPORTANCE_NONE) {
+                cancelObsoleteAgents(manager, Collections.emptySet(), false); return false;
+            }
+            // No account title, session id, details, or session PendingIntent in the public fallback.
+            Notification publicVersion = new Notification.Builder(activity, "jcode-agents")
+                    .setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("jcode agents")
+                    .setContentText("Open Jcode to view agent activity").setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setLocalOnly(true).setOnlyAlertOnce(true).setSound(null).setDefaults(0).build();
+            int rank = 0;
+            for (Map.Entry<String, JSONObject> entry : selected.entrySet()) {
+                JSONObject item = entry.getValue();
+                String id = item.getString("id"), status = item.getString("state");
+                String title = agentText(item, "plan", 256);
+                if (title.isEmpty()) title = agentText(item, "title", 256);
+                if (title.isEmpty()) title = "jcode";
+                String detail = "waiting".equals(status) ? "Needs input" : "error".equals(status) ? "Failed" : "Running";
+                String activityDetail = agentText(item, "detail", 512), origin = agentText(item, "origin", 128);
+                if (!activityDetail.isEmpty()) detail += " · " + activityDetail;
+                if (!origin.isEmpty()) detail += " · " + origin;
+                long total = Math.max(0, Math.min(0xffffffffL, item.optLong("total", 0)));
+                long done = Math.max(0, Math.min(total, item.optLong("done", 0)));
+                long active = Math.max(0, Math.min(total - done, item.optLong("active", 0)));
+                if (total > 0) detail += " · " + done + "/" + total + " todos" + (active > 0 ? " (" + active + " active)" : "");
+                Intent open = new Intent(activity, activity.getClass()).setAction(Intent.ACTION_VIEW)
+                        .setData(Uri.parse("jcode://session/" + Uri.encode(id)))
+                        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                // Full URI identity distinguishes sessions, including Java hash collisions.
+                PendingIntent pending = PendingIntent.getActivity(activity, 4304, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                Notification.Builder builder = agentNotification(publicVersion, false).setContentTitle(title).setContentText(detail)
+                        .setStyle(new Notification.BigTextStyle().bigText(detail)).setContentIntent(pending)
+                        .setSortKey(String.format(Locale.ROOT, "%02d", rank++));
+                long since = item.optLong("since", 0), now = System.currentTimeMillis();
+                if (since > 0 && since <= now / 1000) builder.setWhen(since * 1000).setShowWhen(true).setUsesChronometer(true);
+                agentNotificationTags.add(entry.getKey());
+                manager.notify(entry.getKey(), 1, builder.build());
+            }
+            Intent open = new Intent(activity, activity.getClass()).setAction(Intent.ACTION_MAIN).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            PendingIntent pending = PendingIntent.getActivity(activity, 4304, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            String headline = agentHeadline(running, waiting, errored);
+            Notification summary = agentNotification(publicVersion, true).setContentTitle("jcode agents").setContentText(headline)
+                    .setStyle(new Notification.BigTextStyle().bigText(headline)).setContentIntent(pending).build();
+            manager.notify("agents", 1, summary);
+            return true;
+        });
+    }
+
     public boolean syncLive(String headline) {
         return ui(() -> {
             NotificationManager manager = (NotificationManager)activity.getSystemService(Context.NOTIFICATION_SERVICE);

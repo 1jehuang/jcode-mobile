@@ -13,7 +13,8 @@
 //! runs when the framework is absent (simulator, Linux preview).
 //!
 //! Android reuses the deep-link parser and shows a local ongoing agent summary
-//! notification instead of ActivityKit. It has no background push-to-update
+//! with individually tappable session notifications instead of ActivityKit.
+//! It has no background push-to-update
 //! transport until the server and client gain FCM support.
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -314,8 +315,8 @@ mod imp {
     }
     pub(super) fn donate_shortcuts() {}
     pub(super) fn apply(state: &super::AgentsState) -> bool {
-        let text = if state.is_empty() { String::new() } else { super::headline(state) };
-        let accepted = crate::android_services::call_bool("syncLive", &text);
+        let Ok(json) = serde_json::to_string(state) else { return false };
+        let accepted = crate::android_services::call_bool("syncAgents", &json);
         if !accepted {
             log::debug!("Android ongoing agent notification unavailable");
         }
