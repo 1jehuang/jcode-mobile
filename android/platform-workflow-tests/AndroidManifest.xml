@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.jcode.mobile.platformworkflowtests">
+  <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <queries><package android:name="org.jcode.mobile" /></queries>
+  <application android:label="Isolated platform workflow tests" android:debuggable="true" android:allowBackup="false">
+    <activity android:name=".WorkflowActivity" android:exported="true" android:launchMode="singleTop">
+      <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+    </activity>
+  </application>
+  <instrumentation android:name=".PlatformWorkflowInstrumentation" android:targetPackage="org.jcode.mobile.platformworkflowtests" android:label="Installed production platform adapters, isolated UID" />
+</manifest>
