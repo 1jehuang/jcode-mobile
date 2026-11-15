@@ -141,8 +141,22 @@ captured frames still show the empty-state UI before its third fresh frame.
 The current short capture bursts and intervening offline OCR leave observation
 gaps, so these data do not isolate GPU/layout cost from capture scheduling.
 Do not report the CPU marker as visible latency or assert this case is subsecond.
-A follow-up needs continuous presentation sampling or renderer profiling before
-changing production layout code.
+A bounded follow-up captured 60 frames at at least 25 ms intervals **before any
+OCR**, then independently verified the earliest frame matching the final bottom
+transcript crop. Its large-history pixel bounds were 2034 / 1094 / 2073 ms.
+Repeating with existing CPU profiling enabled gave 1661 / 1538 / 1302 ms.
+These independent observations retain a substantial presentation-side gap, so
+OCR alone does not explain it. Evidence directories are `continuous-large/` and
+`profile-large/` beside the final campaign. Continuous capture itself adds load,
+and the final-crop match is still an upper bound, not a presentation fence.
+
+Existing CPU profiling in the latter run measured maximum `transcript.build`
+3.088 ms (cold), 1.672 ms (warm window) and 2.956 ms (relaunch), despite all
+250 entries being built on their initial draw. Thus rewriting the element-build
+loop is not justified as a fix for the observed second-long gap. Layout/text
+shaping, native presentation and this host's graphics scheduling remain
+unseparated. The next causal measurement needs layout/presentation profiling;
+no speculative geometry approximation or loss of earlier history was introduced.
 
 Host load varied substantially during earlier campaigns, including load averages
 above 60. Some earlier awake opens exceeded 1 second. The final table is a
