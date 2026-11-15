@@ -26,7 +26,7 @@ public final class CameraGrantActivity extends Activity {
             }
         };
         Bundle result = CameraExternalInstrumentation.verify(this, checks);
-        result.putParcelable("control", control);
+        result.putParcelable("control", CameraResultReceiver.forIpc(control));
         reply.send("PASS".equals(result.getString("result")) ? RESULT_OK : RESULT_CANCELED, result);
         // Do not finish on success. Otherwise Android's Activity grant teardown
         // would make a broken production revoke implementation appear to pass.

@@ -17,6 +17,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -36,13 +37,16 @@ public final class CameraOwnerInstrumentation extends Instrumentation {
     private static Bundle reply(Consumer<ResultReceiver> send) throws Exception {
         CountDownLatch ready = new CountDownLatch(1);
         AtomicReference<Bundle> result = new AtomicReference<>();
+        AtomicInteger resultCode = new AtomicInteger(Activity.RESULT_CANCELED);
         ResultReceiver receiver = new ResultReceiver(new Handler(Looper.getMainLooper())) {
-            @Override protected void onReceiveResult(int code, Bundle data) { result.set(data); ready.countDown(); }
+            @Override protected void onReceiveResult(int code, Bundle data) {
+                resultCode.set(code); result.set(data); ready.countDown();
+            }
         };
-        send.accept(receiver);
+        send.accept(CameraResultReceiver.forIpc(receiver));
         check(ready.await(30, TimeUnit.SECONDS), "External camera recipient timed out");
         Bundle response = result.get();
-        check(response != null && "PASS".equals(response.getString("result")),
+        check(resultCode.get() == Activity.RESULT_OK && response != null && "PASS".equals(response.getString("result")),
                 "External camera checks failed: " + (response == null ? "no reply" : response.getString("failure")));
         return response;
     }

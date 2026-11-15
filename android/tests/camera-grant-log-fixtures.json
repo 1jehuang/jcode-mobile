@@ -1,0 +1,18 @@
+[
+  {"name":"clean terminal success","pass":true,"log":"INSTRUMENTATION_RESULT: external=PASS: exact URI\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_RESULT: revoked=PASS: denied\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"CRLF success","pass":true,"log":"INSTRUMENTATION_RESULT: result=PASS\r\nINSTRUMENTATION_CODE: -1\r\n"},
+  {"name":"original BadParcelable false positive","pass":false,"log":"INSTRUMENTATION_RESULT: external=PASS: exact URI\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_RESULT: failure=android.os.BadParcelableException: ClassNotFoundException CameraGrantActivity$1\nINSTRUMENTATION_RESULT: result=FAIL\nINSTRUMENTATION_CODE: 0\n"},
+  {"name":"partial success before failure","pass":false,"log":"INSTRUMENTATION_RESULT: external=PASS\nINSTRUMENTATION_RESULT: failure=BadParcelableException\nINSTRUMENTATION_RESULT: result=FAIL\nINSTRUMENTATION_CODE: 0\n"},
+  {"name":"PASS prefix is not PASS","pass":false,"log":"INSTRUMENTATION_RESULT: result=PASSING\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"failure despite final PASS","pass":false,"log":"INSTRUMENTATION_RESULT: failure=broken\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"FAIL despite successful code","pass":false,"log":"INSTRUMENTATION_RESULT: result=FAIL\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"canceled code despite PASS","pass":false,"log":"INSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: 0\n"},
+  {"name":"missing terminal result","pass":false,"log":"INSTRUMENTATION_RESULT: camera=PASS\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"missing code","pass":false,"log":"INSTRUMENTATION_RESULT: result=PASS\n"},
+  {"name":"duplicate result sessions","pass":false,"log":"INSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"earlier canceled code","pass":false,"log":"INSTRUMENTATION_CODE: 0\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"reversed result and code","pass":false,"log":"INSTRUMENTATION_CODE: -1\nINSTRUMENTATION_RESULT: result=PASS\n"},
+  {"name":"trailing crash","pass":false,"log":"INSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\nINSTRUMENTATION_FAILED: Process crashed\n"},
+  {"name":"status failure before successful result","pass":false,"log":"INSTRUMENTATION_STATUS: failure=assertion\nINSTRUMENTATION_RESULT: result=PASS\nINSTRUMENTATION_CODE: -1\n"},
+  {"name":"empty output","pass":false,"log":""}
+]

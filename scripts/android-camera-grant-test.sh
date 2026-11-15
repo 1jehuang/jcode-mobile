@@ -7,10 +7,17 @@ SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
 OUT="${ANDROID_NATIVE_TEST_OUT:-${JCODE_SCRATCH_DIR:-$ROOT/target}/android-native-services-tests}"
 RUN=false
 SERIAL=""
+if [[ $# -eq 1 && "$1" == --self-test ]]; then
+  exec python3 "$ROOT/android/tests/camera-grant-log-check.py" --self-test
+fi
+if [[ $# -eq 2 && "$1" == --check-log ]]; then
+  exec python3 "$ROOT/android/tests/camera-grant-log-check.py" "$2"
+fi
 if [[ $# -gt 0 ]]; then
-  [[ $# -eq 2 && "$1" == --run && "$2" == emulator-* ]] || { echo "Usage: $0 [--run emulator-SERIAL]" >&2; exit 2; }
+  [[ $# -eq 2 && "$1" == --run && "$2" == emulator-* ]] || { echo "Usage: $0 [--run emulator-SERIAL | --self-test | --check-log FILE]" >&2; exit 2; }
   RUN=true; SERIAL="$2"
 fi
+python3 "$ROOT/android/tests/camera-grant-log-check.py" --self-test
 "$ROOT/scripts/android-native-services-test.sh"
 if ! $RUN; then echo 'Camera permission instrumentation BUILT ONLY, not device-tested.'; exit 0; fi
 ADB="$SDK/platform-tools/adb"
@@ -23,5 +30,5 @@ ADB="$SDK/platform-tools/adb"
 # grants, keeps it alive across production cleanup, and receives Binder results.
 LOG="$OUT/camera-grant-roundtrip.txt"
 "$ADB" -s "$SERIAL" shell am instrument -w -r org.jcode.mobile.nativeservicestests/.CameraOwnerInstrumentation | tee "$LOG"
-grep -q '^INSTRUMENTATION_RESULT: result=PASS' "$LOG" && grep -q '^INSTRUMENTATION_CODE: -1' "$LOG"
+python3 "$ROOT/android/tests/camera-grant-log-check.py" "$LOG"
 echo 'PASS: live distinct-UID Activity JPEG write/read, exact grants, sibling/traversal denial, production decode/cleanup, explicit revoked read/write denial. Not a real camera UI acceptance claim.'
