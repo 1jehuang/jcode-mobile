@@ -138,6 +138,23 @@ class Cleanup(unittest.TestCase):
             result = json.loads((runtime.out / "result.json").read_text())
             self.assertFalse(result["side_effects"]["apk_install_completed"])
 
+    def test_dismiss_only_observed_ime_and_wait_for_hidden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = self.make_runtime(directory)
+            with patch.object(runtime, "text", return_value="mInputShown=true"), patch.object(runtime, "adb") as adb, patch.object(runtime, "keyboard") as keyboard, patch.object(m.time, "sleep") as sleep:
+                runtime.dismiss_observed_keyboard()
+                adb.assert_called_once_with("shell", "input", "keyevent", "KEYCODE_BACK")
+                keyboard.assert_called_once_with(False)
+                sleep.assert_called_once_with(1)
+
+    def test_no_back_when_ime_not_observed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = self.make_runtime(directory)
+            with patch.object(runtime, "text", return_value="mInputShown=false"), patch.object(runtime, "adb") as adb, patch.object(runtime, "keyboard") as keyboard:
+                runtime.dismiss_observed_keyboard()
+                adb.assert_not_called()
+                keyboard.assert_not_called()
+
     def test_stale_evidence_directory_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             self.make_runtime(directory)

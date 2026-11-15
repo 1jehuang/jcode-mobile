@@ -155,6 +155,15 @@ class Runtime:
             time.sleep(0.3)
         raise AssertionError("IME did not reach stable " + ("shown" if shown else "hidden") + " state")
 
+    def dismiss_observed_keyboard(self):
+        # NativeActivity can restore email focus independently on each fresh
+        # launch. Hide only an observed IME, then wait for its exit animation
+        # before exact onboarding OCR. Never relax the required Jcode proof.
+        if "mInputShown=true" in self.text("shell", "dumpsys", "input_method"):
+            self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            self.keyboard(False)
+            time.sleep(1)
+
     def preflight(self):
         self.check("Explicit emulator serial", bool(re.fullmatch(r"emulator-\d+", self.args.serial)))
         self.check("Explicit APK exists", self.args.apk.is_file())
@@ -197,13 +206,12 @@ class Runtime:
         self.check("Installed package is non-debug", package_is_non_debug(package))
         self.adb("shell", "wm", "dismiss-keyguard")
         self.fresh()
-        if "mInputShown=true" in self.text("shell", "dumpsys", "input_method"):
-            self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
-            self.keyboard(False)
+        self.dismiss_observed_keyboard()
         text, words = self.capture("onboarding")
         # Do not guess permissions or account state. Unexpected dialogs/auth state fail closed.
         self.check("Shared onboarding with no Apple sign-in", onboarding(text))
         self.fresh(demo=True)
+        self.dismiss_observed_keyboard()
         text, words = self.capture("release-demo-ignored")
         self.check("Fresh release process ignores gpui_demo=todos", onboarding(text) and "progress" not in text.lower())
         pid = self.text("shell", "pidof", PACKAGE).split()[0]
