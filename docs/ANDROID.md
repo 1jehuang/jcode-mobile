@@ -15,7 +15,8 @@ Install Android SDK platform 36, build tools 35.0.0, NDK 27.2.12479018, and a JD
 ```
 
 The default output is `target/android/JcodeMobile.apk`, with both `arm64-v8a`
-and `x86_64` libraries, compile/target SDK 36, and min SDK 26. Override the output
+and `x86_64` libraries, compile/target SDK 36, and min SDK 26. Packaging requires
+`--locked`, so a manifest/lock mismatch fails instead of silently changing dependencies. Override the output
 with `ANDROID_APK_OUTPUT`. `ANDROID_PROFILE=release` removes the debug demo
 entry. Development APKs use a local debug signing key, not a publishing key.
 
@@ -61,3 +62,33 @@ on the installed shared app, not a Java mock.
 See `ANDROID_ACCESSIBILITY.md` and `ANDROID_PUBLISHING.md` for the separate
 accessibility and release evidence gates. Building an APK is not permission to
 publish it.
+
+## Immutable Android integration artifacts, November 15, 2026
+
+All four GPUI manifest specifications and the lockfile pin the published revision
+`5198b79914318170b5cae0ce785c0b1d61f901d5`. It preserves the prior iOS revision
+and includes the Android backend, composing input/insets interfaces, and the
+Android-only Vulkan debug naming workaround. All existing registry versions and
+checksums were retained, with nine additional Android dependency packages.
+
+The local NDK locked build passed for both ABIs. The build verified the native
+entry point, ELF LOAD segment alignment, 16 KiB APK ZIP alignment, and v2/v3
+signatures. These artifacts are debug/test only and must not be published:
+
+| Artifact under `target/android/` | SHA256 |
+| --- | --- |
+| `JcodeMobile-gpui-5198b79-api36-debug.apk` | `5f585641caa71f6ec7e87f5a763d996e62565f27cea41ede8c60a12b1ebdbfea` |
+| `JcodeMobile-gpui-5198b79-api36-debug-UNSIGNED-TEST-ONLY.aab` | `5848ea128628051d39303c74b2c6c134a57fb902651e0521704780790ca35178` |
+
+The actual AAB was built from that APK, not mocked: `aapt2 convert
+--output-format proto`, `scripts/android-bundle.py`, then Google bundletool
+1.18.2 `build-bundle` and `validate`. Validation passed with the base dex and both
+native ABI libraries present. It is explicitly an **unsigned debug test bundle**,
+not a release candidate. No production signing identity or publishing action was
+used. `scripts/android-bundle.sh` remains the separate release-profile local
+bundle workflow and still requires an explicit `BUNDLETOOL_JAR`.
+
+This packaging lane performed no emulator start/stop/install operations. Runtime
+acceptance of the final pinned artifact belongs to the root coordinator. Physical
+ARM64 hardware, TalkBack traversal, full IME composition/selection, and release
+signing/publishing remain separate evidence gates, not inferred from this build.

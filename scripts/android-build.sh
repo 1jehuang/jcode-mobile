@@ -52,7 +52,7 @@ for abi in $ABIS; do
     # native Linux checks/tests still use hosted justrust by default.
     # Host linker acceleration must not replace the NDK linker, particularly
     # on ARM64 where Android requires Cortex-A53 workaround flags.
-    JUSTRUST_LINKER=off CARGO_TARGET_DIR="$ROOT/target" justrust build --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile --lib --target "$target" "${args[@]}"
+    JUSTRUST_LINKER=off CARGO_TARGET_DIR="$ROOT/target" justrust build --locked --local="Android cross-compilation requires the locally installed NDK" -p jcode-mobile --lib --target "$target" "${args[@]}"
     mkdir -p "$STAGE/apk/lib/$abi"
     cp "$ROOT/target/$target/$PROFILE/libjcode_mobile.so" "$STAGE/apk/lib/$abi/"
     "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$STAGE/apk/lib/$abi/libjcode_mobile.so"
