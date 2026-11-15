@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.jcode.mobile.agentnotificationtests">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <queries><package android:name="org.jcode.mobile" /></queries>
+    <application android:label="Isolated agent notification acceptance" android:debuggable="true" android:allowBackup="false">
+        <activity android:name=".AgentTestActivity" android:exported="true" android:launchMode="singleTop" />
+    </application>
+    <instrumentation android:name=".AgentNotificationsInstrumentation" android:targetPackage="org.jcode.mobile.agentnotificationtests" android:label="Installed production agent adapters, isolated UID" />
+</manifest>

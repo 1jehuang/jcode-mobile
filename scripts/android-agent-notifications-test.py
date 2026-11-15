@@ -10,6 +10,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 JAVA = ROOT / "android/app/src/main/java/org/jcode/mobile/AndroidServices.java"
@@ -40,6 +41,71 @@ class AgentNotificationContracts(unittest.TestCase):
         self.assertIn('PendingIntent.FLAG_IMMUTABLE', block)
         self.assertIn('Notification.VISIBILITY_PRIVATE', block)
         self.assertIn('setPublicVersion(', block)
+
+    def test_os_harness_is_test_uid_only_and_without_network_permission(self):
+        root = ET.parse(ROOT / 'android/agent-notification-tests/AndroidManifest.xml').getroot()
+        android = '{http://schemas.android.com/apk/res/android}'
+        package = 'org.jcode.mobile.agentnotificationtests'
+        self.assertEqual(root.get('package'), package)
+        self.assertEqual(root.find('instrumentation').get(android + 'targetPackage'), package)
+        self.assertEqual({p.get(android + 'name') for p in root.findall('uses-permission')}, {'android.permission.POST_NOTIFICATIONS'})
+        source = (ROOT / 'android/agent-notification-tests/src/org/jcode/mobile/agentnotificationtests/AgentNotificationsInstrumentation.java').read_text()
+        self.assertIn('Process.myUid() != context.getPackageManager().getApplicationInfo(TARGET, 0).uid', source)
+        self.assertIn('new DexClassLoader(', source)
+        self.assertIn('allocateInstance', source)
+        self.assertNotIn('org.jcode.mobile.JcodeActivity', source)
+        self.assertNotIn('call("account', source)
+        self.assertIn('failure.addSuppressed(cleanup)', source)
+        self.assertIn('dispatchSession(firstAa, "Aa")', source)
+        self.assertIn('dispatchSession(firstBb, "BB")', source)
+
+    def test_actual_runner_cleanup_preserves_failures_and_restores_test_permission(self):
+        runner = (ROOT / 'scripts/android-agent-notifications-test.sh').read_text()
+        cleanup = 'cleanup() {' + runner.split('cleanup() {', 1)[1].split('\n}\ntrap cleanup EXIT', 1)[0] + '\n}'
+        scratch = Path(os.environ.get('JCODE_SCRATCH_DIR', str(ROOT / 'target')))
+        scratch.mkdir(parents=True, exist_ok=True)
+        cases = [
+            ('success-denied', 0, False, False, False, False, 'denied', 'false', 0),
+            ('success-granted', 0, False, False, False, False, 'granted', 'true', 0),
+            ('initial-failure', 7, False, False, False, False, 'denied', 'false', 7),
+            ('cleanup-failure', 0, True, False, False, False, 'denied', 'false', 1),
+            ('permission-failure', 0, False, True, False, False, 'denied', 'false', 1),
+            ('probe-failure', 0, False, False, True, False, 'denied', 'false', 1),
+            ('state-mismatch', 0, False, False, False, True, 'denied', 'false', 1),
+        ]
+        for name, initial, fail_cleanup, fail_permission, fail_probe, mismatch, original, enabled, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix='agent-cleanup-', dir=scratch) as temp:
+                path = Path(temp)
+                stage = path / 'stage'
+                stage.mkdir()
+                mock = path / 'mock-cli'
+                mock.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$MOCK_CALL"\nexit "$MOCK_PERMISSION_EXIT"\n')
+                mock.chmod(0o700)
+                env = dict(os.environ, MOCK_CALL=str(path / 'permission-call'), MOCK_PERMISSION_EXIT='1' if fail_permission else '0')
+                prelude = f'''set -uo pipefail
+RUN=true
+ORIGINAL={original}
+ORIGINAL_ENABLED={enabled}
+OWNS_NAMESPACE=true
+ADB={mock}
+SERIAL=emulator-mock
+TEST=org.jcode.mobile.agentnotificationtests
+OUT={path}
+STAGE={stage}
+run_phase() {{
+  if [[ "$1" == cleanup ]]; then return {1 if fail_cleanup else 0}; fi
+  if [[ "$1" == probe ]]; then
+    printf 'INSTRUMENTATION_RESULT: notification_permission={original}\\nINSTRUMENTATION_RESULT: notifications_enabled={'wrong' if mismatch else enabled}\\nINSTRUMENTATION_RESULT: namespace_clean=true\\n' > "$2"
+    return {1 if fail_probe else 0}
+  fi
+  return 99
+}}
+'''
+                result = subprocess.run(['bash', '-c', prelude + cleanup + f'\n(exit {initial})\ncleanup\n'], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertEqual((path / 'permission-call').read_text().strip(), f'-s emulator-mock shell pm {"grant" if original == "granted" else "revoke"} org.jcode.mobile.agentnotificationtests android.permission.POST_NOTIFICATIONS')
+                self.assertEqual('PASS:' in result.stdout, expected == 0)
+                self.assertFalse(stage.exists())
 
     def test_actual_java_algorithm_against_synthetic_os(self):
         source = JAVA.read_text()
