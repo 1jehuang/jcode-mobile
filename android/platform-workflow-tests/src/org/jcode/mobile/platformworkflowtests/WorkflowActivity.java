@@ -6,6 +6,7 @@ import android.os.Bundle;
 
 /** Test-only dispatch endpoint. Never starts Rust, signs in or contacts a server. */
 public final class WorkflowActivity extends Activity {
+    static volatile WorkflowActivity current;
     static volatile Intent received;
     static volatile int deliveries;
     @Override public void onCreate(Bundle state) {
@@ -18,6 +19,7 @@ public final class WorkflowActivity extends Activity {
         record(intent);
     }
     private void record(Intent intent) {
+        current = this;
         received = new Intent(intent);
         deliveries++;
     }

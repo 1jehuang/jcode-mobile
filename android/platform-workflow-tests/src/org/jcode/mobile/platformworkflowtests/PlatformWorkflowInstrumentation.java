@@ -132,6 +132,11 @@ public final class PlatformWorkflowInstrumentation extends Instrumentation {
             final int shortcutDeliveries = before + 1;
             await(() -> WorkflowActivity.deliveries == shortcutDeliveries, "Stored shortcut Intent did not reach actual Activity once");
             check(dispatch.getData().equals(WorkflowActivity.received.getData()), "Shortcut dispatch changed session URI");
+            // Android may add task-clearing flags to stored shortcut intents.
+            // Continue with the real delivered Activity, never a destroyed predecessor.
+            activity = WorkflowActivity.current;
+            owner.set(services, activity);
+            check(activity != null && !activity.isDestroyed(), "Shortcut receiver Activity is not alive");
             check(call("indexSessions", rows(session, "Workflow renamed")), "Production shortcut update failed");
             check(shortcuts.getDynamicShortcuts().size() == 1
                     && "Workflow renamed".contentEquals(shortcut("session-" + session).getShortLabel()), "Rename/deletion not reflected in OS");
