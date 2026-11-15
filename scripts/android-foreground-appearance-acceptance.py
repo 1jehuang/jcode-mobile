@@ -51,13 +51,41 @@ def night_settings(text):
 
 def service_state(text):
     result = {}
+    override_fields = ("mOverrideNightModeOn", "mOverrideNightModeOff")
     for field in SERVICE_FIELDS:
+        if field in override_fields:
+            continue
         matches = re.findall(r"(?<![\w])" + field + r"=([^\s,]+)", text)
         if len(matches) != 1:
             raise AssertionError("Cannot establish unique uimode service field " + field)
         result[field] = matches[0]
-    if any(result[key] != "false" for key in ("mNightModeLocked", "mUiModeLocked", "mOverrideNightModeOn", "mOverrideNightModeOff")):
-        raise AssertionError("Locked/overridden night state is outside safe restoration scope")
+    paired = re.findall(r"(?<![\w])mOverrideOn/Off=([^\s,]*)", text)
+    separate = [re.findall(r"(?<![\w])" + field + r"=([^\s,]*)", text) for field in override_fields]
+    keys = ("mOverrideOn/Off",) + override_fields
+    parsed_counts = (len(paired),) + tuple(len(values) for values in separate)
+    for key, parsed_count in zip(keys, parsed_counts):
+        mentions = re.findall(r"(?<![\w])" + re.escape(key) + r"(?![\w])", text)
+        if len(mentions) != parsed_count:
+            raise AssertionError("Malformed uimode override field " + key)
+    if paired:
+        if len(paired) != 1 or any(separate):
+            raise AssertionError("Duplicate/ambiguous uimode override representations")
+        pair = re.fullmatch(r"(true|false)/(true|false)", paired[0])
+        if not pair:
+            raise AssertionError("Malformed paired uimode override flags")
+        flags = pair.groups()
+    else:
+        if any(len(values) != 1 or values[0] not in ("true", "false") for values in separate):
+            raise AssertionError("Cannot establish both explicit uimode override flags")
+        flags = tuple(values[0] for values in separate)
+    result.update(zip(override_fields, flags))
+    for key in ("mNightModeLocked", "mUiModeLocked", "mComputedNightMode"):
+        if result[key] not in ("true", "false"):
+            raise AssertionError("Unknown uimode boolean encoding: " + key)
+    if any(result[key] != "false" for key in ("mOverrideNightModeOn", "mOverrideNightModeOff")):
+        raise AssertionError("Active night override is outside safe restoration scope")
+    if result["mNightModeLocked"] != "false" or result["mUiModeLocked"] != "false":
+        raise AssertionError("Night/UI mode locked: privileged caller capability is not verified by this harness; refusing mutation")
     return result
 
 

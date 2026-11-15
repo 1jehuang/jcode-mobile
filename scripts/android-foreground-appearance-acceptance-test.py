@@ -73,6 +73,49 @@ class Parsing(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(AssertionError):
                 m.service_state(value)
 
+    def test_actual_paired_override_alias_has_same_canonical_state(self):
+        paired = service().replace("mOverrideNightModeOn=false mOverrideNightModeOff=false", "mOverrideOn/Off=false/false")
+        self.assertEqual(m.service_state(paired), m.service_state(service()))
+        self.assertEqual(m.service_state(paired)["mOverrideNightModeOn"], "false")
+        self.assertEqual(m.service_state(paired)["mOverrideNightModeOff"], "false")
+
+    def test_override_alias_never_defaults_missing_malformed_or_duplicate_flags(self):
+        base = service().replace("mOverrideNightModeOn=false mOverrideNightModeOff=false", "")
+        for flags in ("", "mOverrideOn/Off=false", "mOverrideOn/Off=0/0", "mOverrideOn/Off=FALSE/FALSE",
+                      "mOverrideOn/Off=false/false/false", "mOverrideOn/Off=true/false", "mOverrideOn/Off=false/true",
+                      "mOverrideOn/Off=false/false mOverrideOn/Off=false/false",
+                      "mOverrideNightModeOn=false", "mOverrideNightModeOff=false",
+                      "mOverrideNightModeOn=false mOverrideNightModeOff=unknown",
+                      "mOverrideOn/Off= mOverrideNightModeOn=false mOverrideNightModeOff=false",
+                      "mOverrideOn/Off mOverrideNightModeOn=false mOverrideNightModeOff=false",
+                      "mOverrideOn/Off=false/false mOverrideNightModeOn",
+                      "mOverrideOn/Off=false/false mOverrideNightModeOn=false mOverrideNightModeOff=false"):
+            with self.subTest(flags=flags), self.assertRaises(AssertionError):
+                m.service_state(base + flags)
+
+    def test_actual_api35_layout_retains_locked_state_refusal(self):
+        # Exact root-saved read-only service text, no screenshots or device access.
+        actual = """Current UI Mode Service state:
+  mDockState=0 mLastBroadcastState=0
+ mStartDreamImmediatelyOnDock=true  mNightMode=1 (no)  mOverrideOn/Off=false/false  mAttentionModeThemeOverlay=1000 mNightModeLocked=true
+  mCarModeEnabled=false (carModeApps=
+ mWaitForDeviceInactive=false mComputedNightMode=false customStart=22:00 customEnd06:00 mCarModeEnableFlags=0 mEnableCarDockLaunch=false
+  mCurUiMode=0x11 mUiModeLocked=false mSetUiMode=0x11
+  mHoldingConfiguration=false mSystemReady=true
+  mTwilightService.getLastTwilightState()=null
+"""
+        with self.assertRaisesRegex(AssertionError, "mode locked"):
+            m.service_state(actual)
+        # A synthetic unlocked variant tests the parser, not observed permission.
+        parsed = m.service_state(actual.replace("mNightModeLocked=true", "mNightModeLocked=false"))
+        self.assertEqual(parsed["mNightMode"], "1")
+        self.assertEqual(parsed["mCurUiMode"], "0x11")
+
+    def test_unknown_boolean_service_values_refused(self):
+        for key in ("mNightModeLocked", "mUiModeLocked", "mComputedNightMode"):
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                m.service_state(service().replace(key + "=false", key + "=unknown"))
+
     def test_activity_exact_top_identity_and_config(self):
         before = m.activity_state(activities(), "1234")
         after = m.activity_state(activities(night=True), "1234")

@@ -27,7 +27,7 @@ Pure tests, no device/subprocess access:
 python3 scripts/android-foreground-appearance-acceptance-test.py -v
 ```
 
-Author validation: **23 pure tests passed**, Python compilation passed. The author
+Author validation: **27 pure tests passed**, Python compilation passed. The author
 has not run adb or emulators. These are harness checks, not a runtime theme PASS.
 Earlier isolated platform workflows were separately run by the coordinator on
 API35/API36. They do not establish this foreground GPUI result.
@@ -94,6 +94,43 @@ fractions/PNG hashes, full Activity dumps, events-buffer snapshots and
 `result.json`. The output directory is created mode 0700 and cannot already exist.
 No screenshot is uploaded by this harness. Existing input-method/service dumps are
 not accepted as substitutes for actual theme pixels.
+
+## Read-only API35 compatibility followthrough
+
+The coordinator's saved
+`target/android/foreground-theme-api35-keyboard-hidden/actual-uimode-service.txt`
+reports explicit day mode and actual override values using
+`mOverrideOn/Off=false/false`, not the harness's original two separately named
+fields. The parser now accepts exactly one complete boolean representation,
+canonicalizes the observed pair to the same two restoration fields, and rejects
+missing, partial, malformed, duplicated, simultaneous or active-override values.
+It does not infer absent overrides as false. Raw dumps are retained before parsing
+so incompatible preflights remain diagnosable without repeating mutations.
+
+That same saved dump explicitly has `mNightModeLocked=true`, not false. The
+compatibility fix therefore still **refuses before mutation**, now reporting the
+actual locked-state boundary instead of an unsupported-field error. This is not
+a GPUI appearance regression or a runtime theme pass. No coordinator night-mode
+setting mutation occurred in these reported preflight attempts.
+
+AOSP Android15 `UiModeManagerService.setNightModeInternal` makes the lock a
+permission gate: a locked service refuses callers lacking
+`android.permission.MODIFY_DAY_NIGHT_MODE`. It does not mean every privileged
+caller is unable to switch modes. Its shell command delegates to this setter.
+The original lock flag must never be changed merely to make acceptance pass.
+The current harness does not verify privileged caller capability, so conservatively
+keeps its locked-state refusal. A future supported privileged-shell path would
+need actual read-only caller identity and granted-permission evidence before any
+change, retain the observed `true` lock in the exact restored service snapshot,
+and preserve all visual, lifecycle and restoration checks. Successful mode
+readback alone is not used as proof of this capability.
+
+Primary source checked: AOSP `platform/frameworks/base`,
+`refs/heads/android15-release`,
+`services/core/java/com/android/server/UiModeManagerService.java`, blob
+`1c13ad5b3ceb83c3567747a21355dccec41130f9`, methods `dumpImpl`,
+`setNightModeInternal` and `Shell.handleNightMode`. This explains platform
+semantics, not the actual emulator caller's granted permissions.
 
 ## Hard limits and remaining gates
 
