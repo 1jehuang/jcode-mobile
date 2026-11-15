@@ -27,6 +27,28 @@ def fixture(scale=1, replacements=None):
 
 
 class FontTests(unittest.TestCase):
+    def test_generic_word_retry_preserves_bounds_and_requires_confidence(self):
+        from PIL import Image
+        header = "level\tleft\ttop\twidth\theight\tconf\ttext\n"
+        source = header + "5\t30\t30\t20\t20\t30\t1in\n"
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "sample.png"
+            Image.new("RGB", (100, 100), "white").save(image)
+            for left, confidence, expected in ((10, 79, "in"), (11, 79, "1in"), (10, 44, "1in")):
+                raw = header + f"5\t{left}\t10\t20\t20\t{confidence}\tin\n"
+                with patch.object(font.subprocess, "run", return_value=SimpleNamespace(stdout=raw.encode())) as command:
+                    result = font.Acceptance.retry_words(None, image, source, 100, 100)
+                row = list(font.csv.DictReader(font.io.StringIO(result), delimiter="\t"))[0]
+                self.assertEqual(row["text"], expected)
+                self.assertEqual([row[k] for k in ("left", "top", "width", "height")], ["30", "30", "20", "20"])
+                self.assertNotIn("whitelist", str(command.call_args))
+
+    def test_word_retry_is_bounded(self):
+        tsv = "level\tleft\ttop\twidth\theight\tconf\ttext\n" + "5\t30\t30\t20\t20\t30\tx\n" * 9
+        with patch.object(font.subprocess, "run", side_effect=AssertionError("must not run")):
+            with self.assertRaisesRegex(AssertionError, "Too many"):
+                font.Acceptance.retry_words(None, Path("unused.png"), tsv, 100, 100)
+
     def test_raw_row_preserves_exact_encoding_and_missing(self):
         self.assertIsNone(font.font_row("other=1\n"))
         for value in ("1", "1.000", ".75", "1."):

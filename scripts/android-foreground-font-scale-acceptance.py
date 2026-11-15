@@ -119,6 +119,45 @@ def require_growth(before, after):
 
 
 class Acceptance(appearance.Acceptance):
+    def retry_words(self, path, tsv, width, height):
+        """Resegment low-confidence words, without expected text or geometry changes."""
+        from PIL import Image
+        reader = csv.DictReader(io.StringIO(tsv), delimiter="\t")
+        fields = reader.fieldnames
+        rows = list(reader)
+        candidates = [r for r in rows if r["level"] == "5" and r["text"].strip()
+                      and 0 <= float(r["conf"]) < 45]
+        if len(candidates) > 8:
+            raise AssertionError("Too many uncertain OCR words for bounded retry")
+        with Image.open(path) as image:
+            for index, row in enumerate(candidates):
+                x, y, w, h = (int(row[k]) for k in ("left", "top", "width", "height"))
+                if min(w, h) <= 0:
+                    continue
+                padding = max(8, h // 2)
+                left, top = max(0, x - padding), max(0, y - padding)
+                crop = path.with_name(path.stem + "-word-retry-" + str(index) + ".png")
+                image.crop((left, top, min(width, x + w + padding), min(height, y + h + padding))).save(crop)
+                raw = subprocess.run(["tesseract", str(crop), "stdout", "--psm", "7", "tsv"],
+                                     check=True, capture_output=True, timeout=20).stdout.decode("utf-8")
+                crop.with_suffix(".tsv").write_text(raw)
+                words = [r for r in csv.DictReader(io.StringIO(raw), delimiter="\t")
+                         if r["level"] == "5" and r["text"].strip()]
+                if len(words) != 1:
+                    continue
+                word = words[0]
+                actual = (int(word["left"]) + left, int(word["top"]) + top,
+                          int(word["width"]), int(word["height"]))
+                if actual == (x, y, w, h) and 45 <= float(word["conf"]) <= 100:
+                    row["text"], row["conf"] = word["text"], word["conf"]
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+        result = output.getvalue()
+        path.with_suffix(".resegmented.tsv").write_text(result)
+        return result
+
     def row(self):
         return font_row(self.shell("settings", "--user", "0", "list", "system"))
 
@@ -147,6 +186,7 @@ class Acceptance(appearance.Acceptance):
         tsv = subprocess.run(["tesseract", str(path), "stdout", "tsv"], check=True,
                              capture_output=True, timeout=20).stdout.decode("utf-8")
         (self.out / (name + ".tsv")).write_text(tsv)
+        tsv = self.retry_words(path, tsv, width, height)
         appearance.require_onboarding(" ".join(row["text"] for row in csv.DictReader(io.StringIO(tsv), delimiter="\t")))
         labels = measure(tsv, width, height)
         observation = {"name": name, "scale": expected, "dimensions": [width, height],
