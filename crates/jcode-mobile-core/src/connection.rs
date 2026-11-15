@@ -340,9 +340,17 @@ fn run(
                 })?;
                 target_session = Some(fork.session_id);
                 fork_from = None;
+                let stream = client.events(target_session.as_deref());
                 let session = client.attach_session(target_session.as_deref().unwrap()).map_err(classify)?;
-                return Ok((client, session));
+                return Ok((client, session, stream));
             }
+            // Subscribe before the attach request. The SDK does not replay
+            // pushes, and the reader can receive RuntimeInfo or live content
+            // before the thread waiting for Attached resumes. Losing the
+            // former requests another large routes snapshot; losing the
+            // latter truncates a turn joined during attach. A new session has
+            // no id yet, so subscribe to this connection until create returns.
+            let stream = client.events(target_session.as_deref());
             let session = if config.fork_from.is_some() {
                 // A fork must never silently become a blank conversation.
                 client.attach_session(target_session.as_deref().unwrap()).map_err(classify)?
@@ -352,13 +360,13 @@ fn run(
                 })
                 .map_err(classify)?
             };
-            Ok((client, session))
+            Ok((client, session, stream))
         });
         if inbox.lock().unwrap().stopped {
             break;
         }
         let last_error: String = match outcome {
-            Ok((client, session)) => {
+            Ok((client, session, stream)) => {
                 crate::timing::stage("session ready", started.elapsed());
                 let sid = session.session_id.clone();
                 target_session = Some(sid.clone());
@@ -371,7 +379,6 @@ fn run(
                 }));
                 let busy = session_is_busy(&session.status);
                 emit(ConnectionOutput::Event(ApiEvent::Attached { session }));
-                let stream = client.events(Some(&sid));
                 if session_loop(&client, &sid, busy, &stream, &inbox, &emit, started, std::mem::take(&mut showed_cached)) {
                     break;
                 }
@@ -950,6 +957,70 @@ mod tests {
         assert!(wait_for(|o| matches!(o, ConnectionOutput::Phase(ConnectionPhase::Reconnecting { .. })), 8));
         assert!(wait_for(|o| matches!(o, ConnectionOutput::Phase(ConnectionPhase::Connected)), 5));
         conn.stop();
+    }
+
+    #[test]
+    fn attach_pushes_arriving_before_attached_are_preserved() {
+        for (resume, fork_from) in [(None, None), (Some("s1".to_string()), None), (None, Some("source".to_string()))] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (release, history_applied) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (s, _) = listener.accept().unwrap();
+                let mut w = s.try_clone().unwrap();
+                for line in BufReader::new(s).lines() {
+                    let req: Value = serde_json::from_str(&line.unwrap()).unwrap();
+                    let id = req["id"].as_u64();
+                    match req["req"].as_str().unwrap() {
+                        "hello" => reply(&mut w, id, json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"fake"})),
+                        "attach_session" if req["session_id"] == "source" => {
+                            reply(&mut w, id, json!({"ev":"attached","session":{"session_id":"source","status":"idle"}}));
+                        }
+                        "fork_session" => reply(&mut w, id, json!({"ev":"session_forked","session":{"session_id":"s1","status":"idle"}})),
+                        "create_session" | "attach_session" => {
+                            // The reader must consume these before it can
+                            // release the thread waiting for Attached. This
+                            // makes the old subscribe-after-attach race fail
+                            // deterministically, without a latency threshold.
+                            reply(&mut w, None, json!({"ev":"runtime_info","session_id":"s1","model":"pushed-model","routes":[]}));
+                            reply(&mut w, None, json!({"ev":"history","session_id":"s1","messages":[{"role":"assistant","content":"pushed transcript"}]}));
+                            reply(&mut w, id, json!({"ev":"attached","session":{"session_id":"s1","status":"idle"}}));
+                        }
+                        "get_history" => {
+                            // A fresh request cannot rescue the test. The UI
+                            // must see the buffered attach pushes first.
+                            let _ = history_applied.recv_timeout(Duration::from_secs(5));
+                            break;
+                        }
+                        _ => reply(&mut w, id, json!({"ev":"error","code":"unknown_request","message":"no"})),
+                    }
+                }
+            });
+            let factory: TransportFactory = Arc::new(move || {
+                Ok(Box::new(Tcp(TcpStream::connect(addr).unwrap())) as Box<dyn Transport>)
+            });
+            let mut config = Config::custom(factory);
+            config.fork_from = fork_from;
+            let (conn, rx) = Connection::start_with_channel(config, resume);
+            let mut runtime_seen = false;
+            let mut history_seen = false;
+            while let Ok(output) = rx.recv_timeout(Duration::from_secs(2)) {
+                match output {
+                    ConnectionOutput::Event(ApiEvent::RuntimeInfo { .. }) => runtime_seen = true,
+                    ConnectionOutput::Event(ApiEvent::History { messages, .. }) => {
+                        assert_eq!(messages[0]["content"], "pushed transcript");
+                        history_seen = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            conn.stop();
+            let _ = release.send(());
+            server.join().unwrap();
+            assert!(runtime_seen, "attach-pushed runtime metadata was discarded");
+            assert!(history_seen, "attach-pushed history must not wait for the gated fresh request");
+        }
     }
 
     /// Fake harness: hello, create_session, snapshot, then one streamed turn.
