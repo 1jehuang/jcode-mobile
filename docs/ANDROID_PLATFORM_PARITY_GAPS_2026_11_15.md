@@ -87,3 +87,7 @@ Later root-owned runs supersede the original untested status for these specific 
 - Actual production selectable-text presentation, scrolling, framework Copy, clipboard restoration and Back dismissal passed on API35. Selection was programmatic, so long-press and drag-handle gesture acceptance remains open.
 
 Exact artifact hashes, evidence directories, prior failures and scope limitations are recorded in `ANDROID_GPUI_VALIDATION_2026_11_15.md`. Shortcut/notification/settings workflows and the actual Rust voice pipeline remain separate acceptance work. These updates do not establish complete parity, physical-device acceptance or production release authorization.
+
+## Launcher followthrough, November 15 at 09:09 UTC
+
+The original missing New/Ask launcher affordance is now implemented by `8d12c9d`. Root verified actual enabled static OS records and tapped both entries in the real API36 launcher popup. Both reached the shared signed-out GPUI onboarding with their exact no-text `jcode://new` or `jcode://ask` Intent. This is not authenticated session creation or assistant integration. Separately, isolated installed-production dynamic shortcut and notification workflows and actual Rust/JNI audio capture have now passed the bounded runtime checks recorded in the validation document. Foreground theme invalidation and richer per-agent ongoing notification interactions remain active work, and the FCM/background execution gaps remain unchanged.
