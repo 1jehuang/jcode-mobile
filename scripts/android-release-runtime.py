@@ -42,7 +42,7 @@ def package_is_non_debug(dump):
 
 
 def ime_top(window_dump):
-    """Use actual IME window geometry, never OCR keyboard suggestions as bounds."""
+    """Use actual IME content geometry, not its potentially full-screen window."""
     blocks = re.split(r"(?=\n\s*Window #\d+ Window\{)", window_dump)
     candidates = []
     for block in blocks:
@@ -51,10 +51,16 @@ def ime_top(window_dump):
             continue
         if "isOnScreen=false" in block or "isVisible=false" in block:
             continue
+        insets = re.search(r"mGivenContentInsets=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", block)
+        inset_top = int(insets.group(2)) if insets else 0
         for _, top, right, bottom in re.findall(
                 r"(?:mFrame|\bframe)=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", block):
-            if int(bottom) > int(top) > 0 and int(right) > 0:
-                candidates.append(int(top))
+            # IME windows may cover nearly the whole display with a transparent
+            # upper area. Given content insets are window-relative, so the
+            # occluding keyboard begins at frame.top + contentInset.top.
+            content_top = int(top) + inset_top
+            if int(bottom) > content_top > 0 and int(right) > 0:
+                candidates.append(content_top)
     if not candidates:
         raise AssertionError("No visible InputMethod frame found in window dump")
     return min(candidates)

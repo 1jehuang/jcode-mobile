@@ -39,6 +39,18 @@ class Parsing(unittest.TestCase):
         self.assertEqual(m.ime_top(dump), 1200)
         self.assertEqual(m.ime_top(dump.replace('frame=', 'mFrame=')), 1200)
 
+    def test_fullscreen_ime_uses_content_inset_not_transparent_top(self):
+        # API35 real Gboard shape: frame.top=63, contentInset.top=985.
+        dump = '\n  Window #7 Window{8ed725b u0 InputMethod}:\n    mGivenContentInsets=[0,985][0,0] mGivenVisibleInsets=[0,985][0,0]\n    Frames: parent=[0,63][1080,1920] display=[0,63][1080,1920] frame=[0,63][1080,1920]\n    isOnScreen=true\n    isVisible=true\n'
+        self.assertEqual(m.ime_top(dump), 1048)
+        self.assertLess(809, m.ime_top(dump))  # Actual releasedraft OCR bottom.
+        self.assertLess(962, m.ime_top(dump))  # Actual Send code OCR bottom.
+
+    def test_impossible_content_inset_fails_closed(self):
+        dump = '\n Window #1 Window{123 u0 InputMethod}:\n mGivenContentInsets=[0,2000][0,0]\n frame=[0,63][1080,1920]\n isVisible=true'
+        with self.assertRaises(AssertionError):
+            m.ime_top(dump)
+
     def test_hidden_or_other_window_not_ime(self):
         for dump in ('mFrame=[0,0][1080,2400]', '\n Window #1 Window{123 u0 Other}:\n frame=[0,1000][1080,2400]', '\n Window #1 Window{123 u0 InputMethod}:\n isOnScreen=false\n frame=[0,1200][1080,2400]'):
             with self.assertRaises(AssertionError):
