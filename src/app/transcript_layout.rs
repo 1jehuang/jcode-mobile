@@ -16,6 +16,7 @@ use std::{
 };
 
 const MAX_ROWS: usize = 4096;
+const MAX_SHARED_ROWS: usize = 4096;
 const OVERSCAN: f32 = 400.;
 
 /// `height_after` is a lower bound because unmeasured suffix rows count zero.
@@ -71,13 +72,23 @@ pub(super) struct Key {
     fingerprint: u64,
     width: u32,
     scale: u32,
+    density: u32,
+    shareable: bool,
 }
 
 impl Key {
+    /// Native text measurement is snapped at the window's device scale.
+    pub(super) fn with_window_scale(mut self, scale: f32) -> Self {
+        self.density = scale.to_bits();
+        self
+    }
+
     pub(super) fn with_images(mut self, images: &[jcode_mobile_core::SessionImage]) -> Self {
         if images.is_empty() {
             return self;
         }
+        // Image loading and dimensions are not determined by prose content.
+        self.shareable = false;
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         self.fingerprint.hash(&mut hash);
         for image in images {
@@ -164,13 +175,45 @@ pub(super) fn key_visible(
         fingerprint: hash.finish(),
         width: width.to_bits(),
         scale: crate::system::text_scale().to_bits(),
+        density: 1f32.to_bits(),
+        // Limit cross-identity reuse to settled prose. Other row types can
+        // depend on identity-specific expansion or asynchronous resources.
+        shareable: matches!(entry.role, Role::User | Role::Assistant)
+            && entry.tool_calls.is_empty()
+            && entry.reasoning.is_empty()
+            && !entry.is_streaming
+            && super::synced_tool_output(entry).is_none(),
     }
 }
 
 type Measurements = HashMap<(u64, u64), (Key, Pixels)>;
 
+/// Content-derived geometry only, with no row/account identifiers or raw text.
+/// The fingerprint includes rendered text, role, and prompt badge digit width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GeometryKey {
+    fingerprint: u64,
+    width: u32,
+    scale: u32,
+    density: u32,
+}
+
+impl Key {
+    fn geometry(self) -> Option<GeometryKey> {
+        self.shareable.then_some(GeometryKey {
+            fingerprint: self.fingerprint,
+            width: self.width,
+            scale: self.scale,
+            density: self.density,
+        })
+    }
+}
+
 #[derive(Clone, Default)]
-pub(super) struct Heights(Rc<RefCell<Measurements>>);
+pub(super) struct Heights(
+    Rc<RefCell<Measurements>>,
+    Rc<RefCell<HashMap<GeometryKey, Pixels>>>,
+);
 
 impl Heights {
     pub fn get(&self, key: Key) -> Option<Pixels> {
@@ -179,6 +222,10 @@ impl Heights {
             .get(&(key.tab, key.entry))
             .filter(|(stored, _)| *stored == key)
             .map(|(_, height)| *height)
+            .or_else(|| {
+                key.geometry()
+                    .and_then(|geometry| self.1.borrow().get(&geometry).copied())
+            })
     }
 
     pub fn record(&self, key: Key, height: Pixels) {
@@ -190,6 +237,15 @@ impl Heights {
             rows.clear();
         }
         rows.insert((key.tab, key.entry), (key, height));
+        if let Some(geometry) = key.geometry() {
+            let mut shared = self.1.borrow_mut();
+            if shared.len() >= MAX_SHARED_ROWS && !shared.contains_key(&geometry) {
+                // Bounded retention, just like the primary row cache. Eviction
+                // only causes a fresh native measurement, never an estimate.
+                shared.clear();
+            }
+            shared.insert(geometry, height);
+        }
     }
 }
 
@@ -348,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn measurements_invalidate_on_same_length_edits_resize_scale_and_tab() {
+    fn measurements_invalidate_on_edits_resize_scale_but_reuse_identical_prose_across_tabs() {
         let heights = Heights::default();
         let mut entry = entry();
         let expanded = Default::default();
@@ -358,7 +414,10 @@ mod tests {
         entry.text = "world".into();
         assert_eq!(heights.get(key(1, &entry, 0, &expanded, 362.)), None);
         entry.text = "hello".into();
-        assert_eq!(heights.get(key(2, &entry, 0, &expanded, 362.)), None);
+        assert_eq!(
+            heights.get(key(2, &entry, 0, &expanded, 362.)),
+            Some(px(123.))
+        );
         assert_eq!(heights.get(key(1, &entry, 0, &expanded, 363.)), None);
         let mut scaled = original;
         scaled.scale = 1.3f32.to_bits();
