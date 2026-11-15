@@ -218,6 +218,29 @@ needs a new installed-artifact stage breakdown. Do not infer that all remaining
 costs are unavoidable, promise universal subsecond cold boot, reduce security,
 or keep paid hosts awake merely to improve a benchmark.
 
+## Follow-up: active cache and cached revalidation
+
+Mobile `cffa7c3` makes the authenticated-master cache expire after five minutes
+of inactivity rather than five minutes after authentication. Matching active
+reuse renews the idle deadline, while expired entries cannot revive. Credential
+and endpoint checks remain mandatory. A generation token prevents an old timer
+from evicting a replacement or restoring signed-out state. Reuse creates no new
+timer and no host wake request. A second cache hit after provisioning contention
+now releases the provisioning lock before independent API hello, with a locked
+replacement recheck before any fallback provisioning.
+
+Mobile `2990f46` validates an existing prepared API channel with a bounded ping
+rather than starting another remote API process. The existing two-second stale
+socket budget remains. A stalled ping closes only its channel, not active sibling
+sessions. Causal fixtures cover stalled, closed and reused channels. Five loopback
+revalidations measured **7.21 ms reused versus 610.28 ms fresh**, with an injected
+120 ms API hello cost. This is not an iPhone or AWS measurement.
+
+Combined hosted core acceptance passed **162 tests, zero failed, four ignored**,
+receipt `20261115-000826075-681885`, including cache-account/expiry fencing and
+blocked-hello lock handoff. Integrated app compilation is checked separately.
+Neither change establishes a new installed-device end-to-end latency result.
+
 ## Real-device release gate
 
 Use an installed release artifact containing the source changes. Capture cold
