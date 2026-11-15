@@ -16,7 +16,8 @@ Install Android SDK platform 36, build tools 35.0.0, NDK 27.2.12479018, and a JD
 
 The default output is `target/android/JcodeMobile.apk`, with both `arm64-v8a`
 and `x86_64` libraries, compile/target SDK 36, and min SDK 26. Packaging requires
-`--locked`, so a manifest/lock mismatch fails instead of silently changing dependencies. Override the output
+`--locked`, so a manifest/lock mismatch fails instead of silently changing
+dependencies. Override the output
 with `ANDROID_APK_OUTPUT`. `ANDROID_PROFILE=release` removes the debug demo
 entry. Development APKs use a local debug signing key, not a publishing key.
 
@@ -85,8 +86,8 @@ accessibility host fix and include app keyboard mapping `857110e` and shared
 secure-aware text semantics `b95c662`. GPUI `c249c6ce` includes the surface-free
 single-backend selection, 112-byte storage path stride (WebGL texture stride
 remains 104), and shared keyboard configuration mapping. The saved camera
-private-cache/URI-grant production patch was also present before this build
-started, not added after packaging.
+private-cache/URI-grant production patch (`5ccee62`) was also present before this
+build started, not added after packaging.
 
 The locked dual-ABI APK rebuild passed in 75.0 seconds, compiling the Android
 backend/configuration bridge against its published immutable revision. All
