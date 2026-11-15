@@ -7,7 +7,10 @@ removing a draft photo, and sending a photo-only prompt. Synthetic callback
 tests cover late picker results remaining with their original tab and ignored
 results after sign-out. The ledger explicitly leaves native camera permission,
 capture, library selection, swipe dismissal and real model delivery as device
-acceptance gaps. Computer-synced photo submission also has HTTP contract and
+acceptance gaps. Assistant-image coverage additionally supplies a real encoded
+PNG in a synced snapshot and verifies a visible preview plus successful GPUI
+image decoding. Live and restored SDK image-anchor reducer tests are separate
+from that UI regression. Computer-synced photo submission also has HTTP contract and
 synthetic draft-ownership tests, which do not replace that device acceptance.
 
 `MOBILE_INTERACTION_COVERAGE.json` is the reviewed, machine-readable ledger.
@@ -19,11 +22,11 @@ functions, and their external files are excluded from production counts.
 Regression references must name a reachable function with `#[test]` or
 `#[gpui::test]`, as discovered from the parsed source rather than text matching.
 
-The reviewed snapshot records **68 owners, 113 static event-call sites, and
-175 control/helper-family sites**. Of those owners, 65 have named, explicitly
-partial regression evidence and 3 are gap-only. These are inventory counts,
-not a behavioral coverage percentage. Each JSON row declares `coverage_scope`
-as `partial` or `gap_only`.
+The reviewed snapshot records **93 owners, 135 static event-call sites, and
+224 control/helper-family sites**. Of those owners, 81 have named regression
+evidence and 12 have only explicit gap or platform/device requirements. These
+are inventory counts, not a behavioral coverage percentage. Coverage remains
+partial even where a row names a passing test.
 
 This is a change detector and coverage checklist, not a proof of interaction
 correctness. A row with named tests does not mean every callback in that
