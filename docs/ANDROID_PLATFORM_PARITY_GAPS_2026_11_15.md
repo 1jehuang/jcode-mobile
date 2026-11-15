@@ -77,3 +77,13 @@ Validation: hosted `justrust test --lib` run `20261115-001215879-694113` passed 
 Coordinator runtime followthrough remains: deny then grant notifications with unchanged agent content, shortcut publication failure/recovery and deletion, foreground theme/animation changes without resume, and cold/warm Android share intent exactly-once draft ownership with no model request. No devices, notification delivery or FCM credentials were changed by this followthrough. The narrow share-filter configuration is enabled in source, not yet validated on a device.
 
 This inspection makes no new Play/signing/production-release claim and does not alter the known FCM/backend transport gap.
+
+## Actual runtime followthrough, November 15 at 08:42 UTC
+
+Later root-owned runs supersede the original untested status for these specific paths:
+
+- Actual incoming cold/warm text sharing passed on API35 and API36/16KiB with the opted-in offline debug fixture. Real shared draft state matched the delivered text, submission stayed zero, and existing-intent resume did not duplicate tabs. The debug probe is statically absent from the rebuilt release APK, which independently passed API35 release onboarding and lifecycle checks.
+- Actual installed TalkBack traversal passed against the non-debug AAB-derived release APK on API36, with two distinct native focus targets, independently captured hardware events and restored accessibility settings. This does not establish spoken output or password behavior.
+- Actual production selectable-text presentation, scrolling, framework Copy, clipboard restoration and Back dismissal passed on API35. Selection was programmatic, so long-press and drag-handle gesture acceptance remains open.
+
+Exact artifact hashes, evidence directories, prior failures and scope limitations are recorded in `ANDROID_GPUI_VALIDATION_2026_11_15.md`. Shortcut/notification/settings workflows and the actual Rust voice pipeline remain separate acceptance work. These updates do not establish complete parity, physical-device acceptance or production release authorization.
