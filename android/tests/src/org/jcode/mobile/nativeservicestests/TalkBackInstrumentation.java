@@ -79,7 +79,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
     private String counterSummary() throws Exception {
         return ui(() -> {
             StringBuilder summary = new StringBuilder();
-            for (String name : new String[] {"hostQueries", "virtualQueries", "accessibilityFocusRequests", "hoverEvents"}) {
+            for (String name : new String[] {"hostQueries", "virtualQueries", "accessibilityFocusRequests", "hoverEvents", "accessibilityFocusClears", "accessibilityFocusRemovals", "lastAccessibilityFocusRequest", "accessibilityFocus"}) {
                 if (summary.length() != 0) summary.append(',');
                 summary.append(name).append('=');
                 try { Field field = provider.getClass().getDeclaredField(name); field.setAccessible(true); summary.append(field.getLong(provider)); }
@@ -191,6 +191,8 @@ public final class TalkBackInstrumentation extends Instrumentation {
             reportMetadata();
             // Never call ACTION_ACCESSIBILITY_FOCUS ourselves. An enabled accessibility service must move it.
             int first = focus();
+            StringBuilder observed = new StringBuilder().append(first);
+            int previous = first;
             boolean traversed = false;
             publishGestureReady();
             long deadline = SystemClock.uptimeMillis() + 40000;
@@ -198,9 +200,11 @@ public final class TalkBackInstrumentation extends Instrumentation {
                 require(ui(() -> activity.hasWindowFocus() && activity.getWindow().getDecorView().hasWindowFocus()),
                         "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus while awaiting global emulator hardware gestures; no traversal established");
                 int next = focus();
+                if (next != previous) { observed.append(',').append(next); previous = next; }
                 if (next != -1) { if (first == -1) first = next; else if (next != first) traversed = true; }
                 SystemClock.sleep(50);
             }
+            result.putString("talkback_observed_focus_ids", observed.toString());
             require(traversed, "UNTESTABLE: installed TalkBack emulator hardware swipes did not traverse two native semantic nodes");
             result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated emulator hardware touchscreen swipes");
             edited = ui(() -> {

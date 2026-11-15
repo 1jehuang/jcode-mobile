@@ -48,6 +48,8 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
     // Content-free integration counters for diagnosing real service discovery.
     // They never retain labels, values, event payloads or user input.
     private long hostQueries, virtualQueries, accessibilityFocusRequests, hoverEvents;
+    private long accessibilityFocusClears, accessibilityFocusRemovals;
+    private int lastAccessibilityFocusRequest = NONE;
 
     private static native void nativeStatus(long token, boolean enabled);
     private static native boolean nativeAction(long token, int node, int action, String value);
@@ -177,6 +179,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
             }
             int nextInputFocus = root.optInt("focus", NONE);
             if (accessibilityFocus != NONE && !next.containsKey(accessibilityFocus)) {
+                accessibilityFocusRemovals++;
                 send(accessibilityFocus, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
                 accessibilityFocus = NONE;
             }
@@ -295,6 +298,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
         if (disposed || item == null) return false;
         if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
             accessibilityFocusRequests++;
+            lastAccessibilityFocusRequest = id;
             if (manager == null || !manager.isEnabled() || accessibilityFocus == id) return false;
             if (accessibilityFocus != NONE) send(accessibilityFocus, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
             accessibilityFocus = id;
@@ -306,6 +310,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
             return true;
         }
         if (action == AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS) {
+            accessibilityFocusClears++;
             if (accessibilityFocus != id) return false;
             accessibilityFocus = NONE;
             send(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
