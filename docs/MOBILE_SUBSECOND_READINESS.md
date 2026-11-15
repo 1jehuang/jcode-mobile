@@ -76,6 +76,33 @@ A production candidate needs all of the following before routing real traffic:
   background socket remains alive. Sign-out invalidates all completions and
   connection state. Keep existing HTTP fallback for older deployments.
 
+## Startup scheduling improvement
+
+Mobile commit `0f92008` moves the existing bounded, pinned SSH readiness probe
+off the serial control-plane poll path. At most one speculative probe or unread
+probe result exists process-wide. Cancellation abandons its result without
+remembering the target or caching its connection. The 1200 ms SSH probe budget,
+15-minute readiness allowance, key validation and account-scoped target rules
+are unchanged. Control-plane requests never overlap one another.
+
+The production-loop fixture used a server ready after 100 ms, one failed 1200 ms
+probe and the configured 250 ms polling interval. Serial baseline measured
+1450.287 ms; concurrent scheduling measured 250.148 ms, with exactly two requests
+in each. A full-suite repeat measured 1450.302 ms and 250.212 ms. This removes a
+specific avoidable wait, not the entire actual-device startup path.
+
+During a prolonged boot, restoring the configured 250 ms cadence can issue more
+metadata/console reads and runtime-observation writes than the accidentally
+serialized 1450 ms cadence. No request overlap, extra speculative probe, or
+ready-path EIC repetition is introduced, but the backend load tradeoff remains.
+The four-request-per-second ceiling assumes an immediate response; real request
+time lowers that rate. Do not claim identical request counts for every workload.
+
+Hosted check passed (`20261114-223823953-149182`), six focused fixtures passed
+(`20261114-224033021-166966`), and the full core library passed **145 tests, zero
+failed, three ignored** (`20261114-224110144-173422`). These checks used hosted
+SSH builds, not local compilation or production network access.
+
 ## Offline persistent channel result
 
 Independent run:
