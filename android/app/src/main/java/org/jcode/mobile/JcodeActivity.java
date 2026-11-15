@@ -21,6 +21,26 @@ public final class JcodeActivity extends NativeActivity {
     private native void nativeInitInput();
     private boolean resumed;
     private static native void nativeConfigureDebugDemo(String mode);
+    private static native void nativeWindowInsets(int left, int top, int right, int bottom,
+            int imeLeft, int imeTop, int imeRight, int imeBottom);
+
+    /** Isolate newer framework types so API 26 can still load the Activity. */
+    private static final class Api30 {
+        static void install(JcodeActivity activity) {
+            android.view.View decor = activity.getWindow().getDecorView();
+            decor.setOnApplyWindowInsetsListener((view, insets) -> {
+                android.graphics.Insets safe = insets.getInsets(
+                        android.view.WindowInsets.Type.systemBars()
+                        | android.view.WindowInsets.Type.displayCutout());
+                android.graphics.Insets ime = insets.getInsets(android.view.WindowInsets.Type.ime());
+                nativeWindowInsets(safe.left, safe.top, safe.right, safe.bottom,
+                        ime.left, ime.top, ime.right, ime.bottom);
+                // Observe, do not consume or bypass DecorView's normal inset handling.
+                return view.onApplyWindowInsets(insets);
+            });
+            decor.requestApplyInsets();
+        }
+    }
 
     @Override public void onCreate(Bundle state) {
         // Only debug APKs expose this shared Rust demo route. Release strips the call.
@@ -35,6 +55,7 @@ public final class JcodeActivity extends NativeActivity {
         // A non-drawing one-pixel IME endpoint, not an application widget.
         input = new GpuiInput(this);
         addContentView(input, new ViewGroup.LayoutParams(1, 1));
+        if (android.os.Build.VERSION.SDK_INT >= 30) Api30.install(this);
     }
 
     private <T> T gpuiUi(Callable<T> action, T fallback) {

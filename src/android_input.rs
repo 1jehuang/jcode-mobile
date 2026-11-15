@@ -96,6 +96,25 @@ pub extern "system" fn Java_org_jcode_mobile_JcodeActivity_nativeInitInput(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_jcode_mobile_JcodeActivity_nativeWindowInsets(
+    _: JNIEnv,
+    _: JClass,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    ime_left: i32,
+    ime_top: i32,
+    ime_right: i32,
+    ime_bottom: i32,
+) {
+    gpui_platform::android::dispatch_window_insets(
+        [left, top, right, bottom],
+        [ime_left, ime_top, ime_right, ime_bottom],
+    );
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_jcode_mobile_GpuiInput_nativeEdit(
     mut env: JNIEnv,
     _: JClass,
