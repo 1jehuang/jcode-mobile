@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.jcode.mobile.audiotests">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <queries><package android:name="org.jcode.mobile" /></queries>
+  <application android:label="Isolated production audio acceptance" android:debuggable="true" android:allowBackup="false">
+    <activity android:name=".AudioActivity" android:exported="false" />
+  </application>
+  <instrumentation android:name=".AudioInstrumentation" android:targetPackage="org.jcode.mobile.audiotests" />
+</manifest>
