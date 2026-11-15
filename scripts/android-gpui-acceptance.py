@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real shared GPUI app on a disposable Android emulator.
 
-Requires adb and tesseract. Uses screenshots/OCR, not the deleted Java app's
+Requires adb, tesseract and ImageMagick. Uses screenshots/OCR, not the deleted Java app's
 widget IDs. Never sends authentication emails or model requests. The debug
 Intent selects the existing shared Rust demo and is absent from release builds.
 This is partial acceptance, not a substitute for service/TalkBack/live-network
@@ -86,21 +86,42 @@ def main():
             adb("shell", "input", "keyevent", "KEYCODE_BACK")
             time.sleep(1)
         text, words = capture("onboarding")
-        if "notifications" in text and "allow" in text.lower():
-            # Explicitly decline the emulator's first-run notification prompt.
-            # Do not mistake a system dialog for a GPUI rendering failure.
+        for _ in range(2):
+            if "notifications" not in text or "allow" not in text.lower():
+                break
+            # Decline the emulator's first-run prompt. Reinstall can leave an
+            # orphan permission-controller task after the old app process dies.
             tap_word(words, "Don't")
             time.sleep(1)
+            adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
+            time.sleep(2)
             text, words = capture("onboarding")
         check("Shared GPUI onboarding renders", "Jcode" in text and "Google" in text)
         check("Apple-only sign-in is absent on Android", "Apple" not in text)
         tap_word(words, "example.com")
+        time.sleep(1)  # Wait for Android's IME connection before injecting keys.
         adb("shell", "input", "text", "paritydraft%ssample")
         time.sleep(2)
-        text, _ = capture("onboarding-keyboard")
+        text, words = capture("onboarding-keyboard")
         check("Native keyboard is actually visible", "mInputShown=true" in adb("shell", "dumpsys", "input_method"))
         check("Native text reaches GPUI email field", draft_present(text))
-        check("Email action stays visible above keyboard", "Send" in text and "code" in text)
+        action_text = text
+        if "Send" not in action_text or "code" not in action_text:
+            # Whole-screen OCR can omit the low-contrast disabled button. Read
+            # its real pixels below the observed email field, never synthesize
+            # expected labels or accept keyboard suggestion text as evidence.
+            field = next(row for row in words if "paritydraft" in row["text"].lower())
+            top = int(field["top"]) + int(field["height"]) + 30
+            crop = out / "email-action.png"
+            screenshot = out / "onboarding-keyboard.png"
+            width = int.from_bytes(screenshot.read_bytes()[16:20], "big")
+            crop_width, left = int(width * 0.65), int(width * 0.175)
+            subprocess.run(["magick", str(screenshot),
+                            "-crop", f"{crop_width}x180+{left}+{top}", "+repage", "-resize", "200%", str(crop)],
+                           check=True, capture_output=True, timeout=20)
+            action_text = subprocess.check_output(["tesseract", str(crop), "stdout", "--psm", "6"],
+                                                 text=True, stderr=subprocess.DEVNULL, timeout=20)
+        check("Email action stays visible above keyboard", "Send" in action_text and "code" in action_text)
         adb("shell", "input", "keyevent", "KEYCODE_BACK")
         adb("shell", "input", "keyevent", "KEYCODE_HOME")
         adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
@@ -113,6 +134,7 @@ def main():
         text, words = capture("shared-demo")
         check("Existing shared Rust chat demo renders", "Core" in text and "progress" in text)
         tap_word(words, "Message")
+        time.sleep(1)
         adb("shell", "input", "text", "paritydraft%ssample")
         time.sleep(2)
         text, _ = capture("composer-keyboard")

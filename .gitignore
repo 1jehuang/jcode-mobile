@@ -1,2 +1,3 @@
 /target
 /.jcode/*.lock
+/scripts/__pycache__/
