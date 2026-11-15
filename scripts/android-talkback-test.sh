@@ -22,6 +22,12 @@ adb() { "$ADB" -s "$SERIAL" "$@"; }
 [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" == 1 ]] || { echo 'Refusing non-emulator device' >&2; exit 1; }
 adb shell pm path org.jcode.mobile | grep -q '^package:'
 adb shell pm path com.google.android.marvin.talkback | grep -q '^package:'
+INPUT_HELPER="$ROOT/android/tests/talkback-input.py"
+PROFILE_ARGS=()
+if [[ "$NAVIGATION" == touch ]]; then
+  adb shell getevent -lp > "$OUT/talkback-input-capabilities.txt"
+  PROFILE_ARGS=(--capabilities "$OUT/talkback-input-capabilities.txt")
+fi
 SERVICE='com.google.android.marvin.talkback/com.google.android.marvin.talkback.TalkBackService'
 # No device changes occur before the state journal and EXIT trap are ready.
 KEYS=(enabled_accessibility_services touch_exploration_enabled touch_exploration_granted_accessibility_services accessibility_enabled)
@@ -39,6 +45,14 @@ unset SNAPSHOT
 STATE="$OUT/talkback-settings-before.txt"
 (umask 077; : > "$STATE"; for key in "${KEYS[@]}"; do printf '%s\t%s\t%s\n' "$key" "${PRESENT[$key]}" "${VALUES[$key]}"; done > "$STATE")
 RUNNER_PID=''
+INPUT_PID=''
+stop_input_capture() {
+  if [[ -n "$INPUT_PID" ]]; then
+    kill "$INPUT_PID" 2>/dev/null || true
+    wait "$INPUT_PID" 2>/dev/null || true
+    INPUT_PID=''
+  fi
+}
 TOUCH_DOWN=false
 MODIFIER_DOWN=false
 console_event() {
@@ -51,7 +65,7 @@ release_keys() {
   console_event EV_KEY:KEY_RIGHT:0 EV_KEY:KEY_LEFTALT:0 EV_SYN:0:0
 }
 release_touch() {
-  console_event EV_ABS:ABS_MT_SLOT:0 EV_ABS:ABS_MT_TRACKING_ID:-1 EV_KEY:BTN_TOUCH:0 EV_SYN:0:0
+  console_event EV_ABS:ABS_MT_SLOT:0 EV_ABS:ABS_MT_PRESSURE:0 EV_ABS:ABS_MT_TRACKING_ID:-1 EV_SYN:0:0
 }
 restore() {
   local status=$? failed=0 key current found attempt
@@ -59,6 +73,7 @@ restore() {
   set +e
   if $TOUCH_DOWN; then release_touch || failed=1; TOUCH_DOWN=false; fi
   if $MODIFIER_DOWN; then release_keys || failed=1; MODIFIER_DOWN=false; fi
+  stop_input_capture
   if [[ -n "$RUNNER_PID" ]]; then
     kill "$RUNNER_PID" 2>/dev/null
     wait "$RUNNER_PID" 2>/dev/null
@@ -110,25 +125,7 @@ RUNNER_PID=$!
 COORDINATES=''
 # Read only a unique, nonce-matching readiness record from this fresh instrumentation.
 for attempt in {1..160}; do
-  if COORDINATES="$(python3 - "$LOG" "$NONCE" <<'PY'
-from pathlib import Path
-import re
-import sys
-text = Path(sys.argv[1]).read_text(errors='replace')
-records = re.findall(r'^INSTRUMENTATION_STATUS: talkback_ready=(.*)\r?$', text, re.MULTILINE)
-if not records:
-    sys.exit(1)
-if len(records) != 1:
-    sys.exit(2)
-match = re.fullmatch(re.escape(sys.argv[2]) + r',([0-9]+),([0-9]+),([0-9]+),([0-9]+)', records[0].strip())
-if not match:
-    sys.exit(2)
-x1, y1, x2, y2 = map(int, match.groups())
-if not (0 <= x1 < x2 <= 20000 and 0 <= y1 == y2 <= 20000):
-    sys.exit(2)
-print(x1, y1, x2, y2)
-PY
-  )"; then break
+  if COORDINATES="$(python3 "$INPUT_HELPER" --ready "$LOG" --nonce "$NONCE" "${PROFILE_ARGS[@]}")"; then break
   else
     parse_status=$?
     [[ $parse_status -eq 1 ]] || { cat "$LOG"; echo 'FAIL: invalid TalkBack readiness protocol' >&2; exit 1; }
@@ -137,7 +134,15 @@ PY
   sleep 0.25
 done
 [[ -n "$COORDINATES" ]] || { cat "$LOG"; echo 'FAIL: no genuine target-window readiness; resolve setup explicitly' >&2; exit 1; }
-read -r X1 Y1 X2 Y2 <<< "$COORDINATES"
+read -r INPUT_DEVICE X1 Y1 X2 Y2 PRESSURE <<< "$COORDINATES"
+RAW_LOG="$OUT/talkback-raw-input-events.txt"
+if [[ "$NAVIGATION" == touch ]]; then
+  printf 'CALIBRATED: device=%s raw_start=%s,%s raw_end=%s,%s pressure=%s\n' "$INPUT_DEVICE" "$X1" "$Y1" "$X2" "$Y2" "$PRESSURE"
+  timeout --signal=TERM --kill-after=2 55 "$ADB" -s "$SERIAL" shell getevent -lt "$INPUT_DEVICE" > "$RAW_LOG" 2>&1 &
+  INPUT_PID=$!
+  sleep 0.25
+  kill -0 "$INPUT_PID" 2>/dev/null || { cat "$RAW_LOG"; echo 'FAIL: cannot observe real raw input device' >&2; exit 1; }
+fi
 SWIPES=0
 for gesture in {1..12}; do
   if ! kill -0 "$RUNNER_PID" 2>/dev/null; then break; fi
@@ -158,7 +163,8 @@ for gesture in {1..12}; do
   # input filter. `adb shell input swipe` uses injection, bypassing that filter.
   TOUCH_DOWN=true
   console_event EV_ABS:ABS_MT_SLOT:0 "EV_ABS:ABS_MT_TRACKING_ID:$gesture" \
-    "EV_ABS:ABS_MT_POSITION_X:$X1" "EV_ABS:ABS_MT_POSITION_Y:$Y1" EV_KEY:BTN_TOUCH:1 EV_SYN:0:0
+    "EV_ABS:ABS_MT_POSITION_X:$X1" "EV_ABS:ABS_MT_POSITION_Y:$Y1" \
+    EV_ABS:ABS_MT_TOOL_TYPE:0 EV_ABS:ABS_MT_TOUCH_MAJOR:1 "EV_ABS:ABS_MT_PRESSURE:$PRESSURE" EV_SYN:0:0
   for point in {1..6}; do
     X=$((X1 + (X2 - X1) * point / 6))
     console_event "EV_ABS:ABS_MT_POSITION_X:$X" "EV_ABS:ABS_MT_POSITION_Y:$Y1" EV_SYN:0:0
@@ -172,7 +178,12 @@ done
 runner_status=0
 wait "$RUNNER_PID" || runner_status=$?
 if [[ $runner_status -eq 0 ]]; then RUNNER_PID=''; fi
+stop_input_capture
 cat "$LOG"
+if [[ "$NAVIGATION" == touch ]]; then
+  python3 "$INPUT_HELPER" --ready "$LOG" --nonce "$NONCE" "${PROFILE_ARGS[@]}" --verify-events "$RAW_LOG"
+  echo 'OBSERVED: calibrated raw start/end coordinates, positive pressure and release on actual input device'
+fi
 [[ $runner_status -eq 0 && $SWIPES -gt 0 ]] || { echo 'FAIL: global gesture runner failed or injected no gestures' >&2; exit 1; }
 python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"
 echo "PASS: bounded installed TalkBack $NAVIGATION hardware-path traversal plus native semantic action. Password and spoken audio NOT established."

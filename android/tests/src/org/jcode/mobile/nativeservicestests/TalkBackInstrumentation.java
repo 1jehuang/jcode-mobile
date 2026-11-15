@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -139,8 +140,12 @@ public final class TalkBackInstrumentation extends Instrumentation {
             decor.getLocationOnScreen(origin);
             int width = decor.getWidth(), height = decor.getHeight();
             require(width > 100 && height > 100, "UNTESTABLE: invalid real target window bounds");
+            Point display = new Point();
+            activity.getWindowManager().getDefaultDisplay().getRealSize(display);
+            require(activity.getWindowManager().getDefaultDisplay().getRotation() == 0,
+                    "UNTESTABLE_SETUP_OBSTRUCTION: raw hardware calibration currently requires unrotated emulator display");
             return (origin[0] + width / 4) + "," + (origin[1] + height / 2) + ","
-                    + (origin[0] + width * 3 / 4) + "," + (origin[1] + height / 2);
+                    + (origin[0] + width * 3 / 4) + "," + (origin[1] + height / 2) + "," + display.x + "," + display.y;
         });
         Bundle ready = new Bundle();
         ready.putString("talkback_ready", nonce + "," + coordinates);
