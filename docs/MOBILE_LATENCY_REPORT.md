@@ -119,6 +119,66 @@ read is not a complete account history. No before/after speedup is claimed by
 this reporting-only change. No production writes, deployment, synthetic
 uploads or inference requests occurred.
 
+## Paired slow-attempt timeline and later snapshot
+
+A later account-scoped SELECT at approximately 05:53 UTC was necessary because
+the earlier query's raw payloads were memory-only. It saved an own-account
+export outside Git under private scratch with mode `0600`, for subsequent
+**offline** analysis. No additional database reads are needed for that snapshot.
+The saved export includes run/batch IDs and must remain protected, even though
+its events are structured and contain no conversation content or credentials.
+Only aggregate output should be shared.
+
+This later newest-20-batch window spans November 14 22:59:10 UTC to November 15
+05:52:53 UTC. All 20 batches report `ios aarch64 26.6.1 iPhone16,2`, build
+`1794694215`. Counts are batches, not users or distinct devices.
+
+The slowest session-history sample was paired with chronological events in
+the **same run and attempt**, using its event uptime minus its cumulative
+duration as the attempt origin. Uptime is integer milliseconds, so relative
+times and subtraction have about millisecond precision:
+
+| Event | Attempt-relative end (ms) | Recorded duration (ms) |
+| --- | ---: | ---: |
+| ui_history_apply | 13.50 | 0.12 |
+| ui_open_to_history | 14.50 | 21.38 |
+| ui_open_to_transcript_render | 14.50 | 21.96 |
+| direct_ssh_failed | 3514.50 | 1502.46 |
+| control_plane_ready | 14435.50 | 10919.57 |
+| ssh_handshake | 18520.50 | 4084.36 |
+| ssh_authenticated | 19522.50 | 5085.71 |
+| channel_opened | 19732.50 | 208.84 |
+| api_hello | 20335.50 | 602.41 |
+| session_connect | 20337.50 | 20337.42 |
+| session_attach | 20505.50 | 167.91 |
+| session_ready | 20506.50 | 20507.26 |
+| initial_models | 20929.50 | 421.90 |
+| initial_sessions | 21008.50 | 500.27 |
+| initial_history | 21573.50 | 1065.34 |
+| session_history | 21628.50 | 21628.50 |
+
+This paired timeline places the failed direct SSH attempt's start near
+**2012 ms after the attempt origin**, followed by its 1502 ms failure and the
+10,920 ms control-plane wait. It establishes a preceding approximately
+**2.01-second gap**, but does not identify the cause. Prewarm-lock waiting is
+a hypothesis for code inspection, not an instrumented fact. Handshake and
+successful authentication then finish near 18.52 and 19.52 seconds. Cached
+history was already applied near 14 ms, so the 21.63-second fresh-history
+milestone is not proof that the transcript was blank for that whole interval.
+
+The later snapshot also contains a new **476,186.30 ms**
+`ui_open_to_transcript_render` milestone at November 15 05:49:49.227 UTC.
+Its inferred start aligns within one millisecond with `app_first_render` in
+that run. Before this milestone, a `session_lost_after` lifetime of
+**389,798.18 ms** was recorded, followed by another failed direct SSH attempt.
+SSH/control-plane and attach-failure events occur after the UI milestone.
+Thus this unusually long value spans a long-lived UI/open epoch and must not
+be presented as a measured 476-second connection request or verified blank
+screen. Missing events in the capped export prevent reconstructing the full
+interval. This is an instrumentation interpretation concern to investigate,
+not a measured latency improvement. The original table above remains the
+**earlier snapshot**, not an assertion about all subsequently arriving events.
+
 Validation: eight offline synthetic tests pass, covering ranking and nearest
 rank percentiles, lifetime separation, malformed/unknown/private labels,
 nonfinite values, overlapping batches, independent runs, plain-text parsing,
