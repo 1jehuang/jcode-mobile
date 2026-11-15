@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.jcode.mobile.nativeservicestests">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+  <queries><package android:name="org.jcode.mobile" /></queries>
+  <application android:label="Native service instrumentation" android:debuggable="true" android:allowBackup="false" />
+  <instrumentation android:name=".StorageInstrumentation" android:targetPackage="org.jcode.mobile.nativeservicestests" android:label="Isolated production Keystore adapter" />
+  <instrumentation android:name=".NativeInstrumentation" android:targetPackage="org.jcode.mobile" android:label="Real GPUI NativeActivity adapters" />
+</manifest>
