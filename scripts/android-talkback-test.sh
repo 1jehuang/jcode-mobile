@@ -36,10 +36,17 @@ done
 unset SNAPSHOT
 STATE="$OUT/talkback-settings-before.txt"
 (umask 077; : > "$STATE"; for key in "${KEYS[@]}"; do printf '%s\t%s\t%s\n' "$key" "${PRESENT[$key]}" "${VALUES[$key]}"; done > "$STATE")
+RUNNER_PID=''
 restore() {
   local status=$? failed=0 key current found attempt
   trap - EXIT INT TERM
   set +e
+  if [[ -n "$RUNNER_PID" ]]; then
+    kill "$RUNNER_PID" 2>/dev/null
+    wait "$RUNNER_PID" 2>/dev/null
+    # Stop only this disposable target's in-flight instrumentation on an aborted run.
+    adb shell am force-stop org.jcode.mobile || failed=1
+  fi
   for key in "${KEYS[@]}"; do
     if [[ "${PRESENT[$key]}" == true ]]; then
       adb shell settings --user current put secure "$key" "'${VALUES[$key]}'" || failed=1
@@ -78,7 +85,53 @@ adb shell settings --user current put secure accessibility_enabled 1
 # Service binding is asynchronous. Java still requires the real enabled package and touch exploration.
 sleep 3
 LOG="$OUT/TalkBackInstrumentation.txt"
-timeout --signal=TERM 120 "$ADB" -s "$SERIAL" shell am instrument -w -r \
-  org.jcode.mobile.nativeservicestests/.TalkBackInstrumentation | tee "$LOG"
+NONCE="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+timeout --signal=TERM --kill-after=5 100 "$ADB" -s "$SERIAL" shell am instrument -w -r \
+  -e talkback_nonce "$NONCE" org.jcode.mobile.nativeservicestests/.TalkBackInstrumentation > "$LOG" 2>&1 &
+RUNNER_PID=$!
+COORDINATES=''
+# Read only a unique, nonce-matching readiness record from this fresh instrumentation.
+for attempt in {1..160}; do
+  if COORDINATES="$(python3 - "$LOG" "$NONCE" <<'PY'
+from pathlib import Path
+import re
+import sys
+text = Path(sys.argv[1]).read_text(errors='replace')
+records = re.findall(r'^INSTRUMENTATION_STATUS: talkback_ready=(.*)\r?$', text, re.MULTILINE)
+if not records:
+    sys.exit(1)
+if len(records) != 1:
+    sys.exit(2)
+match = re.fullmatch(re.escape(sys.argv[2]) + r',([0-9]+),([0-9]+),([0-9]+),([0-9]+)', records[0].strip())
+if not match:
+    sys.exit(2)
+x1, y1, x2, y2 = map(int, match.groups())
+if not (0 <= x1 < x2 <= 20000 and 0 <= y1 == y2 <= 20000):
+    sys.exit(2)
+print(x1, y1, x2, y2)
+PY
+  )"; then break
+  else
+    parse_status=$?
+    [[ $parse_status -eq 1 ]] || { cat "$LOG"; echo 'FAIL: invalid TalkBack readiness protocol' >&2; exit 1; }
+  fi
+  if ! kill -0 "$RUNNER_PID" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+[[ -n "$COORDINATES" ]] || { cat "$LOG"; echo 'FAIL: no genuine target-window readiness; resolve setup explicitly' >&2; exit 1; }
+read -r X1 Y1 X2 Y2 <<< "$COORDINATES"
+SWIPES=0
+for gesture in {1..12}; do
+  if ! kill -0 "$RUNNER_PID" 2>/dev/null; then break; fi
+  # Global shell injection reaches the real TalkBack input filter, unlike app-UID targeted injection.
+  adb shell input touchscreen swipe "$X1" "$Y1" "$X2" "$Y2" 180
+  SWIPES=$((SWIPES + 1))
+  sleep 1.5
+done
+runner_status=0
+wait "$RUNNER_PID" || runner_status=$?
+if [[ $runner_status -eq 0 ]]; then RUNNER_PID=''; fi
+cat "$LOG"
+[[ $runner_status -eq 0 && $SWIPES -gt 0 ]] || { echo 'FAIL: global gesture runner failed or injected no gestures' >&2; exit 1; }
 python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"
 echo 'PASS: bounded installed TalkBack traversal plus native semantic action. Password and spoken audio NOT established.'

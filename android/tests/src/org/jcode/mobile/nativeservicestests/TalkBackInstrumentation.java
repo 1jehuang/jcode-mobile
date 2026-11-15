@@ -7,8 +7,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.view.InputDevice;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
@@ -27,6 +25,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
     private AccessibilityNodeProvider provider;
     private int edited = -1;
     private String original;
+    private String nonce;
     private <T> T ui(Callable<T> operation) throws Exception {
         AtomicReference<T> value = new AtomicReference<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
@@ -76,24 +75,20 @@ public final class TalkBackInstrumentation extends Instrumentation {
         }
         throw new AssertionError("UNTESTABLE_SETUP_OBSTRUCTION: real target Activity lacks window focus; an external permission/tutorial/system window may be active. Coordinator must inspect and resolve setup explicitly, then rerun. No traversal established.");
     }
-    private void swipeRight() throws Exception {
+    private void publishGestureReady() throws Exception {
         requireTargetWindow();
-        int[] size = ui(() -> new int[] {activity.getWindow().getDecorView().getWidth(), activity.getWindow().getDecorView().getHeight()});
-        long down = SystemClock.uptimeMillis();
-        for (int i = 0; i <= 12; i++) {
-            int action = i == 0 ? MotionEvent.ACTION_DOWN : i == 12 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
-            MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action,
-                    size[0] * (0.25f + i * 0.5f / 12), size[1] * 0.5f, 0);
-            event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-            try {
-                require(ui(() -> activity.hasWindowFocus() && activity.getWindow().getDecorView().hasWindowFocus()),
-                        "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus during gesture; no traversal established");
-                sendPointerSync(event);
-            } catch (IllegalArgumentException | SecurityException injectionFailure) {
-                throw new AssertionError("UNTESTABLE_SETUP_OBSTRUCTION: targeted input injection was rejected, possibly because an external window owns focus. Coordinator must resolve setup explicitly; no traversal established.", injectionFailure);
-            } finally { event.recycle(); }
-            SystemClock.sleep(15);
-        }
+        String coordinates = ui(() -> {
+            View decor = activity.getWindow().getDecorView();
+            int[] origin = new int[2];
+            decor.getLocationOnScreen(origin);
+            int width = decor.getWidth(), height = decor.getHeight();
+            require(width > 100 && height > 100, "UNTESTABLE: invalid real target window bounds");
+            return (origin[0] + width / 4) + "," + (origin[1] + height / 2) + ","
+                    + (origin[0] + width * 3 / 4) + "," + (origin[1] + height / 2);
+        });
+        Bundle ready = new Bundle();
+        ready.putString("talkback_ready", nonce + "," + coordinates);
+        sendStatus(1, ready);
     }
     private boolean textEquals(int id, String expected) throws Exception {
         return ui(() -> {
@@ -113,11 +108,16 @@ public final class TalkBackInstrumentation extends Instrumentation {
         for (int i = 0; i < 100; i++) { if (textEquals(edited, text)) return; SystemClock.sleep(50); }
         throw new AssertionError("Native semantic text did not converge");
     }
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    @Override public void onCreate(Bundle args) {
+        super.onCreate(args);
+        nonce = args == null ? null : args.getString("talkback_nonce");
+        start();
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         Throwable failure = null;
         try {
+            require(nonce != null && nonce.matches("[0-9a-f]{32}"), "UNTESTABLE: use separate TalkBack shell runner with fresh readiness nonce");
             AccessibilityManager manager = (AccessibilityManager)getTargetContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
             boolean installedEnabled = false;
             for (AccessibilityServiceInfo info : manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)) {
@@ -134,18 +134,19 @@ public final class TalkBackInstrumentation extends Instrumentation {
             }
             require(provider != null && ui(() -> ids().size()) >= 2, "UNTESTABLE: shared GPUI semantic tree absent");
             // Never call ACTION_ACCESSIBILITY_FOCUS ourselves. An enabled accessibility service must move it.
-            int first = -1;
+            int first = focus();
             boolean traversed = false;
-            for (int gesture = 0; gesture < 12 && !traversed; gesture++) {
-                swipeRight();
-                for (int poll = 0; poll < 30; poll++) {
-                    int next = focus();
-                    if (next != -1) { if (first == -1) first = next; else if (next != first) { traversed = true; break; } }
-                    SystemClock.sleep(50);
-                }
+            publishGestureReady();
+            long deadline = SystemClock.uptimeMillis() + 40000;
+            while (SystemClock.uptimeMillis() < deadline && !traversed) {
+                require(ui(() -> activity.hasWindowFocus() && activity.getWindow().getDecorView().hasWindowFocus()),
+                        "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus while awaiting global TalkBack gestures; no traversal established");
+                int next = focus();
+                if (next != -1) { if (first == -1) first = next; else if (next != first) traversed = true; }
+                SystemClock.sleep(50);
             }
-            require(traversed, "UNTESTABLE: installed TalkBack swipe did not traverse two native semantic nodes");
-            result.putString("talkback_traversal", "two native virtual focus targets observed after injected touchscreen swipes");
+            require(traversed, "UNTESTABLE: installed TalkBack global shell swipes did not traverse two native semantic nodes");
+            result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated global shell touchscreen swipes");
             edited = ui(() -> {
                 for (int id : ids()) {
                     AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);
