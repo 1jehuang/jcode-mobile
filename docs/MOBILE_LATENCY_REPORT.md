@@ -48,7 +48,7 @@ does not discover credentials or implement remote retrieval.
   samples and slow-frame-only instrumentation are not population-wide latency
   distributions. Missing samples do not mean an operation was fast.
 
-## Local inspection, November 14, 2026 Pacific
+## Initial local inspection, November 14, 2026 Pacific
 
 Both diagnostic contracts were read. No operations-token environment variable
 or backend `.env`/`.dev.vars` file was found in the inspected locations, so no
@@ -61,11 +61,63 @@ The existing Android emulator logs contain emulator boot measurements of
 39,414 ms and 26,110 ms, not mobile app connection or transcript latency. These
 are excluded from the report. No `gpui.log` or saved latency/startup report was
 found under the inspected mobile checkout, local mobile data directory or iOS
-checkout (bounded search). Consequently there is no measured user-facing
-bottleneck or before/after optimization result to claim from these inputs.
-A new single-account structured export or existing device timing log is needed
-for a real latency ranking. No production writes, deployment or inference
-requests were performed.
+checkout (bounded search).
+The initial local-only pass did not establish a user-facing bottleneck. The
+subsequent account-scoped backend read below provides actual duration evidence.
+No production writes, deployment or inference requests were performed.
+
+## Actual account-scoped backend inspection
+
+The follow-up read used existing configured Wrangler access to perform only a
+D1 `SELECT`. Ownership was resolved internally from the SHA-256 hash of the
+API key in the existing protected mobile account record, matching exactly one
+active account-scoped `keys` row. The diagnostic query selected payloads only
+where their `account_id` matched that key's account, restricted retention to
+14 days, ordered newest first and capped the read at 20 batches. No account
+identifier, key, key hash, raw payload or cross-account data was printed.
+`SUBSCRIPTIONS_OPS_TOKEN` was not substituted for `OPS_INTERNAL_TOKEN`.
+
+Twenty retained batches were retrieved. Their event window was
+**November 14, 2026 22:54:44 UTC through November 15, 2026 05:23:32 UTC**.
+The aggregate-only report gave these largest measured durations (milliseconds,
+rounded to two decimal places):
+
+| Fixed stage | Count | p50 | p95 / max |
+| --- | ---: | ---: | ---: |
+| session_history | 5 | 1915.52 | 21628.50 |
+| session_ready | 5 | 1535.18 | 20507.26 |
+| session_connect | 5 | 1293.19 | 20337.42 |
+| control_plane_ready | 3 | 6304.64 | 10919.57 |
+| ssh_authenticated | 5 | 1002.85 | 5085.71 |
+| ssh_handshake | 6 | 500.05 | 4084.36 |
+| ui_open_to_history | 6 | 21.38 | 2608.05 |
+| direct_ssh_failed | 2 | 1502.46 | 1502.77 |
+| api_hello | 8 | 345.28 | 1119.05 |
+| initial_history | 5 | 394.20 | 1065.34 |
+| ui_open_to_transcript_render | 3 | 30.39 | 647.18 |
+| ui_history_apply | 6 | 0.04 | 0.20 |
+
+These small samples have nearest-rank p95 equal to max. Connection open,
+ready and history timings share the same per-attempt start and are overlapping
+milestones. SSH authenticated includes the handshake from the same SSH start,
+not authentication alone. Do not sum these durations or subtract unpaired
+percentiles to estimate stage costs.
+
+The largest ranked real wait is **21.63 seconds to session history**. The
+largest session-connect sample was **20.34 seconds**. Control-plane readiness
+reached **10.92 seconds** and SSH
+handshake **4.08 seconds**. These are measured candidates for connection-path
+optimization, not evidence that every slow sample had the same cause. UI
+history application itself peaked at **0.20 ms**, which does not support
+blaming history reduction for these observed multi-second waits. The UI
+open-to-history and session-history clocks have different origins and may
+include cached history, so they are not interchangeable.
+
+The report excluded five unknown/invalid duration samples without emitting
+their raw labels. No lifetime samples were present in this export. A capped
+read is not a complete account history. No before/after speedup is claimed by
+this reporting-only change. No production writes, deployment, synthetic
+uploads or inference requests occurred.
 
 Validation: eight offline synthetic tests pass, covering ranking and nearest
 rank percentiles, lifetime separation, malformed/unknown/private labels,
