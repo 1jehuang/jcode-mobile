@@ -114,6 +114,7 @@ pub(super) struct MotionElement {
     motion: StreamMotion,
     follow: bool,
     kind: Kind,
+    layout_started: Option<Instant>,
 }
 
 pub(super) fn stream_motion(
@@ -128,6 +129,7 @@ pub(super) fn stream_motion(
         motion,
         follow,
         kind: Kind::Content { scroll, instant },
+        layout_started: None,
     }
 }
 
@@ -143,6 +145,7 @@ pub(super) fn steady_activity(
         motion,
         follow,
         kind: Kind::Activity,
+        layout_started: None,
     }
 }
 
@@ -171,6 +174,9 @@ impl Element for MotionElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
+        let content = matches!(&self.kind, Kind::Content { .. });
+        self.layout_started = if content { crate::perf::start() } else { None };
+        let _perf = content.then(|| crate::perf::span("transcript.request_layout"));
         let child = self.child.request_layout(window, cx);
         let style = gpui::Style {
             flex_shrink: 0.,
@@ -188,6 +194,11 @@ impl Element for MotionElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(started) = self.layout_started.take() {
+            crate::perf::record("transcript.layout_ready", started.elapsed());
+        }
+        let _perf = matches!(&self.kind, Kind::Content { .. })
+            .then(|| crate::perf::span("transcript.prepaint"));
         let mask = window.content_mask().bounds;
         let shift = match &self.kind {
             Kind::Content { scroll, instant } => {
@@ -250,6 +261,8 @@ impl Element for MotionElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let _perf = matches!(&self.kind, Kind::Content { .. })
+            .then(|| crate::perf::span("transcript.paint"));
         // AnyElement caches its translated prepaint bounds, including hitboxes.
         self.child.paint(window, cx);
     }

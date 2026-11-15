@@ -1896,11 +1896,13 @@ impl MobileApp {
                 #[cfg(test)]
                 { self.rendered_transcript_rows += 1; }
                 let el = self.render_entry(e, prompt_n, &self.expanded_tools, presentation.rows.get(&e.id), self.session.images_for(e.id), t, cx);
-                let heights = self.transcript_heights.clone();
-                rows.push(row.relative()
-                    .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
-                    .child(gpui::canvas(move |bounds, _, _| heights.record(key, bounds.size.height), |_, _, _, _| {}).absolute().inset_0())
-                    .into_any_element());
+                rows.push(transcript_layout::measured_row(
+                    row.relative()
+                        .child(self.feel_hit(crate::gestures::Target::Message(e.id), el))
+                        .into_any_element(),
+                    key,
+                    self.transcript_heights.clone(),
+                ).into_any_element());
             }
             top = top.zip(height).map(|(top, height)| top + height + px(14.));
         }

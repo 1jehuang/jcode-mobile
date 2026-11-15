@@ -17,6 +17,8 @@ Public API:
 
 The application uses `app.build`, `transcript.build`, `transcript.entry_build`, `panel.preview_build`, `panel.scroll_input`, `transcript.scroll_input`, and `transcript.scroll_to_paint`. The last action measures input-to-CPU-paint latency only, not display presentation.
 
+Opt-in transcript phase measurements further separate `transcript.request_layout` (synchronous layout-tree requests), `transcript.layout_ready` (elapsed from the content wrapper's layout request to its prepaint entry), `transcript.prepaint`, and `transcript.paint`. The layout-ready interval includes native layout/text measurement, sibling work, and scheduling delays, not just time executing this subtree. Paint measures CPU command construction, not GPU completion. These intervals overlap and must not be summed. They use fixed labels and collect no message content.
+
 ## Enable and retrieve output
 
 Set environment variables **before the first measurement**:
