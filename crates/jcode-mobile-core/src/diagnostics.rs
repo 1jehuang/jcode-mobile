@@ -129,6 +129,7 @@ fn safe_name(name: &str) -> Option<String> {
         "ui_history_apply",
         "ui_open_to_history",
         "ui slow frame build",
+        "ui slow transcript layout",
         "ui open to transcript render",
         "ui transcript render",
         "diagnostics events dropped",
@@ -508,6 +509,7 @@ mod tests {
     #[test]
     fn precise_startup_stages_are_uploadable_without_dynamic_details() {
         for (label, normalized) in [
+            ("ui slow transcript layout", "ui_slow_transcript_layout"),
             ("cold connect lock wait", "cold_connect_lock_wait"),
             ("control plane request", "control_plane_request"),
             ("wake direct ssh probe", "wake_direct_ssh_probe"),

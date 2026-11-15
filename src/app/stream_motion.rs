@@ -104,6 +104,10 @@ impl StreamMotion {
     }
 }
 
+fn slow_layout(elapsed: Duration) -> bool {
+    elapsed > Duration::from_millis(50)
+}
+
 enum Kind {
     Content { scroll: ScrollHandle, instant: bool },
     Activity,
@@ -175,7 +179,10 @@ impl Element for MotionElement {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let content = matches!(&self.kind, Kind::Content { .. });
-        self.layout_started = if content { crate::perf::start() } else { None };
+        // Keep slow native layout visible in device diagnostics even when
+        // detailed local profiling is disabled. The interval includes native
+        // measurement and scheduling, not GPU/display presentation.
+        self.layout_started = content.then(Instant::now);
         let _perf = content.then(|| crate::perf::span("transcript.request_layout"));
         let child = self.child.request_layout(window, cx);
         let style = gpui::Style {
@@ -195,7 +202,11 @@ impl Element for MotionElement {
         cx: &mut App,
     ) {
         if let Some(started) = self.layout_started.take() {
-            crate::perf::record("transcript.layout_ready", started.elapsed());
+            let elapsed = started.elapsed();
+            crate::perf::record("transcript.layout_ready", elapsed);
+            if slow_layout(elapsed) {
+                jcode_mobile_core::timing::stage("ui slow transcript layout", elapsed);
+            }
         }
         let _perf = matches!(&self.kind, Kind::Content { .. })
             .then(|| crate::perf::span("transcript.prepaint"));
@@ -271,6 +282,13 @@ impl Element for MotionElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_layout_diagnostic_requires_more_than_fifty_milliseconds() {
+        assert!(!slow_layout(Duration::ZERO));
+        assert!(!slow_layout(Duration::from_millis(50)));
+        assert!(slow_layout(Duration::from_millis(50) + Duration::from_nanos(1)));
+    }
 
     struct Harness {
         height: f32,
