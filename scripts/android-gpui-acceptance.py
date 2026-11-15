@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Exercise the real shared GPUI app on a disposable Android emulator.
+
+Requires adb and tesseract. Uses screenshots/OCR, not the deleted Java app's
+widget IDs. Never sends authentication emails or model requests. The debug
+Intent selects the existing shared Rust demo and is absent from release builds.
+This is partial acceptance, not a substitute for service/TalkBack/live-network
+or release-bundle validation.
+"""
+import argparse
+import csv
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--apk", type=Path, required=True)
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args()
+    sdk = Path(os.environ.get("ANDROID_HOME", Path.home() / "Android/Sdk"))
+    adb_path = sdk / "platform-tools/adb"
+    out = args.out or ROOT / "target/android" / ("shared-acceptance-" + args.serial)
+    out.mkdir(parents=True, exist_ok=True)
+    checks = []
+
+    def adb(*command, binary=False):
+        result = subprocess.run([str(adb_path), "-s", args.serial, *command],
+                                check=True, capture_output=True, timeout=45)
+        return result.stdout if binary else result.stdout.decode(errors="replace").strip()
+
+    def check(name, condition):
+        checks.append({"name": name, "passed": bool(condition)})
+        print(("PASS " if condition else "FAIL ") + name, flush=True)
+        if not condition:
+            raise AssertionError(name)
+
+    def capture(name):
+        path = out / (name + ".png")
+        path.write_bytes(adb("exec-out", "screencap", "-p", binary=True))
+        result = subprocess.run(["tesseract", str(path), "stdout", "tsv"],
+                                check=True, capture_output=True, text=True, timeout=30)
+        (out / (name + ".tsv")).write_text(result.stdout)
+        words = [row for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t")
+                 if row.get("text", "").strip()]
+        text = " ".join(row["text"] for row in words)
+        (out / (name + ".txt")).write_text(text + "\n")
+        return text, words
+
+    def tap_word(words, needle):
+        word = next(row for row in words if needle.lower() in row["text"].lower())
+        adb("shell", "input", "tap", str(int(word["left"]) + int(word["width"]) // 2),
+            str(int(word["top"]) + int(word["height"]) // 2))
+        return word
+
+    def draft_present(text):
+        return "paritydraft" in re.sub(r"[^a-z]", "", text.lower())
+
+    rotation = None
+    accelerometer = None
+    metadata = {}
+    try:
+        check("Device is an emulator", adb("shell", "getprop", "ro.kernel.qemu") == "1")
+        metadata = {"serial": args.serial,
+                    "sdk": adb("shell", "getprop", "ro.build.version.sdk"),
+                    "page_size": adb("shell", "getconf", "PAGE_SIZE"),
+                    "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(),
+                    "observed_workspace_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()}
+        rotation = adb("shell", "settings", "get", "system", "user_rotation")
+        accelerometer = adb("shell", "settings", "get", "system", "accelerometer_rotation")
+        adb("install", "-r", str(args.apk.resolve()))
+        adb("shell", "wm", "dismiss-keyguard")
+        adb("shell", "am", "force-stop", "org.jcode.mobile")
+        adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
+        time.sleep(4)
+        if "mInputShown=true" in adb("shell", "dumpsys", "input_method"):
+            adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            time.sleep(1)
+        text, words = capture("onboarding")
+        if "notifications" in text and "allow" in text.lower():
+            # Explicitly decline the emulator's first-run notification prompt.
+            # Do not mistake a system dialog for a GPUI rendering failure.
+            tap_word(words, "Don't")
+            time.sleep(1)
+            text, words = capture("onboarding")
+        check("Shared GPUI onboarding renders", "Jcode" in text and "Google" in text)
+        check("Apple-only sign-in is absent on Android", "Apple" not in text)
+        tap_word(words, "example.com")
+        adb("shell", "input", "text", "paritydraft%ssample")
+        time.sleep(2)
+        text, _ = capture("onboarding-keyboard")
+        check("Native keyboard is actually visible", "mInputShown=true" in adb("shell", "dumpsys", "input_method"))
+        check("Native text reaches GPUI email field", draft_present(text))
+        check("Email action stays visible above keyboard", "Send" in text and "code" in text)
+        adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        adb("shell", "input", "keyevent", "KEYCODE_HOME")
+        adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
+        time.sleep(2)
+        text, _ = capture("onboarding-resume")
+        check("Unsent email draft survives background and resume", draft_present(text))
+        adb("shell", "am", "force-stop", "org.jcode.mobile")
+        adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity", "--es", "gpui_demo", "todos")
+        time.sleep(3)
+        text, words = capture("shared-demo")
+        check("Existing shared Rust chat demo renders", "Core" in text and "progress" in text)
+        tap_word(words, "Message")
+        adb("shell", "input", "text", "paritydraft%ssample")
+        time.sleep(2)
+        text, _ = capture("composer-keyboard")
+        check("Shared chat composer receives native input", draft_present(text))
+        adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        adb("shell", "settings", "put", "system", "accelerometer_rotation", "0")
+        adb("shell", "settings", "put", "system", "user_rotation", "1")
+        time.sleep(3)
+        text, _ = capture("landscape")
+        check("Composer draft survives landscape rotation", draft_present(text))
+        adb("shell", "settings", "put", "system", "user_rotation", "0")
+        time.sleep(3)
+        adb("shell", "input", "keyevent", "KEYCODE_HOME")
+        time.sleep(1)
+        adb("shell", "am", "start", "-W", "-n", "org.jcode.mobile/.JcodeActivity")
+        time.sleep(2)
+        text, _ = capture("chat-resume")
+        check("Composer draft survives background and surface recreation", draft_present(text))
+        pid = adb("shell", "pidof", "org.jcode.mobile").split()[0]
+        logs = adb("logcat", "--pid", pid, "-d")
+        (out / "logcat.txt").write_text(logs)
+        check("Native bootstrap is the shared GPUI app", "shared GPUI NativeActivity bootstrap" in logs)
+        check("Native app remains alive without crash", "Fatal signal" not in logs and "FATAL EXCEPTION" not in logs)
+    finally:
+        for key, value in (("user_rotation", rotation), ("accelerometer_rotation", accelerometer)):
+            if value is not None:
+                if value == "null":
+                    adb("shell", "settings", "delete", "system", key)
+                else:
+                    adb("shell", "settings", "put", "system", key, value)
+        (out / "result.json").write_text(json.dumps({**metadata, "checks": checks,
+            "full_parity": False, "release_accepted": False,
+            "remaining": ["real composing IME and TalkBack", "native platform services", "authenticated network workflows", "signed release AAB generated APK validation", "FCM backend delivery"]}, indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()
