@@ -140,6 +140,11 @@ def main():
         text, _ = capture("composer-keyboard")
         check("Shared chat composer receives native input", draft_present(text))
         adb("shell", "input", "keyevent", "KEYCODE_BACK")
+        time.sleep(1)
+        text, _ = capture("composer-back")
+        check("Android Back hides keyboard and preserves composer draft",
+              "mInputShown=false" in adb("shell", "dumpsys", "input_method")
+              and draft_present(text) and bool(adb("shell", "pidof", "org.jcode.mobile").strip()))
         adb("shell", "settings", "put", "system", "accelerometer_rotation", "0")
         adb("shell", "settings", "put", "system", "user_rotation", "1")
         time.sleep(3)
