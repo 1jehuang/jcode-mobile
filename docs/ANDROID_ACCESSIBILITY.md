@@ -78,6 +78,14 @@ Then it runs backend native semantic unit tests using hosted `justrust`. It
 fails if backend module registration is missing. It never touches an emulator,
 changes accessibility settings, uploads a bundle or publishes anything.
 
+After hook integration, the actual `scripts/android-accessibility-test.sh`
+command completed successfully: Java SDK35 compilation plus **16 passing tests
+in the real `gpui_android` crate**, using GPUI's actual callback type, not the
+isolated harness. Hosted justrust run: `20261114-214355302-3938012`, 16 passed,
+0 failed, 2 unrelated tests filtered out. This removes the module/hook test
+integration blocker, but still does not establish Android runtime/TalkBack
+acceptance. The native Android app must be rebuilt to include the bridge.
+
 While backend hooks were pending, the exact adapter/test sources were also run
 in an isolated lightweight Cargo harness with real AccessKit/serde_json and the
 same `A11yCallbacks` signature, not the entire GPUI backend. All 16 semantic tests
