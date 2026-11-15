@@ -5,7 +5,8 @@ This isolated test APK loads the exact `.so` and `AndroidServices` class from th
 Build-only, safe for workers:
 
 ```sh
-bash android/rust-audio-tests/build.sh
+bash scripts/android-rust-audio-test.sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/android-rust-audio-test-test.py
 justrust test --locked -p jcode-mobile --lib voice_capture
 ```
 
@@ -16,20 +17,12 @@ The coordinating device owner must first build and install an updated debug prod
 On an unlocked, coordinator-owned disposable emulator, after the production debug APK is installed:
 
 ```sh
-set -euo pipefail
-SERIAL=emulator-5554
-ADB="${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb"
-PACKAGE=org.jcode.mobile.rustaudiotests
-LOG="target/android-rust-audio-tests/runtime-$SERIAL.txt"
-[[ "$SERIAL" == emulator-* ]]
-[[ "$("$ADB" -s "$SERIAL" shell getprop ro.kernel.qemu | tr -d '\r')" == 1 ]]
-# Always clean only the isolated package, including crashes and timeouts.
-trap '"$ADB" -s "$SERIAL" shell am force-stop "$PACKAGE"; "$ADB" -s "$SERIAL" shell pm revoke "$PACKAGE" android.permission.RECORD_AUDIO' EXIT
-"$ADB" -s "$SERIAL" install -r -t target/android-rust-audio-tests/rust-audio-tests.apk
-"$ADB" -s "$SERIAL" shell pm grant "$PACKAGE" android.permission.RECORD_AUDIO
-timeout 60s "$ADB" -s "$SERIAL" shell am instrument -w -r "$PACKAGE/.RustAudioInstrumentation" | tee "$LOG"
-python3 scripts/android-instrumentation-result.py "$LOG"
+bash scripts/android-rust-audio-test.sh --run emulator-5554
 ```
+
+The runner builds the isolated APK, verifies the explicit serial is an emulator, pulls the installed production APK read-only, requires its actual package identity and debuggable flag, selects a supported device ABI and requires the defined exported debug native hook before any test install or permission grant. It never changes production permissions or launches production. It installs/grants only `org.jcode.mobile.rustaudiotests`, captures the 60-second bounded instrumentation log at `target/android-rust-audio-tests/runtime-SERIAL.txt`, and applies the shared strict terminal parser. EXIT/INT/TERM cleanup force-stops and revokes microphone access only for the isolated package. Cleanup failure cannot hide the original failure, and turns an otherwise successful run into failure. An interrupted test's PCM stays in the terminated isolated process, not on disk.
+
+`ANDROID_RUST_AUDIO_TEST_OUT` may override the output directory. The synthetic Python runner tests use only generated fake SDK executables in a temporary directory, never real adb. They cover build-only isolation, invalid serials, debug/hook/ABI/emulator preflight refusal before mutation, unique terminal result parsing, nonzero instrument exit despite PASS text, timeout status, cleanup failures and SIGINT/SIGTERM cleanup. Synthetic tests are not Android runtime acceptance.
 
 Run separately on API35 and API36. Build-only success is not runtime acceptance. A missing debug native symbol, JNI exception, missing/empty stream, process crash, timeout, unexpected successful lifecycle stop or missing terminal output is a failure, not a skip/pass.
 
