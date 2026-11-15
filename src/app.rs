@@ -1863,7 +1863,7 @@ impl MobileApp {
             } else {
                 transcript_layout::key(self.active_tab, e, prompt_n, &self.expanded_tools, self.content_width())
             };
-            let key = key.with_images(self.session.images_for(e.id));
+            let key = key.with_window_scale(window.scale_factor()).with_images(self.session.images_for(e.id));
             geometry.push((key, self.transcript_heights.get(key), px(0.)));
         }
         let mut suffix = px(0.);

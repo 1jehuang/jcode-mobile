@@ -33,7 +33,7 @@ impl MobileApp {
             for entry in &session.transcript {
                 if entry.role == Role::User { prompt_n += 1; }
                 let key = super::transcript_layout::key(id, entry, prompt_n, &parked.expanded_tools, self.content_width());
-                let key = key.with_images(session.images_for(entry.id));
+                let key = key.with_window_scale(window.scale_factor()).with_images(session.images_for(entry.id));
                 let height = self.transcript_heights.get(key);
                 let skip = height.is_some_and(|height| super::transcript_layout::offscreen(top, height, off, viewport * 3.));
                 #[cfg(test)]
