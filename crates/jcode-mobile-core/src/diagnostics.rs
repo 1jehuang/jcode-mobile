@@ -99,6 +99,11 @@ fn safe_name(name: &str) -> Option<String> {
         "direct ssh failed",
         "control plane wake + direct ssh",
         "control plane ready",
+        "cold connect lock wait",
+        "control plane request",
+        "wake direct ssh probe",
+        "control plane poll delay",
+        "ssh public key auth",
         "prewarm direct ssh",
         "master revalidated",
         "master revalidation failed",
@@ -497,6 +502,20 @@ mod tests {
             "session secret-id",
         ] {
             assert!(safe_name(secret).is_none());
+        }
+    }
+
+    #[test]
+    fn precise_startup_stages_are_uploadable_without_dynamic_details() {
+        for (label, normalized) in [
+            ("cold connect lock wait", "cold_connect_lock_wait"),
+            ("control plane request", "control_plane_request"),
+            ("wake direct ssh probe", "wake_direct_ssh_probe"),
+            ("control plane poll delay", "control_plane_poll_delay"),
+            ("ssh public key auth", "ssh_public_key_auth"),
+        ] {
+            assert_eq!(safe_name(label).as_deref(), Some(normalized));
+            assert!(safe_name(&format!("{label} secret-host-or-error")).is_none());
         }
     }
 
