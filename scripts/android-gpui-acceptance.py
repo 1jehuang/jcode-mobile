@@ -91,9 +91,18 @@ def main():
     metadata = {}
     try:
         check("Device is an emulator", adb("shell", "getprop", "ro.kernel.qemu") == "1")
+        sdk_version = adb("shell", "getprop", "ro.build.version.sdk")
+        if int(sdk_version) <= 26:
+            page_observation = adb("shell", "grep", "-m", "1", "KernelPageSize", "/proc/self/smaps")
+            page_match = re.fullmatch(r"KernelPageSize:\s+(\d+)\s+kB", page_observation)
+            if not page_match:
+                raise AssertionError("Cannot establish actual kernel page size")
+            page_size = str(int(page_match.group(1)) * 1024)
+        else:
+            page_size = adb("shell", "getconf", "PAGE_SIZE")
         metadata = {"serial": args.serial,
-                    "sdk": adb("shell", "getprop", "ro.build.version.sdk"),
-                    "page_size": adb("shell", "getconf", "PAGE_SIZE"),
+                    "sdk": sdk_version,
+                    "page_size": page_size,
                     "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(),
                     "observed_workspace_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()}
         rotation = adb("shell", "settings", "get", "system", "user_rotation")
