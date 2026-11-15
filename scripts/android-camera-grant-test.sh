@@ -17,25 +17,11 @@ ADB="$SDK/platform-tools/adb"
 [[ "$("$ADB" -s "$SERIAL" shell getprop ro.kernel.qemu | tr -d '\r')" == 1 ]] || { echo 'Refusing non-emulator device' >&2; exit 1; }
 "$ADB" -s "$SERIAL" shell pm path org.jcode.mobile | grep -q '^package:' || { echo 'Install updated production debug APK first' >&2; exit 1; }
 "$ADB" -s "$SERIAL" install -r -t "$OUT/native-services-tests.apk"
-URI=""
-CLEANED=false
-cleanup() {
-  if [[ -n "$URI" ]] && ! $CLEANED; then
-    "$ADB" -s "$SERIAL" shell am instrument -w -r -e phase cleanup -e cleanupOnly true -e uri "$URI" org.jcode.mobile.nativeservicestests/.CameraOwnerInstrumentation > "$OUT/camera-emergency-cleanup.txt" 2>&1 || true
-    echo "Emergency fixture cleanup attempted, inspect $OUT/camera-emergency-cleanup.txt" >&2
-  fi
-}
-trap cleanup EXIT
-run() {
-  local log="$1" runner="$2"; shift 2
-  "$ADB" -s "$SERIAL" shell am instrument -w -r "$@" "org.jcode.mobile.nativeservicestests/.$runner" | tee "$OUT/$log.txt"
-  grep -q '^INSTRUMENTATION_RESULT: result=PASS' "$OUT/$log.txt" && grep -q '^INSTRUMENTATION_CODE: -1' "$OUT/$log.txt"
-}
-run camera-setup CameraOwnerInstrumentation -e phase setup
-URI="$(awk -F'uri=' '/^INSTRUMENTATION_RESULT: uri=/{print $2}' "$OUT/camera-setup.txt" | tr -d '\r')"
-[[ "$URI" =~ ^content://org\.jcode\.mobile\.attachments/camera-[0-9]+\.jpg$ ]] || { echo 'Missing or unsafe production test output URI' >&2; exit 1; }
-run camera-external CameraExternalInstrumentation -e phase granted -e uri "$URI"
-run camera-cleanup CameraOwnerInstrumentation -e phase cleanup -e uri "$URI"
-CLEANED=true
-run camera-revoked CameraExternalInstrumentation -e phase revoked -e uri "$URI"
-echo 'PASS: actual distinct-UID provider JPEG write/read, exact grants, sibling/traversal denial, production decode/cleanup, revoked read/write denial. This is not a real camera UI acceptance claim.'
+# Do NOT start instrumentation in the recipient package after granting a URI:
+# instrumentation startup force-stops that package, clearing temporary grants.
+# One owner session launches a real cross-UID Activity recipient with ClipData
+# grants, keeps it alive across production cleanup, and receives Binder results.
+LOG="$OUT/camera-grant-roundtrip.txt"
+"$ADB" -s "$SERIAL" shell am instrument -w -r org.jcode.mobile.nativeservicestests/.CameraOwnerInstrumentation | tee "$LOG"
+grep -q '^INSTRUMENTATION_RESULT: result=PASS' "$LOG" && grep -q '^INSTRUMENTATION_CODE: -1' "$LOG"
+echo 'PASS: live distinct-UID Activity JPEG write/read, exact grants, sibling/traversal denial, production decode/cleanup, explicit revoked read/write denial. Not a real camera UI acceptance claim.'

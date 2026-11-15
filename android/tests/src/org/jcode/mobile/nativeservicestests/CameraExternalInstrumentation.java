@@ -23,10 +23,13 @@ public final class CameraExternalInstrumentation extends Instrumentation {
         } catch (SecurityException expected) { /* Exact URI grants must not authorize siblings or descendants. */ }
     }
     @Override public void onStart() {
+        Bundle result = verify(getTargetContext(), args);
+        finish("PASS".equals(result.getString("result")) ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);
+    }
+    static Bundle verify(Context context, Bundle args) {
         Bundle result = new Bundle();
         Throwable failure = null;
         try {
-            Context context = getTargetContext();
             check("org.jcode.mobile.nativeservicestests".equals(context.getPackageName()), "External test must run in isolated package");
             check(android.os.Process.myUid() == context.getApplicationInfo().uid
                     && android.os.Process.myUid() != context.getPackageManager().getApplicationInfo("org.jcode.mobile", 0).uid,
@@ -60,6 +63,6 @@ public final class CameraExternalInstrumentation extends Instrumentation {
         } catch (Throwable error) { failure = error; }
         result.putString("result", failure == null ? "PASS" : "FAIL");
         if (failure != null) result.putString("failure", android.util.Log.getStackTraceString(failure));
-        finish(failure == null ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);
+        return result;
     }
 }
