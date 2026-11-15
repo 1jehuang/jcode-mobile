@@ -38,7 +38,17 @@ The APK package is `org.jcode.mobile.nativeservicestests`, with two runners:
   Reflection restrictions or any setup failure are failures, never skips/passes.
 * `.NativeInstrumentation` targets **`org.jcode.mobile`**, launches its actual
   `JcodeActivity extends NativeActivity` with the shared Rust `todos` debug demo,
-  and uses its real clipboard and lifecycle adapters. Host-discovery assertions
+  and uses its real clipboard and lifecycle adapters. Before launch it establishes
+  a real `getUiAutomation(FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)` connection,
+  preserving existing accessibility services. It waits for enabled state and up
+  to 10 seconds for a real empty native editable semantic node, without forcing
+  production accessibility state or injecting snapshots. Cleanup releases the
+  temporary accessibility registration through public
+  `getUiAutomation(FLAG_DONT_USE_ACCESSIBILITY | FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)`,
+  verifies the original enabled state returns, then `Instrumentation.finish`
+  performs framework-owned final disconnection. Hidden `destroy`/`disconnect`
+  APIs are not invoked and no accessibility settings are written.
+  Host-discovery assertions
   call the production helper against the actual `NativeActivity$NativeContentView`
   and verify generic containers/IME are rejected and SurfaceView fallback works.
   Host installation is limited to `android.R.id.content`, never system decor.

@@ -3,6 +3,7 @@ package org.jcode.mobile.nativeservicestests;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.app.NativeActivity;
+import android.app.UiAutomation;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -14,6 +15,7 @@ import android.view.View;
 import android.widget.FrameLayout;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.view.accessibility.AccessibilityManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import java.lang.reflect.Field;
@@ -71,12 +73,50 @@ public final class NativeInstrumentation extends Instrumentation {
         }
         throw new AssertionError("Native GPUI field did not expose expected text after InputConnection edit (values redacted)");
     }
+    private void awaitAccessibility(AccessibilityManager manager, boolean expected) throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (ui(() -> manager.isEnabled()) == expected) return;
+            SystemClock.sleep(50);
+        }
+        throw new AssertionError("Temporary accessibility connection did not reach/restore expected enabled state");
+    }
+    private int awaitEmptyNativeField() throws Exception {
+        for (int attempt = 0; attempt < 200; attempt++) {
+            int candidate = ui(() -> {
+                // These are production snapshot IDs, not injected/synthetic nodes.
+                Field itemsField = provider.getClass().getDeclaredField("items"); itemsField.setAccessible(true);
+                java.util.Map<?, ?> items = (java.util.Map<?, ?>)itemsField.get(provider);
+                for (Object key : items.keySet()) {
+                    int id = ((Integer)key).intValue(); AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);
+                    if (node != null && node.isEditable() && !node.isPassword() && (node.getText() == null || node.getText().length() == 0)) {
+                        check(provider.performAction(id, AccessibilityNodeInfo.ACTION_FOCUS, null), "Native field focus rejected");
+                        original = "";
+                        return id;
+                    }
+                }
+                return 0;
+            });
+            if (candidate != 0) return candidate;
+            SystemClock.sleep(50);
+        }
+        throw new AssertionError("UNTESTABLE: no empty native editable demo field observable within 10 seconds with real accessibility enabled. No IME success claimed.");
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         Throwable failure = null;
+        AccessibilityManager accessibility = (AccessibilityManager)getTargetContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
+        boolean originalAccessibility = false;
+        boolean automationRequested = false;
         try {
             check("org.jcode.mobile".equals(getTargetContext().getPackageName()), "Wrong instrumentation target");
             check((getTargetContext().getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0, "Debug APK required");
+            // A real, temporary framework accessibility connection drives nativeStatus.
+            // Preserve existing accessibility services, and never force production state.
+            originalAccessibility = ui(() -> accessibility.isEnabled());
+            automationRequested = true;
+            UiAutomation automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+            check(automation != null, "Cannot establish real instrumentation accessibility connection");
+            awaitAccessibility(accessibility, true);
             Intent launch = new Intent(Intent.ACTION_MAIN).setClassName("org.jcode.mobile", "org.jcode.mobile.JcodeActivity")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("gpui_demo", "todos");
             activity = startActivitySync(launch);
@@ -109,21 +149,7 @@ public final class NativeInstrumentation extends Instrumentation {
             });
             result.putString("lifecycle", "PASS: real Activity pause/resume callbacks and service foreground/recorder state (not OS process recreation)");
             check(provider != null, "UNTESTABLE: native accessibility provider unavailable. No native-field IME success claimed.");
-            fieldId = ui(() -> {
-                // The provider publishes stable IDs internally. Select only an empty, non-password
-                // editable demo field, so no existing user draft or credential is overwritten.
-                Field itemsField = provider.getClass().getDeclaredField("items"); itemsField.setAccessible(true);
-                java.util.Map<?, ?> items = (java.util.Map<?, ?>)itemsField.get(provider);
-                for (Object key : items.keySet()) {
-                    int id = ((Integer)key).intValue(); AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);
-                    if (node != null && node.isEditable() && !node.isPassword() && (node.getText() == null || node.getText().length() == 0)) {
-                        check(provider.performAction(id, AccessibilityNodeInfo.ACTION_FOCUS, null), "Native field focus rejected");
-                        original = "";
-                        return id;
-                    }
-                }
-                throw new AssertionError("UNTESTABLE: no empty native editable demo field observable. No IME success claimed.");
-            });
+            fieldId = awaitEmptyNativeField();
             SystemClock.sleep(200);
             InputConnection connection = ui(() -> {
                 View input = (View)field(activity, "input");
@@ -160,6 +186,18 @@ public final class NativeInstrumentation extends Instrumentation {
                     else throw new AssertionError("Cannot restore empty clipboard before API 28");
                     return null;
                 });
+            } catch (Throwable cleanup) { if (failure == null) failure = cleanup; else failure.addSuppressed(cleanup); }
+            try {
+                if (automationRequested) {
+                    // UiAutomation.disconnect/destroy are hidden SDK APIs. Changing flags
+                    // uses Instrumentation's public API to disconnect accessibility first.
+                    // finish() below performs the framework-owned final disconnection.
+                    check(getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY
+                            | UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES) != null,
+                            "Cannot release temporary accessibility connection");
+                    awaitAccessibility(accessibility, originalAccessibility);
+                    result.putString("accessibility_connection", "PASS: real temporary UiAutomation accessibility enabled and original enabled state restored");
+                }
             } catch (Throwable cleanup) { if (failure == null) failure = cleanup; else failure.addSuppressed(cleanup); }
         }
         result.putString("result", failure == null ? "PASS" : "FAIL");
