@@ -22,7 +22,7 @@ public final class IncomingShare {
      * intents are untouched. Caller must not fall back to incoming data when a
      * SEND was rejected. Invoke on the UI thread before the usual nativeResume.
      *
-     * Requires shared router support for draft=1 before enabling its integration.
+     * Uses the explicit draft route. Ordinary new/ask routes may auto-send.
      */
     public static String consume(Intent intent) {
         if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction())) return null;
@@ -83,7 +83,7 @@ public final class IncomingShare {
         try {
             // Form encoding is understood by the existing shared URL parser;
             // percent-escape '&', '#', '+', '%' so text cannot inject options.
-            return "jcode://new?text=" + URLEncoder.encode(text, "UTF-8") + "&draft=1";
+            return "jcode://draft?text=" + URLEncoder.encode(text, "UTF-8");
         } catch (UnsupportedEncodingException impossible) {
             throw new AssertionError(impossible);
         }

@@ -69,6 +69,12 @@ public final class AndroidServices {
     public void onResume(Intent intent) {
         foreground = true;
         observeSettings();
+        // Handle SEND before RemoteInput or data deep links. Rejected payloads
+        // must never fall through into an attacker-supplied auto-send URL.
+        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
+            nativeResume(IncomingShare.consume(intent));
+            return;
+        }
         Bundle reply = intent == null ? null : RemoteInput.getResultsFromIntent(intent);
         if (reply != null && reply.getCharSequence("reply") != null && intent.getData() != null) {
             nativeReply(intent.getData().getLastPathSegment(), reply.getCharSequence("reply").toString());

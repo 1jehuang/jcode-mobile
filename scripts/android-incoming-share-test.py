@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = Path(os.environ.get("ANDROID_HOME", os.environ.get("ANDROID_SDK_ROOT", Path.home() / "Android/Sdk")))
@@ -66,12 +67,16 @@ public class IncomingShareTest {
   String payload="hello world + &draft=0 # % \n\t emoji ";
   payload=payload.replace("\\n","\n").replace("\\t","\t")+new String(Character.toChars(0x1f4bb));
   Intent once=share(payload); String route=IncomingShare.consume(once);
-  check(route!=null&&route.startsWith("jcode://new?text=")&&route.endsWith("&draft=1"),"draft-only route");
-  String encoded=route.substring("jcode://new?text=".length(),route.length()-"&draft=1".length());
+  check(route!=null&&route.startsWith("jcode://draft?text="),"explicit draft-only route");
+  check(!route.startsWith("jcode://new")&&!route.startsWith("jcode://ask"),"never auto-send route");
+  String encoded=route.substring("jcode://draft?text=".length());
   check(payload.equals(URLDecoder.decode(encoded,"UTF-8")),"lossless UTF8 injection-safe encoding");
   check(!encoded.contains("&")&&!encoded.contains("#"),"no query injection");
   check(IncomingShare.consume(once)==null&&!once.hasExtra(Intent.EXTRA_TEXT),"exactly once");
   check(!Intent.ACTION_SEND.equals(once.getAction()),"consumed action persists recreation");
+  Intent recreated=new Intent(once.getAction()).setDataAndType(once.getData(),once.getType());
+  check(IncomingShare.consume(recreated)==null,"recreated consumed delivery cannot replay");
+  check(IncomingShare.consume(share("second delivery"))!=null,"new delivery remains accepted");
   check(IncomingShare.route(repeat("a",4096))!=null,"exact ASCII limit");
   check(IncomingShare.route(repeat("a",4097))==null,"UTF16 bound");
   check(IncomingShare.route(repeat("é",2048))!=null,"exact UTF8 bound");
@@ -81,6 +86,7 @@ public class IncomingShareTest {
   rejected(share(null),"missing text"); rejected(share(42),"wrong extra type"); rejected(share(new StringBuilder("styled")),"not plain String");
   rejected(share("text").setType("text/html"),"HTML mime"); rejected(share("text").setType("text/plain; charset=utf-8"),"nonexact mime");
   rejected(share("text").setDataAndType("content://private/file","text/plain"),"data URI");
+  rejected(share("draft").setDataAndType("jcode://new?text=must-not-send","text/plain"),"auto-send data cannot bypass rejected SEND");
   rejected(share("text").putExtra(Intent.EXTRA_STREAM,"content://private/file"),"stream");
   for(int grant:new int[]{1,2,64,128}){Intent i=share("text").setFlags(grant);rejected(i,"grant");check(i.getFlags()==0,"grant cleared");}
   Intent malformed=share("text");malformed.malformed=true;rejected(malformed,"malformed parcel");
@@ -96,6 +102,19 @@ public class IncomingShareTest {
 
 
 def main():
+    # Configuration/source contract checks, not Android lifecycle acceptance.
+    ns = "{http://schemas.android.com/apk/res/android}"
+    manifest = ET.parse(ROOT / "android/app/src/main/AndroidManifest.xml")
+    activity = next(a for a in manifest.findall("application/activity") if a.get(ns + "name") == ".JcodeActivity")
+    share_filters = [f for f in activity.findall("intent-filter") if any(a.get(ns + "name") in ("android.intent.action.SEND", "android.intent.action.SEND_MULTIPLE") for a in f.findall("action"))]
+    assert len(share_filters) == 1
+    share_filter = share_filters[0]
+    assert [a.get(ns + "name") for a in share_filter.findall("action")] == ["android.intent.action.SEND"]
+    assert [dict(d.attrib) for d in share_filter.findall("data")] == [{ns + "mimeType": "text/plain"}]
+    services = (ROOT / "android/app/src/main/java/org/jcode/mobile/AndroidServices.java").read_text()
+    resume = services.split("public void onResume(Intent intent) {", 1)[1].split("public void onPause()", 1)[0]
+    assert resume.index("Intent.ACTION_SEND.equals(intent.getAction())") < resume.index("RemoteInput.getResultsFromIntent")
+    assert "nativeResume(IncomingShare.consume(intent));\n            return;" in resume
     scratch = Path(os.environ.get("JCODE_SCRATCH_DIR", ROOT / "target/android/share-tests"))
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="incoming-share-", dir=scratch) as tmp:
