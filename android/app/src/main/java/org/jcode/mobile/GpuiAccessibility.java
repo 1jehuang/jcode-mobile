@@ -24,7 +24,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** OS accessibility service adapter for GPUI's existing native SurfaceView.
+/** OS accessibility service adapter for GPUI's existing native content view.
  * No widgets, application state, drawing, layout, or Java application UI.
  * All methods that touch Android views execute on the Java UI thread. Native
  * callbacks enqueue work for GPUI's native UI loop, never mutate GPUI here.
@@ -82,10 +82,12 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
     private static void installNow(Activity activity, long token, int attempt) {
         Long requested = TOKENS.get(activity);
         if (requested == null || requested.longValue() != token || activity.isFinishing() || activity.isDestroyed()) return;
-        View decor = activity.getWindow().getDecorView();
-        View surface = findSurface(decor);
+        // NativeActivity takes a Surface through NativeContentView, which is a plain
+        // View, not a SurfaceView. Only inspect application content, never system decor.
+        View content = activity.findViewById(android.R.id.content);
+        View surface = findNativeHost(content);
         if (surface == null || !surface.isAttachedToWindow()) {
-            if (attempt < 100) decor.postDelayed(() -> installNow(activity, token, attempt + 1), 50);
+            if (attempt < 100) activity.getWindow().getDecorView().postDelayed(() -> installNow(activity, token, attempt + 1), 50);
             return;
         }
         GpuiAccessibility adapter = new GpuiAccessibility(surface, token);
@@ -94,12 +96,23 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
         if (snapshot != null) adapter.apply(snapshot);
     }
 
-    private static View findSurface(View view) {
-        if (view instanceof SurfaceView) return view;
+    private static View findNativeHost(View content) {
+        // Prefer the framework's actual takeSurface owner over any nested SurfaceView.
+        View nativeContent = findHostKind(content, true);
+        return nativeContent != null ? nativeContent : findHostKind(content, false);
+    }
+
+    private static View findHostKind(View view, boolean nativeContent) {
+        if (view == null) return null;
+        // Do not infer a host from size, focusability, or a generic View: that can
+        // select the non-drawing GpuiInput endpoint or a system/decor container.
+        if (nativeContent
+                ? "android.app.NativeActivity$NativeContentView".equals(view.getClass().getName())
+                : view instanceof SurfaceView) return view;
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int index = 0; index < group.getChildCount(); index++) {
-                View found = findSurface(group.getChildAt(index));
+                View found = findHostKind(group.getChildAt(index), nativeContent);
                 if (found != null) return found;
             }
         }

@@ -11,7 +11,7 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.SurfaceView;
 import android.view.View;
-import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityNodeProvider;
 import android.view.inputmethod.EditorInfo;
@@ -37,12 +37,28 @@ public final class NativeInstrumentation extends Instrumentation {
     private static Object field(Object object, String name) throws Exception {
         Field field = object.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(object);
     }
-    private static View surface(View view) {
-        if (view instanceof SurfaceView) return view;
-        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup)view).getChildCount(); i++) {
-            View found = surface(((ViewGroup)view).getChildAt(i)); if (found != null) return found;
-        }
-        return null;
+    private View nativeHost(View content) throws Exception {
+        Class<?> adapter = activity.getClassLoader().loadClass("org.jcode.mobile.GpuiAccessibility");
+        java.lang.reflect.Method discover = adapter.getDeclaredMethod("findNativeHost", View.class);
+        discover.setAccessible(true);
+        return (View)discover.invoke(null, content);
+    }
+    private void checkHostDiscovery() throws Exception {
+        ui(() -> {
+            check(nativeHost(null) == null, "Null content selected as host");
+            FrameLayout detached = new FrameLayout(activity);
+            detached.addView(new View(activity));
+            check(nativeHost(detached) == null, "Generic content/container selected as native host");
+            check(nativeHost((View)field(activity, "input")) == null, "IME endpoint selected as native host");
+            SurfaceView alternate = new SurfaceView(activity);
+            detached.addView(alternate);
+            check(nativeHost(detached) == alternate, "Alternate SurfaceView host not found");
+            View host = nativeHost(activity.findViewById(android.R.id.content));
+            check(host != null && "android.app.NativeActivity$NativeContentView".equals(host.getClass().getName()),
+                    "Actual NativeActivity takeSurface owner not found");
+            check(host != activity.getWindow().getDecorView() && host != field(activity, "input"), "Unsafe host selected");
+            return null;
+        });
     }
     private void awaitText(String expected) throws Exception {
         for (int attempt = 0; attempt < 100; attempt++) {
@@ -65,8 +81,10 @@ public final class NativeInstrumentation extends Instrumentation {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK).putExtra("gpui_demo", "todos");
             activity = startActivitySync(launch);
             check(activity instanceof NativeActivity, "Not the real NativeActivity");
+            checkHostDiscovery();
+            result.putString("host", "PASS: production discovery finds NativeContentView, rejects IME/generic containers, supports alternate SurfaceView");
             for (int n = 0; n < 100 && provider == null; n++) {
-                provider = ui(() -> { View host = surface(activity.getWindow().getDecorView()); return host == null ? null : host.getAccessibilityNodeProvider(); });
+                provider = ui(() -> { View host = nativeHost(activity.findViewById(android.R.id.content)); return host == null ? null : host.getAccessibilityNodeProvider(); });
                 if (provider == null) SystemClock.sleep(50);
             }
             clipboard = (ClipboardManager)activity.getSystemService(Context.CLIPBOARD_SERVICE);

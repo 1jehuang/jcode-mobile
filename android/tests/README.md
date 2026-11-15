@@ -38,11 +38,15 @@ The APK package is `org.jcode.mobile.nativeservicestests`, with two runners:
   Reflection restrictions or any setup failure are failures, never skips/passes.
 * `.NativeInstrumentation` targets **`org.jcode.mobile`**, launches its actual
   `JcodeActivity extends NativeActivity` with the shared Rust `todos` debug demo,
-  and uses its real clipboard and lifecycle adapters. Clipboard contents are
+  and uses its real clipboard and lifecycle adapters. Host-discovery assertions
+  call the production helper against the actual `NativeActivity$NativeContentView`
+  and verify generic containers/IME are rejected and SurfaceView fallback works.
+  Host installation is limited to `android.R.id.content`, never system decor.
+  Clipboard contents are
   saved and restored even when subsequent field tests fail. It invokes real
   pause/resume callbacks and checks service state and recorder release, but
   does not claim OS-driven background/process recreation coverage.
-  For IME it finds the production SurfaceView's semantic provider, focuses an
+  For IME it finds the production NativeContentView's semantic provider, focuses an
   empty non-password native editable demo field, and calls the real
   `GpuiInput.onCreateInputConnection`. Compose, replacement, commit, deletion,
   and finish must succeed. Native semantic text must match after every edit.
