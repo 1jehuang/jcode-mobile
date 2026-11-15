@@ -36,6 +36,12 @@ class BudgetTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(result["milestones"][1]["at_or_above_budget"], 1)
 
+    def test_failed_attempts_cannot_hide_behind_fast_retries(self):
+        result = evaluate(payload([("session_ready", 30), ("session_history", 40),
+                                   ("session_connect_failed", 5000)]))
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failed_attempt_samples"], 1)
+
     def test_minimum_and_duplicate_exports(self):
         data = json.loads(payload([("session_ready", 30), ("session_history", 40)]))
         data["batches"] *= 2

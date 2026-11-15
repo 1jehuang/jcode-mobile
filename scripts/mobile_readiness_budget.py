@@ -15,13 +15,14 @@ from mobile_latency_report import samples
 # These are independent cumulative milestones from the connection attempt.
 # Do not add them together. UI/cache markers deliberately cannot satisfy them.
 REQUIRED = ("session_ready", "session_history")
+FAILED_ATTEMPT = "session_connect_failed"
 MAX_INPUT = 16 * 1024 * 1024
 
 
 def evaluate(text, budget_ms=1000.0, minimum=1, log=False):
     if not math.isfinite(budget_ms) or budget_ms <= 0 or minimum < 1:
         raise ValueError("budget and minimum must be positive")
-    groups = {name: [] for name in REQUIRED}
+    groups = {name: [] for name in (*REQUIRED, FAILED_ATTEMPT)}
     for name, duration in samples(text, log):
         if name not in groups:
             continue
@@ -29,6 +30,7 @@ def evaluate(text, budget_ms=1000.0, minimum=1, log=False):
                 or duration < 0 or duration > 604800000):
             raise ValueError("invalid required milestone duration")
         groups[name].append(duration)
+    failed_attempts = len(groups.pop(FAILED_ATTEMPT))
     milestones = []
     for name, values in groups.items():
         violations = sum(value >= budget_ms for value in values)
@@ -39,7 +41,8 @@ def evaluate(text, budget_ms=1000.0, minimum=1, log=False):
             "passed": len(values) >= minimum and violations == 0,
         })
     return {"budget_ms_exclusive": budget_ms, "minimum_samples_per_milestone": minimum,
-            "passed": all(row["passed"] for row in milestones),
+            "passed": failed_attempts == 0 and all(row["passed"] for row in milestones),
+            "failed_attempt_samples": failed_attempts,
             "milestones": milestones,
             "scope": "supplied connection-attempt milestones only; not cached paint, command execution, or device-wide SLA"}
 

@@ -592,9 +592,12 @@ fn wait_for_host_or_direct(
     let direct = crate::cloud_direct::load_or_create(account).filter(|s| s.target().is_some());
     let device_key = direct.and_then(|state| state.key());
     static PROBE_BUSY: OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> = OnceLock::new();
+    static REQUEST_BUSY: OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> = OnceLock::new();
+    let poll_interval = cloud.poll_interval;
+    let (cloud, account_for_request, public_key) = (cloud.clone(), account.clone(), key.public_openssh().to_owned());
     let result = schedule_host_readiness(
-        || crate::timing::timed("control plane request", || {
-            cloud.request_host_connect(account, key.public_openssh())
+        move || crate::timing::timed("control plane request", || {
+            cloud.request_host_connect(&account_for_request, &public_key)
         }),
         device_key.map(|key| move |target: jcode_sdk::cloud::CloudTarget| {
             crate::timing::timed("wake direct ssh probe", || {
@@ -602,7 +605,8 @@ fn wait_for_host_or_direct(
             })
         }),
         PROBE_BUSY.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).clone(),
-        cloud.poll_interval,
+        REQUEST_BUSY.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).clone(),
+        poll_interval,
         deadline,
         progress,
         cancelled,
@@ -625,11 +629,11 @@ enum ProbeScheduling {
     SerialBaseline,
 }
 
-/// An abandoned probe must not allow the next caller to start another one.
-/// Keep its process-wide permit until the bounded SSH attempt actually exits.
-struct ProbePermit(std::sync::Arc<std::sync::atomic::AtomicBool>);
+/// A cancelled caller cannot start unbounded replacement network work. Each
+/// kind of worker retains its own global permit through an unread result.
+struct ReadinessPermit(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
-impl Drop for ProbePermit {
+impl Drop for ReadinessPermit {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::Release);
     }
@@ -639,10 +643,11 @@ impl Drop for ProbePermit {
 /// are injectable, so offline fixtures exercise the actual scheduling policy.
 /// Polls retain the configured interval and never overlap each other. A single
 /// bounded SSH probe may overlap polling, but never another speculative probe.
-fn schedule_host_readiness<S: Send + 'static, P>(
-    mut request: impl FnMut() -> jcode_sdk::Result<jcode_sdk::cloud::ConnectReply>,
+fn schedule_host_readiness<S: Send + 'static, R, P>(
+    request: R,
     probe: Option<P>,
     probe_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    request_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     poll_interval: Duration,
     deadline: Instant,
     progress: &dyn Fn(&str),
@@ -650,9 +655,15 @@ fn schedule_host_readiness<S: Send + 'static, P>(
     scheduling: ProbeScheduling,
 ) -> jcode_sdk::Result<HostWait<(jcode_sdk::cloud::CloudTarget, S)>>
 where
+    R: FnMut() -> jcode_sdk::Result<jcode_sdk::cloud::ConnectReply> + Send + 'static,
     P: Fn(jcode_sdk::cloud::CloudTarget) -> Option<S> + Clone + Send + 'static,
 {
     let mut pending: Option<std::sync::mpsc::Receiver<_>> = None;
+    let mut pending_request: Option<std::sync::mpsc::Receiver<_>> = None;
+    let mut request = Some(request);
+    let mut request_error = None;
+    let mut next_request = Instant::now();
+    let mut poll_started: Option<Instant> = None;
     let mut last = String::new();
     loop {
         if cancelled() {
@@ -665,48 +676,10 @@ where
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        let reply = request()?;
-        if cancelled() {
-            return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"));
-        }
-        if reply.ready {
-            return jcode_sdk::cloud::CloudTarget::from_reply(&reply).map(HostWait::Ready);
-        }
-        let message = reply.message.clone().unwrap_or_else(|| format!("Jcode Cloud machine is {}…", reply.state));
-        if message != last {
-            progress(&message);
-            last = message;
-        }
-        if pending.is_none()
-            && let Some(probe) = &probe
-            && let Ok(target) = jcode_sdk::cloud::CloudTarget::from_reply(&reply)
-            && probe_busy.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok()
-        {
-            let permit = ProbePermit(probe_busy.clone());
-            let probe = probe.clone();
-            match scheduling {
-                ProbeScheduling::Concurrent => {
-                    let (send, receive) = std::sync::mpsc::sync_channel(1);
-                    // Spawn failure is merely loss of a speculative fast path.
-                    // Dropping the closure releases its permit in that case.
-                    if std::thread::Builder::new().name("jcode-readiness-probe".into()).spawn(move || {
-                        let result = probe(target.clone()).map(|ssh| (target, ssh));
-                        // Retain the permit with the result, including while a
-                        // control-plane request is outstanding. Receiver drop
-                        // disposes of both the late SSH master and its permit.
-                        let _ = send.send((result, permit));
-                    }).is_ok() {
-                        pending = Some(receive);
-                    }
-                }
-                #[cfg(test)]
-                ProbeScheduling::SerialBaseline => {
-                    let _permit = permit;
-                    if let Some(ssh) = probe(target.clone()) {
-                        return Ok(HostWait::Direct((target, ssh)));
-                    }
-                }
-            }
+        // A failed control-plane request must not mask a still-running pinned
+        // SSH fast path. Let that bounded probe finish before surfacing it.
+        if pending.is_none() && let Some(error) = request_error.take() {
+            return Err(error);
         }
         if Instant::now() >= deadline {
             return Err(jcode_sdk::Error::new(
@@ -714,22 +687,109 @@ where
                 "Jcode Cloud did not become ready in time. Retry to keep waiting.",
             ));
         }
-        let poll_started = Instant::now();
-        let until = poll_started + poll_interval;
-        while Instant::now() < until {
+        let mut completed = None;
+        if let Some(receive) = &pending_request {
+            match receive.try_recv() {
+                Ok((reply, returned_request, _permit)) => {
+                    request = Some(returned_request);
+                    pending_request = None;
+                    completed = Some(reply);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    pending_request = None;
+                    completed = Some(Err(jcode_sdk::Error::new(
+                        jcode_sdk::ErrorKind::Disconnected, "Cloud readiness worker stopped",
+                    )));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if completed.is_none() && pending_request.is_none() && request_error.is_none()
+            && request.is_some() && Instant::now() >= next_request
+            && request_busy.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok()
+        {
+            let permit = ReadinessPermit(request_busy.clone());
+            if let Some(started) = poll_started.take() {
+                crate::timing::stage("control plane poll delay", started.elapsed());
+            }
+            let mut owned_request = request.take().expect("request ownership checked above");
+            match scheduling {
+                ProbeScheduling::Concurrent => {
+                    let (send, receive) = std::sync::mpsc::sync_channel(1);
+                    // The HTTP request retains its original transport timeout.
+                    // Losing this race drops only its receiver, not ownership
+                    // of another account's state or the global worker permit.
+                    std::thread::Builder::new().name("jcode-readiness-request".into()).spawn(move || {
+                        let reply = owned_request();
+                        let _ = send.send((reply, owned_request, permit));
+                    }).map_err(|_| jcode_sdk::Error::new(
+                        jcode_sdk::ErrorKind::Disconnected, "Could not start cloud readiness worker",
+                    ))?;
+                    pending_request = Some(receive);
+                }
+                #[cfg(test)]
+                ProbeScheduling::SerialBaseline => {
+                    completed = Some(owned_request());
+                    request = Some(owned_request);
+                }
+            }
+        }
+        if let Some(reply) = completed {
             if cancelled() {
                 return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"));
             }
-            if let Some(receive) = &pending {
-                match receive.try_recv() {
-                    Ok((Some(ssh), _permit)) => return Ok(HostWait::Direct(ssh)),
-                    Ok((None, _)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => pending = None,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            let reply = match reply {
+                Ok(reply) => reply,
+                Err(error) => {
+                    request_error = Some(error);
+                    continue;
+                }
+            };
+            if reply.ready {
+                return jcode_sdk::cloud::CloudTarget::from_reply(&reply).map(HostWait::Ready);
+            }
+            let message = reply.message.clone().unwrap_or_else(|| format!("Jcode Cloud machine is {}…", reply.state));
+            if message != last {
+                progress(&message);
+                last = message;
+            }
+            if pending.is_none()
+                && let Some(probe) = &probe
+                && let Ok(target) = jcode_sdk::cloud::CloudTarget::from_reply(&reply)
+                && probe_busy.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok()
+            {
+                let permit = ReadinessPermit(probe_busy.clone());
+                let probe = probe.clone();
+                match scheduling {
+                    ProbeScheduling::Concurrent => {
+                        let (send, receive) = std::sync::mpsc::sync_channel(1);
+                        // Spawn failure loses only the speculative fast path.
+                        // Dropping the closure releases its permit in that case.
+                        if std::thread::Builder::new().name("jcode-readiness-probe".into()).spawn(move || {
+                            let result = probe(target.clone()).map(|ssh| (target, ssh));
+                            // Receiver drop disposes of a late SSH master and
+                            // its permit without caching or remembering it.
+                            let _ = send.send((result, permit));
+                        }).is_ok() {
+                            pending = Some(receive);
+                        }
+                    }
+                    #[cfg(test)]
+                    ProbeScheduling::SerialBaseline => {
+                        let _permit = permit;
+                        if let Some(ssh) = probe(target.clone()) {
+                            return Ok(HostWait::Direct((target, ssh)));
+                        }
+                    }
                 }
             }
-            std::thread::sleep(Duration::from_millis(50).min(until.saturating_duration_since(Instant::now())));
+            let now = Instant::now();
+            next_request = now + poll_interval;
+            poll_started = Some(now);
         }
-        crate::timing::stage("control plane poll delay", poll_started.elapsed());
+        // Neither a slow HTTP response nor SSH authentication blocks the other
+        // winner or foreground cancellation. No network I/O holds this loop.
+        std::thread::sleep(Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
