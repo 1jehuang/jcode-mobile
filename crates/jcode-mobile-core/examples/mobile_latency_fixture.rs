@@ -104,6 +104,7 @@ struct State {
     polls: AtomicUsize,
     next_session: AtomicUsize,
     pings: AtomicUsize,
+    hellos: AtomicUsize,
     started: Instant,
     log: Mutex<Option<std::fs::File>>,
 }
@@ -120,13 +121,9 @@ struct Harness {
     state: Arc<State>,
     buffers: HashMap<ChannelId, Vec<u8>>,
     attached: HashMap<ChannelId, String>,
+    pending: Arc<tokio::sync::Semaphore>,
 }
-fn frame(
-    session: &mut server::Session,
-    channel: ChannelId,
-    id: Option<u64>,
-    mut event: Value,
-) -> Result<(), russh::Error> {
+fn frame_bytes(id: Option<u64>, mut event: Value) -> Result<Vec<u8>, russh::Error> {
     event["v"] = json!(API_VERSION_MAJOR);
     if let Some(id) = id {
         event["reply_to"] = json!(id);
@@ -136,10 +133,58 @@ fn frame(
         serde_json::from_value(event).map_err(|_| russh::Error::Disconnect)?;
     let mut bytes = serde_json::to_vec(&checked).map_err(|_| russh::Error::Disconnect)?;
     bytes.push(b'\n');
-    session.data(channel, bytes)
+    Ok(bytes)
+}
+fn delayed_frames(
+    handle: server::Handle,
+    channel: ChannelId,
+    frames: Vec<(Option<u64>, Value)>,
+    delay_ms: u64,
+    pending: Arc<tokio::sync::Semaphore>,
+) -> Result<(), russh::Error> {
+    let permit = pending
+        .try_acquire_owned()
+        .map_err(|_| russh::Error::Disconnect)?;
+    let frames = frames
+        .into_iter()
+        .map(|(id, event)| frame_bytes(id, event))
+        .collect::<Result<Vec<_>, _>>()?;
+    tokio::spawn(async move {
+        let _permit = permit;
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        for bytes in frames {
+            if handle.data(channel, bytes).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(())
 }
 fn info(sid: &str) -> Value {
     json!({"session_id":sid,"status":"idle","title":"Latency fixture","working_dir":"/fixture"})
+}
+fn enrollment_key(command: &[u8]) -> Option<russh::keys::PublicKey> {
+    let command = std::str::from_utf8(command).ok()?;
+    let prefix =
+        "umask 077; mkdir -p \"$HOME/.ssh\" && touch \"$HOME/.ssh/authorized_keys\" && (grep -qF '";
+    let rest = command.strip_prefix(prefix)?;
+    let (blob, _) = rest.split_once('\'')?;
+    if blob.is_empty()
+        || blob.len() > 128
+        || !blob
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c))
+    {
+        return None;
+    }
+    let line = format!("ssh-ed25519 {blob} jcode-device");
+    let expected = format!(
+        "{prefix}{blob}' \"$HOME/.ssh/authorized_keys\" || echo '{line}' >> \"$HOME/.ssh/authorized_keys\")"
+    );
+    if command != expected {
+        return None;
+    }
+    russh::keys::PublicKey::from_openssh(&line).ok()
 }
 impl server::Handler for Harness {
     type Error = russh::Error;
@@ -188,6 +233,23 @@ impl server::Handler for Harness {
         command: &[u8],
         session: &mut server::Session,
     ) -> Result<(), Self::Error> {
+        if let Some(key) = enrollment_key(command) {
+            {
+                let mut keys = self.state.keys.lock().unwrap();
+                if !keys.contains(&key) {
+                    if keys.len() >= 64 {
+                        session.channel_failure(channel)?;
+                        return session.close(channel);
+                    }
+                    keys.push(key);
+                }
+            }
+            self.state.stage("device_key_enrolled");
+            session.channel_success(channel)?;
+            session.exit_status_request(channel, 0)?;
+            session.eof(channel)?;
+            return session.close(channel);
+        }
         if command.len() > 4096 || !command.ends_with(b"jcode --no-update api --stdio") {
             session.channel_failure(channel)?;
             return session.close(channel);
@@ -214,6 +276,7 @@ impl server::Handler for Harness {
             let line: Vec<_> = buffer.drain(..=end).collect();
             let req: Value = serde_json::from_slice(&line).map_err(|_| russh::Error::Disconnect)?;
             let id = req["id"].as_u64();
+            let mut delay_ms = 0;
             let sid = req["session_id"]
                 .as_str()
                 .unwrap_or("fixture-resume")
@@ -223,8 +286,9 @@ impl server::Handler for Harness {
             }
             let event = match req["req"].as_str().unwrap_or("") {
                 "hello" => {
+                    self.state.hellos.fetch_add(1, Ordering::Relaxed);
                     self.state.stage("api_hello");
-                    tokio::time::sleep(Duration::from_millis(self.state.options.hello)).await;
+                    delay_ms = self.state.options.hello;
                     json!({"ev":"hello_ok","version":API_VERSION_MAJOR,"server":"mobile-latency-fixture"})
                 }
                 "create_session" | "attach_session" => {
@@ -233,7 +297,6 @@ impl server::Handler for Harness {
                     } else {
                         "api_attach"
                     });
-                    tokio::time::sleep(Duration::from_millis(self.state.options.attach)).await;
                     let sid = if req["req"] == "create_session" {
                         format!(
                             "fixture-{}",
@@ -243,32 +306,32 @@ impl server::Handler for Harness {
                         sid
                     };
                     self.attached.insert(channel, sid.clone());
-                    frame(
-                        session,
+                    delayed_frames(
+                        session.handle(),
                         channel,
-                        id,
-                        json!({"ev":"attached","session":info(&sid)}),
-                    )?;
-                    frame(
-                        session,
-                        channel,
-                        None,
-                        json!({"ev":"runtime_info","session_id":sid,"provider":"fixture","model":"fixture-model","routes":[]}),
+                        vec![
+                            (id, json!({"ev":"attached","session":info(&sid)})),
+                            (
+                                None,
+                                json!({"ev":"runtime_info","session_id":sid,"provider":"fixture","model":"fixture-model","routes":[]}),
+                            ),
+                        ],
+                        self.state.options.attach,
+                        self.pending.clone(),
                     )?;
                     continue;
                 }
                 "get_history" => {
                     self.state.stage("api_history");
-                    tokio::time::sleep(Duration::from_millis(self.state.options.history)).await;
+                    delay_ms = self.state.options.history;
                     let messages: Vec<_> = (0..self.state.options.size)
                         .map(|i| {
-                            let mut content = if i + 1 == self.state.options.size {
-                                "SIMULATOR FRESH".to_string()
-                            } else {
-                                format!("Fixture message {i}")
-                            };
+                            let mut content = format!("Fixture message {i}");
                             content.push_str(&" x".repeat(self.state.options.history_bytes / 2));
                             content.truncate(self.state.options.history_bytes);
+                            if i + 1 == self.state.options.size {
+                                content.push_str(&format!(" SIMULATOR FRESH {sid}"));
+                            }
                             json!({"role":if i%2==0 {"user"} else {"assistant"},"content":content})
                         })
                         .collect();
@@ -300,7 +363,16 @@ impl server::Handler for Harness {
                     json!({"ev":"error","code":"unknown_request","message":"Not implemented by offline latency fixture"})
                 }
             };
-            frame(session, channel, id, event)?;
+            // A real sshd runs each API process independently. Never sleep in
+            // this connection-wide callback: a spare channel's slow hello must
+            // not stall history or pings on an already attached channel.
+            delayed_frames(
+                session.handle(),
+                channel,
+                vec![(id, event)],
+                delay_ms,
+                self.pending.clone(),
+            )?;
         }
         Ok(())
     }
@@ -468,6 +540,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         polls: AtomicUsize::new(0),
         next_session: AtomicUsize::new(1),
         pings: AtomicUsize::new(0),
+        hellos: AtomicUsize::new(0),
         started: Instant::now(),
         log: Mutex::new(log),
     });
@@ -513,7 +586,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if tasks.len()<32 {
                         let config=config.clone(); let state=state.clone(); let mut stopped=shutdown.subscribe();
                         tasks.spawn(async move {
-                            let handler=Harness { state,buffers:HashMap::new(),attached:HashMap::new() };
+                            let handler=Harness { state,buffers:HashMap::new(),attached:HashMap::new(),pending:Arc::new(tokio::sync::Semaphore::new(64)) };
                             if let Ok(mut session)=server::run_stream(config,stream,handler).await {
                                 let handle=session.handle();
                                 tokio::select! {
@@ -550,7 +623,36 @@ fn smoke(base: &str, state: Arc<State>) -> Result<(), String> {
     use jcode_sdk::api::ApiEvent;
     let account: Account = serde_json::from_value(json!({"api_key":TOKEN,"api_base":base}))
         .map_err(|_| "fixture account invalid")?;
-    for resume in [None, Some("fixture-resume".to_string())] {
+    for (attempt, resume) in [
+        None,
+        Some("fixture-resume".to_string()),
+        Some("fixture-direct".to_string()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let polls_before = state.polls.load(Ordering::Relaxed);
+        if attempt == 2 {
+            let path = std::path::PathBuf::from(
+                std::env::var_os("XDG_DATA_HOME").ok_or("missing isolated data home")?,
+            )
+            .join("jcode-mobile/cloud-direct.json");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let authorized = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|v| v["authorized"] == true && v["target"].is_object());
+                if authorized {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("self-test device enrollment not persisted".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            jcode_mobile_core::cloud::reset_in_memory_cache_for_benchmark();
+        }
         let mut config = Config::cloud(account.clone());
         config.max_reconnect_attempts = Some(0);
         let (connection, output) = Connection::start_with_channel(config, resume);
@@ -594,6 +696,62 @@ fn smoke(base: &str, state: Arc<State>) -> Result<(), String> {
         })();
         connection.stop();
         result?;
+        if attempt == 2 {
+            if state.polls.load(Ordering::Relaxed) != polls_before {
+                return Err("self-test direct reconnect used control plane".into());
+            }
+            state.stage("self_test_direct_passed");
+        }
     }
+    if state.options.hello >= 300 && state.options.history <= state.options.hello / 4 {
+        concurrency_smoke(&account, &state)?;
+    }
+    Ok(())
+}
+
+fn concurrency_smoke(
+    account: &jcode_mobile_core::Account,
+    state: &Arc<State>,
+) -> Result<(), String> {
+    use jcode_mobile_core::cloud_ssh::{CloudSsh, CloudSshKey};
+    let key = CloudSshKey::generate("fixture-concurrency").map_err(|_| "concurrency key failed")?;
+    let reply = jcode_mobile_core::cloud::client()
+        .request_host_connect(account, key.public_openssh())
+        .map_err(|_| "concurrency control plane failed")?;
+    let target = jcode_sdk::cloud::CloudTarget::from_reply(&reply)
+        .map_err(|_| "concurrency target failed")?;
+    let ssh = CloudSsh::connect(target, key).map_err(|_| "concurrency SSH failed")?;
+    let client = ssh
+        .open_client()
+        .map_err(|_| "concurrency initial hello failed")?;
+    let hellos = state.hellos.load(Ordering::Relaxed);
+    let spare = std::thread::spawn(move || {
+        ssh.open_client()
+            .map(|_| ())
+            .map_err(|_| "concurrency spare hello failed")
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while state.hellos.load(Ordering::Relaxed) == hellos {
+        if Instant::now() >= deadline {
+            return Err("concurrency spare hello not received".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let started = Instant::now();
+    let result = client
+        .request(jcode_sdk::ApiRequest::GetHistory {
+            session_id: "fixture-concurrency".into(),
+        })
+        .map_err(|_| "concurrency history failed");
+    let elapsed = started.elapsed();
+    spare
+        .join()
+        .map_err(|_| "concurrency spare thread panicked")?
+        .map_err(str::to_owned)?;
+    result?;
+    if elapsed >= Duration::from_millis(state.options.hello * 3 / 4) {
+        return Err("fixture history blocked behind unrelated channel hello".into());
+    }
+    state.stage("self_test_cross_channel_passed");
     Ok(())
 }
