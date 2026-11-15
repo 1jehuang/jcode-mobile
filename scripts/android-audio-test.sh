@@ -26,7 +26,24 @@ python3 "$ROOT/scripts/android-instrumentation-result.py" --self-test
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 STAGE="$(mktemp -d "$OUT/build.XXXXXX")"
-trap 'rm -rf "$STAGE"' EXIT
+CLEANUP_TEST_PACKAGE=false
+cleanup() {
+  local original_status=$? cleanup_failed=0
+  trap - EXIT INT TERM
+  if $CLEANUP_TEST_PACKAGE; then
+    # Only this dedicated test package. Never production UID/data/permissions.
+    timeout 10s "$ADB" -s "$SERIAL" shell am force-stop "$PACKAGE" || cleanup_failed=1
+    timeout 10s "$ADB" -s "$SERIAL" shell pm revoke "$PACKAGE" android.permission.RECORD_AUDIO || cleanup_failed=1
+    if [[ $cleanup_failed -ne 0 ]]; then echo "WARN: best-effort audio test-package cleanup failed on $SERIAL" >&2; fi
+  fi
+  rm -rf "$STAGE" || cleanup_failed=1
+  # Preserve any original build/run/signal failure. Cleanup cannot hide it.
+  if [[ $original_status -ne 0 ]]; then exit "$original_status"; fi
+  exit "$cleanup_failed"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir -p "$STAGE/classes" "$STAGE/dex"
 "$TOOLS/aapt2" link -o "$STAGE/base.apk" -I "$PLATFORM" --manifest "$ROOT/android/audio-tests/AndroidManifest.xml"
 mapfile -t SOURCES < <(find "$ROOT/android/audio-tests/src" -name '*.java' -print | sort)
@@ -47,6 +64,7 @@ ADB="$SDK/platform-tools/adb"
 [[ "$("$ADB" -s "$SERIAL" shell getprop ro.kernel.qemu | tr -d '\r')" == 1 ]] || { echo 'Refusing non-emulator device' >&2; exit 1; }
 "$ADB" -s "$SERIAL" shell pm path org.jcode.mobile | grep -q '^package:' || { echo 'Install production debug APK first' >&2; exit 1; }
 # Operates only on the dedicated test package, never production permissions/data.
+CLEANUP_TEST_PACKAGE=true
 "$ADB" -s "$SERIAL" install -r -t "$APK"
 FAILED=0
 for MODE in denied granted; do
@@ -60,8 +78,7 @@ for MODE in denied granted; do
   if ! timeout 45s "$ADB" -s "$SERIAL" shell am instrument -w -r -e mode "$MODE" "$PACKAGE/.AudioInstrumentation" | tee "$LOG"; then FAILED=1; fi
   if ! python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"; then FAILED=1; fi
 done
-# Release test permission even if instrumentation failed. No recorded PCM persisted.
-"$ADB" -s "$SERIAL" shell am force-stop "$PACKAGE"
-"$ADB" -s "$SERIAL" shell pm revoke "$PACKAGE" android.permission.RECORD_AUDIO
+# EXIT always releases the test permission and stops the test package, including
+# set -e failures and INT/TERM. No recorded PCM is persisted.
 if [[ $FAILED -ne 0 ]]; then echo 'FAIL or unavailable: inspect audio logs. No audio parity claim.' >&2; exit 1; fi
 echo 'PASS: isolated installed production Java AudioRecord/PCM/stop and denied checks only. Rust WAV, JNI cancellation, voice UI and acoustic fidelity remain untested.'
