@@ -186,21 +186,7 @@ public final class AndroidServices {
             if (camera) {
                 intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
                 if (intent.resolveActivity(activity.getPackageManager()) == null) return false;
-                if (Build.VERSION.SDK_INT >= 29) {
-                    ContentValues values = new ContentValues();
-                    values.put(MediaStore.Images.Media.DISPLAY_NAME, "jcode-camera-" + System.currentTimeMillis() + ".jpg");
-                    values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-                    values.put(MediaStore.Images.Media.IS_PENDING, 1);
-                    cameraUri = activity.getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                } else {
-                    File cache = activity.getCacheDir();
-                    if (cache == null) return false;
-                    File directory = new File(cache, "camera");
-                    if (!directory.isDirectory() && !directory.mkdirs()) return false;
-                    cameraFile = File.createTempFile("camera-", ".jpg", directory);
-                    cameraUri = new Uri.Builder().scheme("content").authority(activity.getPackageName() + ".attachments").appendPath(cameraFile.getName()).build();
-                }
-                if (cameraUri == null) return false;
+                prepareCameraOutput();
                 intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
                 intent.setClipData(ClipData.newRawUri("camera", cameraUri));
                 intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -210,18 +196,42 @@ public final class AndroidServices {
             }
             photoLimit = Math.max(1, Math.min(limit, 20));
             picking = true;
-            try { activity.startActivityForResult(intent, MEDIA); return true; }
-            catch (RuntimeException e) { picking = false; cleanupCamera(); return false; }
+            try {
+                activity.startActivityForResult(intent, MEDIA);
+                if (camera) android.util.Log.i("jcode", "Camera capture launched with private granted output");
+                return true;
+            }
+            catch (RuntimeException e) {
+                picking = false; cleanupCamera();
+                if (camera) android.util.Log.w("jcode", "Camera launch failed: " + e.getClass().getSimpleName());
+                return false;
+            }
         });
+    }
+    private void prepareCameraOutput() throws IOException {
+        // IS_PENDING MediaStore rows are owner-only, even with a URI grant:
+        // external camera apps cannot write them. Keep captures private on all
+        // API versions and grant only this non-exported provider's exact URI.
+        File cache = activity.getCacheDir();
+        if (cache == null) throw new IOException("Camera cache unavailable");
+        File directory = new File(cache, "camera");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Camera cache unavailable");
+        cameraFile = File.createTempFile("camera-", ".jpg", directory);
+        cameraUri = new Uri.Builder().scheme("content").authority(activity.getPackageName() + ".attachments").appendPath(cameraFile.getName()).build();
     }
     private void cleanupCamera() {
         Uri uri = cameraUri; cameraUri = null;
         File file = cameraFile; cameraFile = null;
-        if (file != null) { file.delete(); }
-        else if (uri != null) try { activity.getContentResolver().delete(uri, null, null); } catch (RuntimeException ignored) {}
+        if (uri != null) {
+            try { activity.revokeUriPermission(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+            catch (RuntimeException e) { android.util.Log.w("jcode", "Camera grant cleanup failed: " + e.getClass().getSimpleName()); }
+        }
+        if (file != null && file.exists() && !file.delete()) android.util.Log.w("jcode", "Camera temporary file cleanup failed");
     }
     public boolean onActivityResult(int request, int result, Intent data) {
         if (request != MEDIA) return false;
+        final boolean camera = cameraUri != null;
+        if (camera) android.util.Log.i("jcode", "Camera activity result=" + result + ", outputBytes=" + (cameraFile == null ? 0 : cameraFile.length()));
         if (result != Activity.RESULT_OK) { picking = false; cleanupCamera(); nativeMedia(2, null); return true; }
         ArrayList<Uri> uris = new ArrayList<>();
         if (cameraUri != null) uris.add(cameraUri);
@@ -232,11 +242,16 @@ public final class AndroidServices {
         new Thread(() -> {
             boolean failed = uris.isEmpty();
             for (Uri uri : uris) {
-                try { nativeMedia(0, jpeg(uri)); }
+                try {
+                    byte[] bytes = jpeg(uri);
+                    nativeMedia(0, bytes);
+                    if (camera) android.util.Log.i("jcode", "Camera JPEG delivered to native media, bytes=" + bytes.length);
+                }
                 catch (Exception | OutOfMemoryError e) { failed = true; android.util.Log.w("jcode", "Cannot decode photo: " + e.getClass().getSimpleName()); }
             }
             cleanupCamera(); picking = false;
             nativeMedia(failed ? 3 : 1, null);
+            if (camera) android.util.Log.i("jcode", "Camera media completion=" + (failed ? "unavailable" : "done"));
         }, "jcode-photo").start();
         return true;
     }
