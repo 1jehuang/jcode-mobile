@@ -14,7 +14,7 @@
     <application android:label="Jcode" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true" android:theme="@android:style/Theme.Material.NoActionBar" android:extractNativeLibs="false">
         <provider android:name=".AndroidServices$AttachmentProvider" android:authorities="org.jcode.mobile.attachments" android:exported="false" android:grantUriPermissions="true" />
         <!-- Service-only NativeActivity subclass. GPUI owns the entire window. -->
-        <activity android:name=".JcodeActivity" android:launchMode="singleTop" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
+        <activity android:name=".JcodeActivity" android:launchMode="singleTop" android:exported="true" android:windowSoftInputMode="adjustResize" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale">
             <meta-data android:name="android.app.lib_name" android:value="jcode_mobile" />
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
             <intent-filter>

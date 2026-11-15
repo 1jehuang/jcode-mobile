@@ -28,6 +28,26 @@ class ManifestStaging(unittest.TestCase):
                 self.assertTrue(root.findall("uses-permission"))
         self.assertEqual(source.read_bytes(), original)
 
+    def test_font_scale_is_handled_without_dropping_existing_configuration_flags(self):
+        source = Path(__file__).resolve().parents[1] / "android/app/src/main/AndroidManifest.xml"
+        attr = "{" + manifest.ANDROID + "}"
+        expected = {"keyboard", "keyboardHidden", "orientation", "screenSize",
+                    "screenLayout", "smallestScreenSize", "uiMode", "density", "fontScale"}
+        # Missing fontScale caused a real wm_relaunch_resume_activity at 1.5.
+        # This contract must survive both API35 and API36 staging. Device-level
+        # no-recreation and actual glyph growth remain separate acceptance gates.
+        variants = [source.read_bytes()]
+        for api in (35, 36):
+            out = io.BytesIO()
+            manifest.stage_manifest(source, out, api)
+            variants.append(out.getvalue())
+        for xml in variants:
+            activity = ET.fromstring(xml).find("application/activity")
+            self.assertEqual(activity.get(attr + "name"), ".JcodeActivity")
+            flags = activity.get(attr + "configChanges").split("|")
+            self.assertEqual(set(flags), expected)
+            self.assertEqual(len(flags), len(expected))
+
     def test_old_target_rejected(self):
         with self.assertRaises(ValueError):
             manifest.stage_manifest(io.BytesIO(b"<manifest/>"), io.BytesIO(), 25)
