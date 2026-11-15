@@ -51,12 +51,12 @@ public final class AndroidServices {
     private boolean ui(Callable<Boolean> action) {
         if (activity.isFinishing() || activity.isDestroyed()) return false;
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            try { return action.call(); } catch (Exception e) { android.util.Log.w("jcode", "Platform service", e); return false; }
+            try { return action.call(); } catch (Exception e) { android.util.Log.w("jcode", "Platform service failed: " + e.getClass().getSimpleName()); return false; }
         }
         FutureTask<Boolean> task = new FutureTask<>(action);
         activity.runOnUiThread(task);
         try { return task.get(5, TimeUnit.SECONDS); }
-        catch (Exception e) { task.cancel(false); android.util.Log.w("jcode", "Platform service", e); return false; }
+        catch (Exception e) { task.cancel(false); android.util.Log.w("jcode", "Platform service failed: " + e.getClass().getSimpleName()); return false; }
     }
     public void onResume(Intent intent) {
         foreground = true;
@@ -233,7 +233,7 @@ public final class AndroidServices {
             boolean failed = uris.isEmpty();
             for (Uri uri : uris) {
                 try { nativeMedia(0, jpeg(uri)); }
-                catch (Exception | OutOfMemoryError e) { failed = true; android.util.Log.w("jcode", "Cannot decode photo", e); }
+                catch (Exception | OutOfMemoryError e) { failed = true; android.util.Log.w("jcode", "Cannot decode photo: " + e.getClass().getSimpleName()); }
             }
             cleanupCamera(); picking = false;
             nativeMedia(failed ? 3 : 1, null);
@@ -377,8 +377,12 @@ public final class AndroidServices {
     public boolean indexSessions(String json) {
         return ui(() -> {
             ShortcutManager manager = activity.getSystemService(ShortcutManager.class);
-            if (manager == null || manager.isRateLimitingActive()) return false;
+            if (manager == null) return false;
             JSONArray rows = new JSONArray(json);
+            // Sign-out must remove private session titles even when publishing
+            // replacement shortcuts is temporarily rate-limited by Android.
+            if (rows.length() == 0) { manager.removeAllDynamicShortcuts(); return true; }
+            if (manager.isRateLimitingActive()) return false;
             ArrayList<ShortcutInfo> shortcuts = new ArrayList<>();
             int count = Math.min(rows.length(), manager.getMaxShortcutCountPerActivity());
             for (int i = 0; i < count; i++) {

@@ -37,7 +37,8 @@ fn with<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>) -> R
     let mut env = b.vm.attach_current_thread().map_err(|e| e.to_string())?;
     let result = env.with_local_frame(16, |env| f(env, b.helper.as_obj()));
     if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_describe();
+        // Java exception text can contain URLs, provider metadata, or account
+        // details. Clear it without printing sensitive contents to logcat.
         let _ = env.exception_clear();
         return Err("Android platform operation failed".into());
     }
