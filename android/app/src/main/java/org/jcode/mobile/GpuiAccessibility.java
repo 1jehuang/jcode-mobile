@@ -45,6 +45,9 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
     private int inputFocus = NONE;
     private int hovered = NONE;
     private boolean disposed;
+    // Content-free integration counters for diagnosing real service discovery.
+    // They never retain labels, values, event payloads or user input.
+    private long hostQueries, virtualQueries, accessibilityFocusRequests, hoverEvents;
 
     private static native void nativeStatus(long token, boolean enabled);
     private static native boolean nativeAction(long token, int node, int action, String value);
@@ -214,6 +217,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
     @Override public AccessibilityNodeInfo createAccessibilityNodeInfo(int virtualId) {
         if (disposed) return null;
         if (virtualId == HOST_VIEW_ID) {
+            hostQueries++;
             AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain(host);
             host.onInitializeAccessibilityNodeInfo(info);
             info.setClassName("android.view.View");
@@ -221,6 +225,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
             for (Integer id : items.keySet()) info.addChild(host, id);
             return info;
         }
+        virtualQueries++;
         Item item = items.get(virtualId);
         if (item == null) return null;
         AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
@@ -229,6 +234,10 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
         info.setPackageName(host.getContext().getPackageName());
         info.setClassName(item.className);
         info.setEnabled(item.enabled);
+        // Virtual nodes are allocated independently of View initialization. Unlike
+        // the real host, they do not inherit IMPORTANT_FOR_ACCESSIBILITY_YES.
+        // Explicitly expose GPUI's semantic nodes to service-side tree traversal.
+        info.setImportantForAccessibility(true);
         info.setFocusable(true);
         info.setFocused(inputFocus == virtualId);
         info.setAccessibilityFocused(accessibilityFocus == virtualId);
@@ -285,6 +294,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
         Item item = items.get(id);
         if (disposed || item == null) return false;
         if (action == AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS) {
+            accessibilityFocusRequests++;
             if (manager == null || !manager.isEnabled() || accessibilityFocus == id) return false;
             if (accessibilityFocus != NONE) send(accessibilityFocus, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED);
             accessibilityFocus = id;
@@ -320,6 +330,7 @@ public final class GpuiAccessibility extends AccessibilityNodeProvider {
     }
 
     private boolean hover(MotionEvent event) {
+        hoverEvents++;
         if (disposed || manager == null || !manager.isEnabled() || !manager.isTouchExplorationEnabled()) return false;
         int next = NONE;
         if (event.getActionMasked() != MotionEvent.ACTION_HOVER_EXIT) {

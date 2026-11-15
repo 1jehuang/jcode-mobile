@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.View;
@@ -75,6 +76,60 @@ public final class TalkBackInstrumentation extends Instrumentation {
         }
         throw new AssertionError("UNTESTABLE_SETUP_OBSTRUCTION: real target Activity lacks window focus; an external permission/tutorial/system window may be active. Coordinator must inspect and resolve setup explicitly, then rerun. No traversal established.");
     }
+    private String counterSummary() throws Exception {
+        return ui(() -> {
+            StringBuilder summary = new StringBuilder();
+            for (String name : new String[] {"hostQueries", "virtualQueries", "accessibilityFocusRequests", "hoverEvents"}) {
+                if (summary.length() != 0) summary.append(',');
+                summary.append(name).append('=');
+                try { Field field = provider.getClass().getDeclaredField(name); field.setAccessible(true); summary.append(field.getLong(provider)); }
+                catch (NoSuchFieldException unavailable) { summary.append("unavailable-old-target"); }
+            }
+            return summary.toString();
+        });
+    }
+    private void reportMetadata() throws Exception {
+        Bundle diagnostics = new Bundle();
+        diagnostics.putString("talkback_provider_counters_before", counterSummary());
+        diagnostics.putString("talkback_host_metadata", ui(() -> {
+            View view = host(activity.findViewById(android.R.id.content));
+            StringBuilder chain = new StringBuilder();
+            for (View next = view; next != null; next = next.getParent() instanceof View ? (View)next.getParent() : null) {
+                if (chain.length() != 0) chain.append(" <- ");
+                chain.append(next.getClass().getName()).append("[important=").append(next.getImportantForAccessibility())
+                        .append(",shown=").append(next.isShown()).append(",size=").append(next.getWidth()).append('x').append(next.getHeight()).append(']');
+            }
+            AccessibilityNodeInfo root = provider.createAccessibilityNodeInfo(AccessibilityNodeProvider.HOST_VIEW_ID);
+            if (root != null) {
+                Rect bounds = new Rect(); root.getBoundsInScreen(bounds);
+                chain.append(" providerHost[children=").append(root.getChildCount()).append(",visible=").append(root.isVisibleToUser())
+                        .append(",focusable=").append(root.isFocusable()).append(",important=").append(root.isImportantForAccessibility())
+                        .append(",window=").append(root.getWindowId()).append(",bounds=").append(bounds.toShortString()).append(']');
+                root.recycle();
+            }
+            return chain.toString();
+        }));
+        diagnostics.putString("talkback_nodes_metadata", ui(() -> {
+            StringBuilder summary = new StringBuilder();
+            int total = 0;
+            for (int id : ids()) {
+                if (total++ >= 24) { summary.append(" [remaining omitted]"); break; }
+                AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);
+                if (node == null) continue;
+                Rect bounds = new Rect(); node.getBoundsInScreen(bounds);
+                summary.append("id=").append(id).append("[class=").append(node.getClassName())
+                        .append(",visible=").append(node.isVisibleToUser()).append(",focusable=").append(node.isFocusable())
+                        .append(",important=").append(node.isImportantForAccessibility()).append(",enabled=").append(node.isEnabled())
+                        .append(",password=").append(node.isPassword()).append(",hasText=").append(node.getText() != null && node.getText().length() > 0)
+                        .append(",hasLabel=").append(node.getContentDescription() != null && node.getContentDescription().length() > 0)
+                        .append(",actions=").append(node.getActions()).append(",window=").append(node.getWindowId())
+                        .append(",bounds=").append(bounds.toShortString()).append("] ");
+                node.recycle();
+            }
+            return summary.toString();
+        }));
+        sendStatus(2, diagnostics);
+    }
     private void publishGestureReady() throws Exception {
         requireTargetWindow();
         String coordinates = ui(() -> {
@@ -133,6 +188,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
                 SystemClock.sleep(50);
             }
             require(provider != null && ui(() -> ids().size()) >= 2, "UNTESTABLE: shared GPUI semantic tree absent");
+            reportMetadata();
             // Never call ACTION_ACCESSIBILITY_FOCUS ourselves. An enabled accessibility service must move it.
             int first = focus();
             boolean traversed = false;
@@ -140,13 +196,13 @@ public final class TalkBackInstrumentation extends Instrumentation {
             long deadline = SystemClock.uptimeMillis() + 40000;
             while (SystemClock.uptimeMillis() < deadline && !traversed) {
                 require(ui(() -> activity.hasWindowFocus() && activity.getWindow().getDecorView().hasWindowFocus()),
-                        "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus while awaiting global TalkBack gestures; no traversal established");
+                        "UNTESTABLE_SETUP_OBSTRUCTION: target window lost focus while awaiting global emulator hardware gestures; no traversal established");
                 int next = focus();
                 if (next != -1) { if (first == -1) first = next; else if (next != first) traversed = true; }
                 SystemClock.sleep(50);
             }
-            require(traversed, "UNTESTABLE: installed TalkBack global shell swipes did not traverse two native semantic nodes");
-            result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated global shell touchscreen swipes");
+            require(traversed, "UNTESTABLE: installed TalkBack emulator hardware swipes did not traverse two native semantic nodes");
+            result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated emulator hardware touchscreen swipes");
             edited = ui(() -> {
                 for (int id : ids()) {
                     AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);
@@ -165,6 +221,8 @@ public final class TalkBackInstrumentation extends Instrumentation {
             result.putString("spoken_audio", "NOT_OBSERVED");
         } catch (Throwable error) { failure = error; }
         finally {
+            try { if (provider != null) result.putString("talkback_provider_counters_after", counterSummary()); }
+            catch (Throwable diagnostics) { if (failure == null) failure = diagnostics; else failure.addSuppressed(diagnostics); }
             try { if (edited != -1 && original != null) setText(original); }
             catch (Throwable cleanup) { if (failure == null) failure = cleanup; else failure.addSuppressed(cleanup); }
             try { if (activity != null) ui(() -> { activity.finish(); return null; }); }

@@ -37,10 +37,21 @@ unset SNAPSHOT
 STATE="$OUT/talkback-settings-before.txt"
 (umask 077; : > "$STATE"; for key in "${KEYS[@]}"; do printf '%s\t%s\t%s\n' "$key" "${PRESENT[$key]}" "${VALUES[$key]}"; done > "$STATE")
 RUNNER_PID=''
+TOUCH_DOWN=false
+console_event() {
+  local response
+  response="$(adb emu event send "$@" | tr -d '\r')" || return 1
+  printf '%s\n' "$response" >> "$OUT/talkback-console-events.txt"
+  ! grep -q '^KO' <<< "$response" && grep -Fxq 'OK' <<< "$response"
+}
+release_touch() {
+  console_event EV_ABS:ABS_MT_SLOT:0 EV_ABS:ABS_MT_TRACKING_ID:-1 EV_KEY:BTN_TOUCH:0 EV_SYN:0:0
+}
 restore() {
   local status=$? failed=0 key current found attempt
   trap - EXIT INT TERM
   set +e
+  if $TOUCH_DOWN; then release_touch || failed=1; TOUCH_DOWN=false; fi
   if [[ -n "$RUNNER_PID" ]]; then
     kill "$RUNNER_PID" 2>/dev/null
     wait "$RUNNER_PID" 2>/dev/null
@@ -123,8 +134,18 @@ read -r X1 Y1 X2 Y2 <<< "$COORDINATES"
 SWIPES=0
 for gesture in {1..12}; do
   if ! kill -0 "$RUNNER_PID" 2>/dev/null; then break; fi
-  # Global shell injection reaches the real TalkBack input filter, unlike app-UID targeted injection.
-  adb shell input touchscreen swipe "$X1" "$Y1" "$X2" "$Y2" 180
+  # Emulator console hardware events enter InputReader and the accessibility
+  # input filter. `adb shell input swipe` uses injection, bypassing that filter.
+  TOUCH_DOWN=true
+  console_event EV_ABS:ABS_MT_SLOT:0 "EV_ABS:ABS_MT_TRACKING_ID:$gesture" \
+    "EV_ABS:ABS_MT_POSITION_X:$X1" "EV_ABS:ABS_MT_POSITION_Y:$Y1" EV_KEY:BTN_TOUCH:1 EV_SYN:0:0
+  for point in {1..6}; do
+    X=$((X1 + (X2 - X1) * point / 6))
+    console_event "EV_ABS:ABS_MT_POSITION_X:$X" "EV_ABS:ABS_MT_POSITION_Y:$Y1" EV_SYN:0:0
+    sleep 0.015
+  done
+  release_touch
+  TOUCH_DOWN=false
   SWIPES=$((SWIPES + 1))
   sleep 1.5
 done
@@ -134,4 +155,4 @@ if [[ $runner_status -eq 0 ]]; then RUNNER_PID=''; fi
 cat "$LOG"
 [[ $runner_status -eq 0 && $SWIPES -gt 0 ]] || { echo 'FAIL: global gesture runner failed or injected no gestures' >&2; exit 1; }
 python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"
-echo 'PASS: bounded installed TalkBack traversal plus native semantic action. Password and spoken audio NOT established.'
+echo 'PASS: bounded installed TalkBack hardware-path traversal plus native semantic action. Password and spoken audio NOT established.'
