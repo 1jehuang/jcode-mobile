@@ -46,7 +46,12 @@ The APK package is `org.jcode.mobile.nativeservicestests`, with two runners:
   temporary accessibility registration through public
   `getUiAutomation(FLAG_DONT_USE_ACCESSIBILITY | FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)`,
   verifies the original enabled state returns, then `Instrumentation.finish`
-  performs framework-owned final disconnection. Hidden `destroy`/`disconnect`
+  performs framework-owned final disconnection. On API30 and older, where the
+  public no-accessibility flag does not exist, the main runner returns
+  `NEEDS_CLEANUP_PROBE`, never PASS. The shell runner validates its exact state
+  and preference-fingerprint metadata, then starts a separate fresh instrumentation
+  that only observes restoration after framework finish. That probe must return a
+  unique PASS/-1 result. Hidden `destroy`/`disconnect`
   APIs are not invoked and no accessibility settings are written.
   Host-discovery assertions
   call the production helper against the actual `NativeActivity$NativeContentView`
@@ -63,7 +68,9 @@ The APK package is `org.jcode.mobile.nativeservicestests`, with two runners:
   The Java connection's local Editable is **not** accepted as evidence. Native
   field content is restored via the semantic set-text action and re-observed.
 
-Each runner returns `result=PASS` only after its required assertions and cleanup.
+Each runner returns `result=PASS` only after its required assertions and cleanup,
+except the explicitly pending legacy cleanup phase described above. Both shell
+status and a unique successful terminal instrumentation result are required.
 Missing native semantics or an editable demo field produces `UNTESTABLE` in a
 failure, and the script exits nonzero. It still runs both runners and saves their
 outputs under `ANDROID_NATIVE_TEST_OUT` (default scratch/target location).
