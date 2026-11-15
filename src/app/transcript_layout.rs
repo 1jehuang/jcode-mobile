@@ -3,7 +3,10 @@
 //! Keep the native ScrollHandle and exact full-document geometry. The first
 //! layout measures every row. Subsequent frames replace unchanged offscreen
 //! subtrees with equal-height spacers, including during swipe/follow animations.
-use gpui::{Pixels, px};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, Pixels, Window, px,
+};
 use jcode_mobile_core::{Role, ToolStatus, TranscriptEntry};
 use std::{
     cell::RefCell,
@@ -45,7 +48,8 @@ impl Rows {
     fn flush(&mut self) {
         use gpui::prelude::*;
         if let Some(height) = self.hidden.take() {
-            self.elements.push(gpui::div().h(height).flex_none().into_any_element());
+            self.elements
+                .push(gpui::div().h(height).flex_none().into_any_element());
         }
     }
 
@@ -71,10 +75,14 @@ pub(super) struct Key {
 
 impl Key {
     pub(super) fn with_images(mut self, images: &[jcode_mobile_core::SessionImage]) -> Self {
-        if images.is_empty() { return self; }
+        if images.is_empty() {
+            return self;
+        }
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         self.fingerprint.hash(&mut hash);
-        for image in images { image.id.hash(&mut hash); }
+        for image in images {
+            image.id.hash(&mut hash);
+        }
         self.fingerprint = hash.finish();
         self
     }
@@ -87,20 +95,34 @@ pub(super) fn key(
     expanded: &std::collections::HashSet<String>,
     width: f32,
 ) -> Key {
-    key_visible(tab, entry, prompt, expanded, width, &entry.text, &entry.reasoning)
+    key_visible(
+        tab,
+        entry,
+        prompt,
+        expanded,
+        width,
+        &entry.text,
+        &entry.reasoning,
+    )
 }
 
 pub(super) fn key_visible(
-    tab: u64, entry: &TranscriptEntry, prompt: usize,
-    expanded: &std::collections::HashSet<String>, width: f32,
-    text: &str, reasoning: &str,
+    tab: u64,
+    entry: &TranscriptEntry,
+    prompt: usize,
+    expanded: &std::collections::HashSet<String>,
+    width: f32,
+    text: &str,
+    reasoning: &str,
 ) -> Key {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hash);
     reasoning.hash(&mut hash);
     std::mem::discriminant(&entry.role).hash(&mut hash);
     if super::synced_tool_output(entry).is_some() {
-        expanded.contains(&super::synced_tool_output_id(entry.id)).hash(&mut hash);
+        expanded
+            .contains(&super::synced_tool_output_id(entry.id))
+            .hash(&mut hash);
     }
     (if prompt == 0 { 1 } else { prompt.ilog10() + 1 }).hash(&mut hash);
     if entry.role == Role::Assistant {
@@ -171,6 +193,81 @@ impl Heights {
     }
 }
 
+/// Observe the row's native geometry without adding a measurement canvas to
+/// its layout tree. The child keeps its original layout node and constraints.
+pub(super) fn measured_row(child: AnyElement, key: Key, heights: Heights) -> MeasuredRow {
+    MeasuredRow {
+        child,
+        key,
+        heights,
+    }
+}
+
+pub(super) struct MeasuredRow {
+    child: AnyElement,
+    key: Key,
+    heights: Heights,
+}
+
+impl IntoElement for MeasuredRow {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for MeasuredRow {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.heights.record(self.key, bounds.size.height);
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+#[cfg(test)]
+#[path = "cold_layout_tests.rs"]
+mod cold_layout_tests;
+
 /// Unknown preceding heights disable culling until layout has measured them.
 pub(super) fn offscreen(
     top: Option<Pixels>,
@@ -226,11 +323,28 @@ mod tests {
         let original = key_visible(1, &entry, 0, &expanded, 362., visible, "");
         heights.record(original, px(123.));
         entry.text.push_str(" more arriving tokens");
-        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., visible, "")), Some(px(123.)));
-        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., &entry.text, "")), None,
-            "idle release must invalidate cached geometry even with no new raw event");
-        assert_eq!(heights.get(key_visible(1, &entry, 0, &expanded, 362., "Changed paragraph.\n\n", "")), None,
-            "same-length visible replacements must invalidate measurements");
+        assert_eq!(
+            heights.get(key_visible(1, &entry, 0, &expanded, 362., visible, "")),
+            Some(px(123.))
+        );
+        assert_eq!(
+            heights.get(key_visible(1, &entry, 0, &expanded, 362., &entry.text, "")),
+            None,
+            "idle release must invalidate cached geometry even with no new raw event"
+        );
+        assert_eq!(
+            heights.get(key_visible(
+                1,
+                &entry,
+                0,
+                &expanded,
+                362.,
+                "Changed paragraph.\n\n",
+                ""
+            )),
+            None,
+            "same-length visible replacements must invalidate measurements"
+        );
     }
 
     #[test]
