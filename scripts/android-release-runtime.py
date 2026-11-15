@@ -66,6 +66,14 @@ def ime_top(window_dump):
     return min(candidates)
 
 
+def kernel_page_bytes(observation):
+    """Parse one actual /proc/self/smaps observation, never infer from SDK."""
+    match = re.fullmatch(r"KernelPageSize:[ \t]+([0-9]+)[ \t]+kB", observation.strip())
+    if not match or int(match.group(1)) <= 0:
+        raise AssertionError("Cannot establish actual kernel page size")
+    return str(int(match.group(1)) * 1024)
+
+
 def onboarding(text):
     return "jcode" in text.lower() and "google" in text.lower() and "apple" not in text.lower()
 
@@ -187,12 +195,25 @@ class Runtime:
         (self.out / "dexdump.txt").write_text(dis)
         self.check("Debug Intent branch absent from DEX", "gpui_demo" not in dis and not re.search(r"invoke-.*nativeConfigureDebugDemo", dis))
 
+    def observe_page_size(self, sdk):
+        if sdk == "26":
+            observation = self.text("shell", "grep", "-m", "1", "KernelPageSize", "/proc/self/smaps")
+            (self.out / "kernel-page-size.txt").write_text(observation + "\n")
+            self.metadata["page_size_source"] = "/proc/self/smaps first KernelPageSize"
+            return kernel_page_bytes(observation)
+        observation = self.text("shell", "getconf", "PAGE_SIZE")
+        if not re.fullmatch(r"[0-9]+", observation) or int(observation) <= 0:
+            raise AssertionError("Invalid getconf PAGE_SIZE observation")
+        self.metadata["page_size_source"] = "getconf PAGE_SIZE"
+        return observation
+
     def exercise(self):
         self.preflight()
         self.check("Device is emulator", self.text("shell", "getprop", "ro.kernel.qemu") == "1")
         self.validated = True
-        self.metadata.update(sdk=self.text("shell", "getprop", "ro.build.version.sdk"),
-                             page_size=self.text("shell", "getconf", "PAGE_SIZE"))
+        sdk = self.text("shell", "getprop", "ro.build.version.sdk")
+        self.check("Valid observed Android SDK", bool(re.fullmatch(r"[0-9]+", sdk)) and int(sdk) >= 26)
+        self.metadata.update(sdk=sdk, page_size=self.observe_page_size(sdk))
         for key in ("user_rotation", "accelerometer_rotation"):
             value = self.text("shell", "settings", "get", "system", key)
             self.check("Valid original setting " + key, value == "null" or bool(re.fullmatch(r"[0-3]", value)))

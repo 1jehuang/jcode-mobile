@@ -14,6 +14,16 @@ spec.loader.exec_module(m)
 
 
 class Parsing(unittest.TestCase):
+    def test_kernel_page_size_actual_numeric_kb(self):
+        self.assertEqual(m.kernel_page_bytes("KernelPageSize:        4 kB"), "4096")
+        self.assertEqual(m.kernel_page_bytes("KernelPageSize:\t16 kB\n"), "16384")
+        self.assertEqual(m.kernel_page_bytes("KernelPageSize: 64 kB"), "65536")
+
+    def test_kernel_page_size_malformed_fails_closed(self):
+        for observation in ("", "4096", "KernelPageSize: 0 kB", "KernelPageSize: -4 kB", "KernelPageSize: 4 KB", "KernelPageSize: 4 bytes", "KernelPageSize: 4 kB\nKernelPageSize: 4 kB", "KernelPageSize: 4.0 kB", "MMUPageSize: 4 kB"):
+            with self.subTest(observation=observation), self.assertRaises(AssertionError):
+                m.kernel_page_bytes(observation)
+
     def test_manifest_missing_booleans_defaults_false(self):
         self.assertTrue(m.manifest_is_non_debug('A: package="org.jcode.mobile"'))
 
@@ -137,6 +147,24 @@ class Cleanup(unittest.TestCase):
                 self.assertEqual(runtime.run(), 1)
             result = json.loads((runtime.out / "result.json").read_text())
             self.assertFalse(result["side_effects"]["apk_install_completed"])
+
+    def test_api26_page_size_uses_observation_not_getconf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = self.make_runtime(directory)
+            with patch.object(runtime, "text", return_value="KernelPageSize: 4 kB") as text:
+                self.assertEqual(runtime.observe_page_size("26"), "4096")
+                text.assert_called_once_with("shell", "grep", "-m", "1", "KernelPageSize", "/proc/self/smaps")
+            self.assertEqual((runtime.out / "kernel-page-size.txt").read_text(), "KernelPageSize: 4 kB\n")
+
+    def test_modern_page_size_getconf_validates_numeric(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = self.make_runtime(directory)
+            with patch.object(runtime, "text", return_value="16384") as text:
+                self.assertEqual(runtime.observe_page_size("36"), "16384")
+                text.assert_called_once_with("shell", "getconf", "PAGE_SIZE")
+            for value in ("", "0", "not found", "4096 bytes"):
+                with patch.object(runtime, "text", return_value=value), self.assertRaises(AssertionError):
+                    runtime.observe_page_size("35")
 
     def test_dismiss_only_observed_ime_and_wait_for_hidden(self):
         with tempfile.TemporaryDirectory() as directory:
