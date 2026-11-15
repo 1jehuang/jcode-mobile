@@ -66,11 +66,23 @@ ADB="$SDK/platform-tools/adb"
 # Operates only on the dedicated test package, never production permissions/data.
 CLEANUP_TEST_PACKAGE=true
 "$ADB" -s "$SERIAL" install -r -t "$APK"
+# Older package-manager shells do not expose this command. Probe advertised
+# capability, not an arbitrary failed mutation. An advertised command failure
+# remains fatal, and instrumentation still verifies the real no-rationale state.
+PM_HELP="$(timeout 10s "$ADB" -s "$SERIAL" shell pm help)"
+CAN_CLEAR_PERMISSION_FLAGS=false
+if grep -Eq '^[[:space:]]*clear-permission-flags([[:space:]]|$)' <<< "$PM_HELP"; then
+  CAN_CLEAR_PERMISSION_FLAGS=true
+fi
 FAILED=0
 for MODE in denied granted; do
   if [[ "$MODE" == denied ]]; then
     "$ADB" -s "$SERIAL" shell pm revoke "$PACKAGE" android.permission.RECORD_AUDIO
-    "$ADB" -s "$SERIAL" shell pm clear-permission-flags "$PACKAGE" android.permission.RECORD_AUDIO user-set user-fixed
+    if $CAN_CLEAR_PERMISSION_FLAGS; then
+      "$ADB" -s "$SERIAL" shell pm clear-permission-flags "$PACKAGE" android.permission.RECORD_AUDIO user-set user-fixed
+    else
+      echo 'Package shell lacks clear-permission-flags. Denied instrumentation must verify actual no-rationale state; no bypass.'
+    fi
   else
     "$ADB" -s "$SERIAL" shell pm grant "$PACKAGE" android.permission.RECORD_AUDIO
   fi
