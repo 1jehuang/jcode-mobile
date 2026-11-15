@@ -1,6 +1,6 @@
 //! iOS feel for the root view: left-edge swipe back from Settings (and the
 //! model sheet), sheet drag-to-dismiss with rubber band, pull to reconnect on
-//! the transcript, long-press context menus on messages (copy, retry, share)
+//! the transcript, long-press context menus on messages (select/copy, fork)
 //! and tabs (rename, duplicate in the tab sheet), and the haptics that go
 //! with them. Physics live in `crate::gestures`; this file wires them to
 //! GPUI events (mouse in the Linux preview, touch drag / long press / pan on
@@ -15,7 +15,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, TouchDragEvent, TouchPhase, Window,
     canvas, div, prelude::*, px,
 };
-use jcode_mobile_core::{ConnectionPhase, Request, Role};
+use jcode_mobile_core::{ConnectionPhase, Request};
 
 use super::{MobileApp, Screen, label};
 use crate::gestures::{Action, Gestures, Scene, Target};
@@ -710,6 +710,18 @@ impl MobileApp {
                     let e = e.clone();
                     let claim = h
                         .update(cx, |this, cx| {
+                            // A recognizer/overlay can take ownership after a
+                            // panel pan starts. Its terminal raw drag must still
+                            // release the panel, even if no scroll-end follows.
+                            match e.phase {
+                                TouchPhase::Ended => this.finish_panel_lift(cx),
+                                TouchPhase::Cancelled if this.swipe_engaged() => {
+                                    this.swipe.touch_phase(TouchPhase::Cancelled);
+                                    this.swipe.cancel(this.content_width(), std::time::Instant::now());
+                                    cx.notify();
+                                }
+                                _ => {}
+                            }
                             if this.git_info.open { return false; }
                             // Modal controls can overlap the recorded Git handle.
                             // Do not claim their raw touch before hit testing reaches
@@ -899,21 +911,14 @@ impl MobileApp {
         cx.notify();
     }
 
-    /// The prompt a "Retry" on this entry resends.
-    fn retry_text(&self, entry: u64) -> Option<String> {
-        let tr = &self.session.transcript;
-        let i = tr.iter().position(|e| e.id == entry)?;
-        tr[..=i].iter().rev().find(|e| e.role == Role::User).map(|e| e.text.clone())
-    }
-
     fn entry_text(&self, entry: u64) -> Option<String> {
         self.session.transcript.iter().find(|e| e.id == entry).map(|e| e.text.clone())
     }
 
-    fn can_retry_entry(&self, entry: u64) -> bool {
-        self.retry_text(entry).is_some()
-            && !self.session.is_processing
-            && self.session.phase == ConnectionPhase::Connected
+    fn can_fork_message_session(&self) -> bool {
+        self.account.is_some() && !self.offline
+            && self.session.session_id.is_some()
+            && !self.session_is_local_chat(&self.session)
     }
 
     fn render_msg_menu(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -921,13 +926,14 @@ impl MobileApp {
         let entry = m.entry;
         let a = self.feel.menu_anim.clamp(0., 1.);
         let screen = self.feel.g.screen;
-        let (mw, mh) = (210., 4. * 44. + 8.);
+        let (mw, mh) = (260., 2. * 44. + 8.);
         let sx = f(m.at.x - screen.origin.x);
         let sy = f(m.at.y - screen.origin.y);
         let left = (sx - mw / 2.).clamp(12., (f(screen.size.width) - mw - 12.).max(12.));
         let below = sy + 14. + mh < f(screen.size.height) - 40.;
         let top = if below { sy + 14. } else { (sy - 14. - mh).max(60.) };
-        let can_retry = self.can_retry_entry(entry);
+        let can_fork = self.can_fork_message_session();
+        let source_tab = self.active_tab;
         let row = |id: &'static str, text: &'static str, glyph: &'static str, enabled: bool| {
             div()
                 .id(id)
@@ -969,7 +975,7 @@ impl MobileApp {
                     .border_1()
                     .border_color(t.border)
                     .shadow_lg()
-                    .child(row("msg-select", "Select text", "↔", true).on_click(cx.listener(move |this, _, window, cx| {
+                    .child(row("msg-select", "Select and copy passage", "↔", true).on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(text) = this.entry_text(entry) {
                             window.blur(cx);
                             window.dismiss_virtual_keyboard();
@@ -994,38 +1000,16 @@ impl MobileApp {
                         }
                         this.close_menu(cx);
                     })))
-                    .child(row("msg-copy", "Copy", "⧉", true).on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(text) = this.entry_text(entry) {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                            haptics::play(Haptic::Success);
-                            this.toast("Copied");
-                        }
-                        this.close_menu(cx)
-                    })))
-                    .child(row("msg-retry", "Retry", "↻", can_retry).when(can_retry, |d| {
+                    .child(row("msg-fork", "Fork session", "⑂", can_fork).when(can_fork, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
-                            if this.can_retry_entry(entry) && let Some(text) = this.retry_text(entry) {
-                                let images = this.session.transcript.iter().position(|e| e.id == entry)
-                                    .and_then(|i| this.session.transcript[..=i].iter().rev().find(|e| e.role == Role::User))
-                                    .map(|e| this.session.images_for(e.id).to_vec()).unwrap_or_default();
-                                this.send_prompt(text, images);
-                                this.stream_motion.reset();
-                                this.follow = true;
-                                this.feel_sent();
+                            // A queued click must not fork a different session
+                            // if navigation happened after this menu was drawn.
+                            if this.active_tab == source_tab && this.can_fork_message_session() {
+                                this.fork_tab(source_tab, cx);
                             }
                             this.close_menu(cx)
                         }))
-                    }))
-                    .child(row("msg-share", "Share", "↑", true).on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(text) = this.entry_text(entry)
-                            && !crate::share::share_text(&text)
-                        {
-                            // Preview: no share sheet, copy instead.
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                            this.toast("Copied for sharing");
-                        }
-                        this.close_menu(cx)
-                    }))),
+                    })),
             )
             .into_any_element()
     }

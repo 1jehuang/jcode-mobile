@@ -380,6 +380,74 @@ Third output line".into(),
     }
 
     #[gpui::test]
+    fn raw_drag_termination_settles_the_panel_without_a_scroll_end(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        for phase in [gpui::TouchPhase::Cancelled, gpui::TouchPhase::Ended] {
+            view.update(cx, |app, cx| {
+                app.swipe = Default::default();
+                app.swipe.touch_phase(gpui::TouchPhase::Started);
+                assert!(app.swipe.feed(140., 0., std::time::Instant::now()));
+                cx.notify();
+            });
+            draw(cx);
+            cx.simulate_event(gpui::TouchDragEvent {
+                phase,
+                start_position: point(px(100.), px(200.)),
+                position: point(px(240.), px(4.)),
+            });
+            draw(cx);
+            view.update(cx, |app, _| {
+                assert!(!app.swipe.active && !app.swipe.finger_down(), "raw termination left the panel held");
+                assert_eq!(app.active_tab, if phase == gpui::TouchPhase::Ended { 0 } else { 1 });
+                let now = std::time::Instant::now() + crate::swipe::SETTLE;
+                assert_eq!(app.swipe.panel_offset(390., true, true, now), (0., false));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn momentum_after_a_short_or_edge_swipe_never_reopens_the_panel(cx: &mut TestAppContext) {
+        let (view, cx) = mount(cx);
+        prepare_destination(&view, cx);
+        park_and_preview(&view, cx);
+        view.update(cx, |app, cx| {
+            app.swipe = Default::default();
+            // A pull beyond NEW_SESSION_COMMIT intentionally creates a session.
+            // Keep this edge-cancellation fixture below that creation threshold.
+            for dx in [-60., 60., -180.] {
+                let at = point(px(195.), px(200.));
+                let event = |phase, dx| gpui::ScrollWheelEvent {
+                    position: at,
+                    delta: gpui::ScrollDelta::Pixels(point(px(dx), px(0.))),
+                    modifiers: Modifiers::default(),
+                    touch_phase: phase,
+                };
+                app.panel_wheel(&event(gpui::TouchPhase::Started, 0.), cx);
+                app.panel_wheel(&event(gpui::TouchPhase::Moved, dx), cx);
+                app.panel_wheel(&event(gpui::TouchPhase::Ended, 0.), cx);
+                assert_eq!(app.active_tab, 1, "short/edge drag must snap back");
+                for momentum in [300., -300., 80., -80.] {
+                    app.panel_wheel(&event(gpui::TouchPhase::Moved, momentum), cx);
+                    assert!(!app.swipe.active, "released fling reopened a partial panel");
+                    assert_eq!(app.swipe.dx, 0.);
+                    assert_eq!(app.active_tab, 1);
+                }
+                app.panel_wheel(&event(gpui::TouchPhase::Ended, 0.), cx);
+                let now = std::time::Instant::now() + crate::swipe::SETTLE;
+                assert_eq!(app.swipe.panel_offset(390., true, false, now), (0., false));
+            }
+            // Ignoring a fling must not suppress the next deliberate swipe.
+            app.swipe.touch_phase(gpui::TouchPhase::Started);
+            assert!(app.swipe.feed(140., 0., std::time::Instant::now()));
+            app.swipe.touch_phase(gpui::TouchPhase::Ended);
+            app.end_swipe(cx);
+            assert_eq!(app.active_tab, 0);
+        });
+    }
+
+    #[gpui::test]
     fn momentum_after_a_committed_swipe_does_not_swipe_again(cx: &mut TestAppContext) {
         let (view, cx) = mount(cx);
         prepare_destination(&view, cx);

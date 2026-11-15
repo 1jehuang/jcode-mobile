@@ -32,6 +32,7 @@ mod apple_sign_in;
 mod ios_system;
 mod ios_feel;
 mod panel_preview;
+mod new_session_overscroll;
 mod session_map;
 mod voice;
 mod cloud_machine;
@@ -1657,7 +1658,7 @@ impl MobileApp {
         let width = self.content_width();
         let (prev, next) = self.tab_neighbors();
         let now = std::time::Instant::now();
-        let offer_new = allow_new && self.account.is_some() && self.swipe.new_session_preview(next.is_some()) == Some(1.);
+        let offer_new = self.new_session_overscroll_ready(allow_new, next.is_some());
         let mut navigated = offer_new;
         if let crate::swipe::Release::Switch(dir) = self.swipe.release(width, prev.is_some(), next.is_some(), now) {
             if let Some(id) = if dir < 0 { prev } else { next } {
@@ -1707,9 +1708,10 @@ impl MobileApp {
             cx.notify();
             return;
         }
-        // One swipe moves one tab: the fling after a lift that already
-        // navigated must not carry on into the next tab or a new session.
-        if coasting && self.swipe.spent() {
+        // Session paging ends at the lift, whether it switched tabs or snapped
+        // back. Letting a canceled swipe's fling feed recognition again can
+        // reopen a partial panel after the finger is already off the glass.
+        if coasting {
             return;
         }
         let d = ev.delta.pixel_delta(px(20.));
@@ -1773,9 +1775,7 @@ impl MobileApp {
                     .child(preview))
             })
             .when_some(new_session_progress, |d, progress| {
-                d.child(label(if progress >= 1. { "Release to create a new session" } else { "Keep swiping to create a new session →" }, t.accent, 12.)
-                    .absolute().top_0().left_0().right_0()
-                    .px(px(16.)).py(px(8.)).bg(t.background))
+                d.child(self.render_new_session_overscroll(progress, t, cx))
             })
             .into_any_element();
         div().flex_1().min_h_0().flex().flex_col().relative()

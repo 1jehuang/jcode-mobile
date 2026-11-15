@@ -2,7 +2,7 @@
 use super::*;
 use crate::app::{SafeArea, init};
 use gpui::{PlatformInput, TestAppContext, TouchEvent, TouchId, VisualTestContext, point, size};
-use jcode_mobile_core::TranscriptEntry;
+use jcode_mobile_core::{Role, TranscriptEntry};
 use std::time::Duration;
 
 const DRAFT: &str = "Preserve composer 👩🏽‍💻 e\u{301}";
@@ -94,32 +94,18 @@ fn settle_keyboard(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
-fn retry_eligibility_uses_preceding_prompt_and_connection_state(cx: &mut TestAppContext) {
+fn transcript_menu_has_only_selection_and_fork_actions(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
-    view.update(cx, |app, _| {
-        assert_eq!(app.retry_text(1), None);
-        assert_eq!(app.retry_text(999), None);
-        assert_eq!(app.retry_text(2).as_deref(), Some("First prompt"));
-        assert_eq!(app.retry_text(3).as_deref(), Some("First prompt"));
-        assert_eq!(app.retry_text(4).as_deref(), Some("Second prompt"));
+    open_menu(&view, cx, 3);
+    for selector in ["msg-select", "msg-fork"] {
+        assert!(cx.debug_bounds(selector).is_some(), "missing {selector}");
+    }
+    for selector in ["msg-copy", "msg-retry", "msg-share"] {
+        assert!(cx.debug_bounds(selector).is_none(), "obsolete action {selector}");
+    }
+    view.read_with(cx, |app, _| {
         assert_eq!(app.entry_text(3).as_deref(), Some(ANSWER));
-        for phase in [
-            ConnectionPhase::Disconnected,
-            ConnectionPhase::Connecting,
-            ConnectionPhase::Reconnecting { attempt: 1 },
-            ConnectionPhase::Failed {
-                reason: "fixture".into(),
-            },
-        ] {
-            app.session.phase = phase;
-            assert!(!app.can_retry_entry(3));
-        }
-        app.session.phase = ConnectionPhase::Connected;
-        assert!(app.can_retry_entry(3));
-        assert!(!app.can_retry_entry(1));
-        assert!(!app.can_retry_entry(999));
-        app.session.is_processing = true;
-        assert!(!app.can_retry_entry(3));
+        assert_eq!(app.entry_text(999), None);
     });
 }
 
@@ -147,7 +133,8 @@ fn raw_message_hold_copy_and_cancel_preserve_transcript_and_draft(cx: &mut TestA
     view.read_with(cx, |app, _| {
         assert_eq!(app.feel.menu.as_ref().map(|m| m.entry), Some(3))
     });
-    tap(cx, "msg-copy");
+    tap(cx, "msg-select");
+    tap(cx, "selection-copy");
     cx.update(|_, cx| {
         assert_eq!(
             cx.read_from_clipboard().and_then(|item| item.text()),
@@ -159,6 +146,7 @@ fn raw_message_hold_copy_and_cancel_preserve_transcript_and_draft(cx: &mut TestA
         assert_eq!(app.session.transcript.len(), 4);
         assert_eq!(app.composer.read(cx).text(), DRAFT);
     });
+    tap(cx, "selection-done");
     view.update(cx, |app, cx| {
         app.feel.menu = None;
         app.feel.menu_anim = 0.;
@@ -231,26 +219,28 @@ fn selection_is_read_only_copyable_and_done_releases_focus(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn raw_disabled_retry_is_inert_and_enabled_retry_resends_correct_prompt(cx: &mut TestAppContext) {
+fn unavailable_fork_is_inert_and_eligibility_requires_cloud_session(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
     open_menu(&view, cx, 3);
-    tap(cx, "msg-retry");
-    view.read_with(cx, |app, _| {
-        assert_eq!(app.session.transcript.len(), 4);
-        assert!(!app.session.is_processing);
-    });
+    tap(cx, "msg-fork");
     view.update(cx, |app, cx| {
-        app.session.phase = ConnectionPhase::Connected;
-        cx.notify();
-    });
-    open_menu(&view, cx, 3);
-    tap(cx, "msg-retry");
-    view.read_with(cx, |app, cx| {
-        assert_eq!(app.session.transcript.last().unwrap().text, "First prompt");
-        assert!(app.session.is_processing);
-        assert!(app.feel.menu.as_ref().unwrap().closing);
+        assert_eq!(app.tab_order.len(), 1);
+        assert_eq!(app.session.transcript.len(), 4);
         assert_eq!(app.composer.read(cx).text(), DRAFT);
-        assert!(app.connection.is_none());
+        assert!(!app.can_fork_message_session());
+        app.account = Some(jcode_mobile_core::Account {
+            given_name: None, name: None,
+            api_key: "offline-fixture".into(),
+            api_base: "https://offline.invalid".into(), email: None,
+        });
+        app.session.session_id = Some("source-session".into());
+        assert!(!app.can_fork_message_session(), "offline campaigns never fork");
+        app.offline = false;
+        assert!(app.can_fork_message_session());
+        app.session.session_id = None;
+        assert!(!app.can_fork_message_session(), "no server conversation to fork yet");
+        app.offline = true;
+        cx.notify();
     });
 }
 
@@ -368,15 +358,23 @@ fn rename_submit_commits_once_and_releases_editor_focus(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn stale_enabled_retry_handler_rechecks_processing_before_sending(cx: &mut TestAppContext) {
+fn stale_enabled_fork_handler_rechecks_eligibility_before_forking(cx: &mut TestAppContext) {
     let (view, cx) = setup(cx);
-    view.update(cx, |app, _| app.session.phase = ConnectionPhase::Connected);
+    view.update(cx, |app, _| {
+        app.account = Some(jcode_mobile_core::Account {
+            given_name: None, name: None,
+            api_key: "offline-fixture".into(),
+            api_base: "https://offline.invalid".into(), email: None,
+        });
+        app.session.session_id = Some("source-session".into());
+        app.offline = false;
+    });
     open_menu(&view, cx, 3);
-    let at = cx.debug_bounds("msg-retry").unwrap().center();
-    // Change eligibility without notifying or drawing: the installed listener
-    // still comes from the enabled menu frame.
+    let at = cx.debug_bounds("msg-fork").unwrap().center();
+    // Revoke eligibility without redrawing the enabled listener. No network
+    // operation is allowed even if a previously rendered action is tapped.
     cx.update(|window, cx| {
-        view.update(cx, |app, _| app.session.is_processing = true);
+        view.update(cx, |app, _| app.offline = true);
         for phase in [TouchPhase::Started, TouchPhase::Ended] {
             window.dispatch_event(
                 PlatformInput::Touch(TouchEvent {
@@ -390,8 +388,11 @@ fn stale_enabled_retry_handler_rechecks_processing_before_sending(cx: &mut TestA
             );
         }
     });
-    view.read_with(cx, |app, _| {
+    view.read_with(cx, |app, cx| {
         assert_eq!(app.session.transcript.len(), 4);
-        assert!(app.session.is_processing);
+        assert_eq!(app.tab_order.len(), 1);
+        assert!(app.connection.is_none());
+        assert_eq!(app.composer.read(cx).text(), DRAFT);
+        assert!(app.feel.menu.as_ref().unwrap().closing);
     });
 }

@@ -138,6 +138,40 @@
   ]
 },
     {
+      "owner": "src/app/new_session_overscroll.rs::impl:MobileApp::render_new_session_overscroll",
+      "renderer": true,
+      "handler": false,
+      "events": { "on_click": 1 },
+      "controls": {
+        "debug_selector:literal:new-session-overscroll": 1,
+        "debug_selector:literal:new-session-overscroll-plus": 1,
+        "id:literal:new-session-overscroll": 1,
+        "id:literal:new-session-overscroll-plus": 1
+      },
+      "coverage_scope": "partial",
+      "coverage": [
+        {
+          "kind": "hit_tested",
+          "tests": [
+            "src/app/new_session_overscroll.rs::tests::new_session_overscroll_lift_creates_once_and_preserves_draft",
+            "src/app/new_session_overscroll.rs::tests::new_session_overscroll_plus_button_creates_and_clears_the_pull",
+            "src/app/new_session_overscroll.rs::tests::new_session_overscroll_short_or_cancelled_drag_does_not_create"
+          ],
+          "note": "Rendered wheel events reveal and grow the plus cue, release creates one new session and preserves the previous draft, short/cancelled pulls do not create, and post-release momentum does not create twice. Clicking the visible plus hit target creates a session and clears the pull. These are Linux headless input/layout assertions, not iOS pixel acceptance."
+        },
+        {
+          "kind": "state_model_mocked",
+          "tests": ["src/app/new_session_overscroll.rs::tests::new_session_overscroll_raw_lift_creates_but_existing_neighbor_does_not"],
+          "note": "Direct action-seam checks verify fallback raw lift creates a session and an existing next session is navigated rather than duplicated. No live backend connection is started."
+        },
+        {
+          "kind": "platform_device_required",
+          "tests": [],
+          "note": "Physical iPhone pan/release timing, VoiceOver activation, visual polish and authenticated backend session creation remain device/service acceptance checks."
+        }
+      ]
+    },
+    {
       "owner": "src/app.rs::impl:MobileApp::render_synced_tool_output",
       "renderer": true,
       "handler": false,
@@ -1426,30 +1460,30 @@
         "debug_selector:literal:msg-menu-dismiss": 1,
         "id:dynamic:id": 1,
         "id:literal:msg-menu-dismiss": 1,
-        "row:literal:msg-copy": 1,
-        "row:literal:msg-retry": 1,
-        "row:literal:msg-select": 1,
-        "row:literal:msg-share": 1
+        "row:literal:msg-fork": 1,
+        "row:literal:msg-select": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Hold menu copy/retry/select/dismiss routes use rendered input, preserve draft/transcript, and gate retry locally.",
+          "note": "The two-action hold menu opens read-only passage selection/copy, preserves draft/transcript, and keeps unavailable or stale fork actions inert.",
           "tests": [
+            "src/app/overlay_coverage.rs::transcript_menu_has_only_selection_and_fork_actions",
             "src/app/overlay_coverage.rs::raw_message_hold_copy_and_cancel_preserve_transcript_and_draft",
-            "src/app/overlay_coverage.rs::raw_disabled_retry_is_inert_and_enabled_retry_resends_correct_prompt",
+            "src/app/overlay_coverage.rs::unavailable_fork_is_inert_and_eligibility_requires_cloud_session",
+            "src/app/overlay_coverage.rs::stale_enabled_fork_handler_rechecks_eligibility_before_forking",
             "src/app/overlay_coverage.rs::selection_is_read_only_copyable_and_done_releases_focus"
           ]
         },
         {
           "kind": "platform_device_required",
-          "note": "The share action opens a native share sheet and actual clipboard ownership needs platform checks. No fixture claim covers native sharing.",
+          "note": "Native passage selection and clipboard ownership require platform checks. Creating a real remote fork from the menu requires an authenticated service session.",
           "tests": []
         }
       ],
       "coverage_scope": "partial",
       "events": {
-        "on_click": 5
+        "on_click": 3
       },
       "handler": false,
       "owner": "src/app/ios_feel.rs::impl:MobileApp::render_msg_menu",
