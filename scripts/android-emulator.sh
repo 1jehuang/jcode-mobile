@@ -34,7 +34,7 @@ if [[ -z "${ANDROID_SERIAL:-}" ]]; then
         # nohup alone does not protect it from a tool-session SIGTERM cleanup.
         launcher=(nohup)
         if command -v setsid >/dev/null; then launcher+=(setsid --fork); fi
-        "${launcher[@]}" "$SDK/emulator/emulator" -avd "$NAME" -port "$port" -no-snapshot -no-audio -gpu "${ANDROID_EMULATOR_GPU:-swiftshader_indirect}" "${flags[@]}" >"$ROOT/target/android/$NAME.log" 2>&1 </dev/null &
+        "${launcher[@]}" "$SDK/emulator/emulator" -avd "$NAME" -port "$port" -no-snapshot -no-audio -gpu "${ANDROID_EMULATOR_GPU:-lavapipe}" "${flags[@]}" >"$ROOT/target/android/$NAME.log" 2>&1 </dev/null &
         echo "Started $NAME ($ANDROID_SERIAL), log: target/android/$NAME.log"
     fi
 fi

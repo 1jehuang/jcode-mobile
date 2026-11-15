@@ -2,6 +2,8 @@
 //! (390x844 points, iPhone 15-class safe areas) that talks to a real server.
 
 #[cfg(target_os = "android")]
+mod android_input;
+#[cfg(target_os = "android")]
 mod android_services;
 
 mod app;
