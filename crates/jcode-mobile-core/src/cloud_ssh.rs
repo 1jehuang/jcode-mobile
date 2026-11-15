@@ -105,9 +105,12 @@ struct PreparedInner {
     state: Mutex<PreparedState>,
 }
 
+type ChannelShutdown = Arc<dyn Fn() + Send + Sync>;
+type PreparedApiClient = (JcodeClient, ChannelShutdown);
+
 #[derive(Default)]
 struct PreparedState {
-    spare: Option<(Instant, JcodeClient)>,
+    spare: Option<(Instant, JcodeClient, ChannelShutdown)>,
     filling: bool,
 }
 
@@ -144,7 +147,7 @@ impl PreparedSsh {
     pub(crate) fn open_client_timeout(&self, timeout: Duration) -> Result<JcodeClient> {
         let spare = self.0.state.lock().unwrap().spare.take();
         let client = match spare {
-            Some((created, client))
+            Some((created, client, _))
                 if created.elapsed() < SPARE_MAX_AGE
                     && !client.is_closed()
                     && !self.0.ssh.is_closed() =>
@@ -158,19 +161,48 @@ impl PreparedSsh {
     }
 
     /// After the app was suspended, sockets are often dead while still
-    /// looking open. Discard the spare and prove the master with a fresh
-    /// channel. Returns false when the master should be thrown away.
+    /// looking open. Prove a spare with a bounded request, or open a fresh
+    /// channel when none exists. Returns false for an unproven master.
     pub(crate) fn revalidate(&self) -> bool {
         let started = Instant::now();
-        drop(self.0.state.lock().unwrap().spare.take());
+        let spare = self.0.state.lock().unwrap().spare.take();
         if self.0.ssh.is_closed() {
             return false;
         }
-        match self.0.ssh.open_client_timeout(SPARE_OPEN_TIMEOUT) {
-            Ok(client) => {
+        let result = match spare {
+            Some((_, client, shutdown)) if !client.is_closed() => {
+                // Ping proves both the authenticated SSH connection and this
+                // API process without paying for another remote process/hello.
+                // Retain explicit cancellation: the SDK's normal request budget
+                // is deliberately longer than this foreground liveness budget.
+                let (reply, result) = mpsc::channel();
+                let worker_shutdown = shutdown.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("jcode-cloud-api-probe".into())
+                    .spawn(move || {
+                        let result = client.ping().map(|()| (client, worker_shutdown));
+                        let _ = reply.send(result);
+                    });
+                if spawned.is_err() {
+                    shutdown();
+                    Err(failed("Could not start SSH liveness probe"))
+                } else {
+                    match result.recv_timeout(SPARE_OPEN_TIMEOUT.saturating_sub(started.elapsed())) {
+                        Ok(result) => result,
+                        Err(_) => {
+                            shutdown();
+                            Err(startup_timeout())
+                        }
+                    }
+                }
+            }
+            _ => self.0.ssh.open_prepared_client_timeout(SPARE_OPEN_TIMEOUT),
+        };
+        match result {
+            Ok((client, shutdown)) => {
                 let mut state = self.0.state.lock().unwrap();
                 if state.spare.is_none() {
-                    state.spare = Some((Instant::now(), client));
+                    state.spare = Some((Instant::now(), client, shutdown));
                 }
                 trace("master revalidated", started);
                 true
@@ -200,12 +232,12 @@ impl PreparedSsh {
         let spawn = std::thread::Builder::new()
             .name("jcode-cloud-api-spare".into())
             .spawn(move || {
-                let client = ssh.open_client_timeout(SPARE_OPEN_TIMEOUT);
+                let client = ssh.open_prepared_client_timeout(SPARE_OPEN_TIMEOUT);
                 if let Some(owner) = owner.upgrade() {
                     let mut state = owner.state.lock().unwrap();
                     state.filling = false;
-                    if let Ok(client) = client {
-                        state.spare = Some((Instant::now(), client));
+                    if let Ok((client, shutdown)) = client {
+                        state.spare = Some((Instant::now(), client, shutdown));
                     }
                 }
             });
@@ -578,6 +610,11 @@ impl CloudSsh {
 
     /// Override the total startup deadline without shortening normal requests.
     pub fn open_client_timeout(&self, timeout: Duration) -> Result<JcodeClient> {
+        self.open_prepared_client_timeout(timeout)
+            .map(|(client, _)| client)
+    }
+
+    fn open_prepared_client_timeout(&self, timeout: Duration) -> Result<PreparedApiClient> {
         let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidOption,
@@ -629,7 +666,7 @@ impl CloudSsh {
             })
             .map_err(|e| failed(e.to_string()))?;
         match connected.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(result) => result,
+            Ok(result) => result.map(|client| (client, shutdown)),
             Err(error) => {
                 shutdown();
                 match error {
@@ -753,6 +790,11 @@ mod tests {
     struct Counts {
         authenticated: AtomicUsize,
         channels: AtomicUsize,
+        execs: AtomicUsize,
+        hellos: AtomicUsize,
+        pings: AtomicUsize,
+        closes: AtomicUsize,
+        withhold_pings: AtomicBool,
     }
 
     struct Harness {
@@ -839,6 +881,7 @@ mod tests {
                 return session.close(channel);
             }
             assert_eq!(command, REMOTE_COMMAND.as_bytes());
+            self.counts.execs.fetch_add(1, Ordering::Relaxed);
             session.channel_success(channel)
         }
 
@@ -862,6 +905,7 @@ mod tests {
                 let id = request["id"].as_u64();
                 match request["req"].as_str().unwrap() {
                     "hello" => {
+                        self.counts.hellos.fetch_add(1, Ordering::Relaxed);
                         if self.withhold_first_hello && self.first_channel == Some(channel) {
                             continue;
                         }
@@ -904,6 +948,10 @@ mod tests {
                         )?;
                     }
                     "ping" => {
+                        self.counts.pings.fetch_add(1, Ordering::Relaxed);
+                        if self.counts.withhold_pings.load(Ordering::Acquire) {
+                            continue;
+                        }
                         tokio::time::sleep(self.ping_delay).await;
                         frame(session, channel, id, json!({"ev":"pong"}))?;
                     }
@@ -918,6 +966,7 @@ mod tests {
             channel: russh::ChannelId,
             session: &mut russh::server::Session,
         ) -> std::result::Result<(), Self::Error> {
+            self.counts.closes.fetch_add(1, Ordering::Relaxed);
             self.buffers.remove(&channel);
             self.attached.remove(&channel);
             session.close(channel)
@@ -1165,6 +1214,98 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn cached_revalidation_reuses_api_process_and_benchmarks_against_fresh_hello() {
+        let (server, target, key) = Server::start_with_options(
+            false,
+            Duration::ZERO,
+            None,
+            Duration::from_millis(120),
+            false,
+        );
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        prepared.0.state.lock().unwrap().filling = true;
+        // No spare still performs the original fresh-channel proof.
+        assert!(prepared.revalidate());
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.hellos.load(Ordering::Relaxed), 1);
+        // Age alone must not prohibit a causal proof after suspension. A pong
+        // proves the same process live and renews its usable spare age.
+        prepared.0.state.lock().unwrap().spare.as_mut().unwrap().0 =
+            Instant::now() - SPARE_MAX_AGE;
+        let started = Instant::now();
+        for _ in 0..5 {
+            assert!(prepared.revalidate());
+        }
+        let reused = started.elapsed();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.execs.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.hellos.load(Ordering::Relaxed), 1);
+        assert_eq!(server.counts.pings.load(Ordering::Relaxed), 5);
+        let started = Instant::now();
+        for _ in 0..5 {
+            // Reproduce the old discard/open/exec/hello revalidation path.
+            drop(prepared.0.state.lock().unwrap().spare.take());
+            assert!(prepared.revalidate());
+        }
+        let fresh = started.elapsed();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 6);
+        assert_eq!(server.counts.execs.load(Ordering::Relaxed), 6);
+        assert_eq!(server.counts.hellos.load(Ordering::Relaxed), 6);
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        eprintln!("offline cached SSH revalidation, 5 iterations: reused={reused:?}, fresh={fresh:?}, fixture hello delay=120ms");
+        // Timing is diagnostic, counts are the causal acceptance criterion.
+        let client = prepared.open_client_timeout(Duration::ZERO).unwrap();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 6);
+        client.ping().unwrap();
+        drop(client);
+        drop(prepared);
+        server.finish();
+    }
+
+    #[test]
+    fn cached_revalidation_stalled_ping_closes_only_probe_with_existing_budget() {
+        let (server, target, key) = Server::start(false, Duration::ZERO);
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        prepared.0.state.lock().unwrap().filling = true;
+        assert!(prepared.revalidate());
+        let active = prepared.master().open_client().unwrap();
+        server.counts.withhold_pings.store(true, Ordering::Release);
+        let started = Instant::now();
+        assert!(!prepared.revalidate());
+        assert!(started.elapsed() >= SPARE_OPEN_TIMEOUT);
+        assert!(started.elapsed() < SPARE_OPEN_TIMEOUT + Duration::from_secs(1));
+        assert!(prepared.0.state.lock().unwrap().spare.is_none());
+        wait_until(|| server.counts.closes.load(Ordering::Relaxed) == 1);
+        assert!(!prepared.is_closed());
+        server.counts.withhold_pings.store(false, Ordering::Release);
+        active.ping().unwrap();
+        assert_eq!(server.counts.channels.load(Ordering::Relaxed), 2);
+        assert_eq!(server.counts.authenticated.load(Ordering::Relaxed), 1);
+        drop(active);
+        drop(prepared);
+        server.finish();
+    }
+
+    #[test]
+    fn cached_revalidation_without_spare_rejects_stale_channel_open() {
+        let (server, target, key) = Server::start_with_options(
+            false,
+            Duration::ZERO,
+            None,
+            Duration::ZERO,
+            true,
+        );
+        let prepared = PreparedSsh::new(CloudSsh::connect(target, key).unwrap());
+        let started = Instant::now();
+        assert!(!prepared.revalidate());
+        assert!(started.elapsed() < SPARE_OPEN_TIMEOUT + Duration::from_secs(1));
+        assert!(prepared.0.state.lock().unwrap().spare.is_none());
+        assert_eq!(server.counts.execs.load(Ordering::Relaxed), 0);
+        drop(prepared);
+        server.finish();
     }
 
     #[test]
