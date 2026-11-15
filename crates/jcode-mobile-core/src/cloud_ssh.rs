@@ -376,10 +376,12 @@ impl CloudSsh {
                         PinnedHost { keys, mismatch: mismatch.clone() },
                     ).await.map_err(|e| failed(format!("SSH connect failed: {e}")))?;
                     trace("ssh handshake", t0);
+                    let auth_started = Instant::now();
                     let auth = session.authenticate_publickey(
                         &target.user,
                         russh::keys::PrivateKeyWithHashAlg::new(key.private, None),
                     ).await.map_err(|e| failed(format!("SSH authentication failed: {e}")))?;
+                    trace("ssh public key auth", auth_started);
                     if !auth.success() {
                         return Err(failed("The host rejected the SSH key"));
                     }

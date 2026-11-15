@@ -461,7 +461,9 @@ pub fn connect(
     }
     // Concurrent new tabs must not all register new keys and hit the cloud's
     // instance-connect rate limit. Recheck after waiting for another opener.
+    let lock_started = Instant::now();
     let _opening = COLD_CONNECT.lock().unwrap();
+    crate::timing::stage("cold connect lock wait", lock_started.elapsed());
     check_cancelled()?;
     let cached = {
         let cache = warm_target().lock().unwrap();
@@ -567,7 +569,12 @@ fn wait_for_host_or_direct(
     let direct = crate::cloud_direct::load_or_create(account).filter(|s| s.target().is_some());
     let mut last = String::new();
     loop {
-        let reply = cloud.request_host_connect(account, key.public_openssh())?;
+        // Include failed requests too. The enclosing readiness duration also
+        // contains polling sleeps and direct SSH probes, so it cannot explain
+        // control-plane HTTP latency by itself.
+        let reply = crate::timing::timed("control plane request", || {
+            cloud.request_host_connect(account, key.public_openssh())
+        })?;
         if reply.ready {
             return jcode_sdk::cloud::CloudTarget::from_reply(&reply).map(HostWait::Ready);
         }
@@ -580,7 +587,9 @@ fn wait_for_host_or_direct(
             && reply.address.is_some()
             && let Ok(target) = jcode_sdk::cloud::CloudTarget::from_reply(&reply)
             && let Some(device_key) = state.key()
-            && let Ok(ssh) = crate::cloud_ssh::CloudSsh::connect_timeout(target.clone(), device_key, Duration::from_millis(1200))
+            && let Ok(ssh) = crate::timing::timed("wake direct ssh probe", || {
+                crate::cloud_ssh::CloudSsh::connect_timeout(target.clone(), device_key, Duration::from_millis(1200))
+            })
         {
             crate::cloud_direct::remember_target(account, &target);
             return Ok(HostWait::Direct(ssh));
@@ -591,13 +600,15 @@ fn wait_for_host_or_direct(
                 "Jcode Cloud did not become ready in time. Retry to keep waiting.",
             ));
         }
-        let until = Instant::now() + cloud.poll_interval;
+        let poll_started = Instant::now();
+        let until = poll_started + cloud.poll_interval;
         while Instant::now() < until {
             if cancelled() {
                 return Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        crate::timing::stage("control plane poll delay", poll_started.elapsed());
     }
 }
 
