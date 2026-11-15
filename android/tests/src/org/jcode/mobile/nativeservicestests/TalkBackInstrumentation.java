@@ -27,6 +27,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
     private int edited = -1;
     private String original;
     private String nonce;
+    private String navigation;
     private <T> T ui(Callable<T> operation) throws Exception {
         AtomicReference<T> value = new AtomicReference<>();
         AtomicReference<Throwable> error = new AtomicReference<>();
@@ -166,6 +167,7 @@ public final class TalkBackInstrumentation extends Instrumentation {
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
         nonce = args == null ? null : args.getString("talkback_nonce");
+        navigation = args == null ? null : args.getString("talkback_navigation", "touch");
         start();
     }
     @Override public void onStart() {
@@ -173,6 +175,8 @@ public final class TalkBackInstrumentation extends Instrumentation {
         Throwable failure = null;
         try {
             require(nonce != null && nonce.matches("[0-9a-f]{32}"), "UNTESTABLE: use separate TalkBack shell runner with fresh readiness nonce");
+            require("touch".equals(navigation) || "keyboard".equals(navigation), "UNTESTABLE: invalid hardware navigation mode");
+            result.putString("talkback_navigation_mode", navigation);
             AccessibilityManager manager = (AccessibilityManager)getTargetContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
             boolean installedEnabled = false;
             for (AccessibilityServiceInfo info : manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)) {
@@ -205,8 +209,8 @@ public final class TalkBackInstrumentation extends Instrumentation {
                 SystemClock.sleep(50);
             }
             result.putString("talkback_observed_focus_ids", observed.toString());
-            require(traversed, "UNTESTABLE: installed TalkBack emulator hardware swipes did not traverse two native semantic nodes");
-            result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated emulator hardware touchscreen swipes");
+            require(traversed, "UNTESTABLE: installed TalkBack hardware " + navigation + " navigation did not traverse two native semantic nodes");
+            result.putString("talkback_traversal", "two native virtual focus targets observed around nonce-coordinated emulator hardware " + navigation + " navigation");
             edited = ui(() -> {
                 for (int id : ids()) {
                     AccessibilityNodeInfo node = provider.createAccessibilityNodeInfo(id);

@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${ANDROID_TALKBACK_TEST_OUT:-${JCODE_SCRATCH_DIR:-$ROOT/target}/android-talkback-tests}"
 RUN=false
+NAVIGATION="${ANDROID_TALKBACK_NAVIGATION:-touch}"
+[[ "$NAVIGATION" == touch || "$NAVIGATION" == keyboard ]] || { echo 'ANDROID_TALKBACK_NAVIGATION must be touch or keyboard' >&2; exit 2; }
 SERIAL=""
 if [[ $# -gt 0 ]]; then
   [[ $# -eq 2 && "$1" == --run && "$2" == emulator-* ]] || { echo "Usage: $0 [--run emulator-SERIAL]" >&2; exit 2; }
@@ -38,11 +40,15 @@ STATE="$OUT/talkback-settings-before.txt"
 (umask 077; : > "$STATE"; for key in "${KEYS[@]}"; do printf '%s\t%s\t%s\n' "$key" "${PRESENT[$key]}" "${VALUES[$key]}"; done > "$STATE")
 RUNNER_PID=''
 TOUCH_DOWN=false
+MODIFIER_DOWN=false
 console_event() {
   local response
   response="$(adb emu event send "$@" | tr -d '\r')" || return 1
   printf '%s\n' "$response" >> "$OUT/talkback-console-events.txt"
   ! grep -q '^KO' <<< "$response" && grep -Fxq 'OK' <<< "$response"
+}
+release_keys() {
+  console_event EV_KEY:KEY_RIGHT:0 EV_KEY:KEY_LEFTALT:0 EV_SYN:0:0
 }
 release_touch() {
   console_event EV_ABS:ABS_MT_SLOT:0 EV_ABS:ABS_MT_TRACKING_ID:-1 EV_KEY:BTN_TOUCH:0 EV_SYN:0:0
@@ -52,6 +58,7 @@ restore() {
   trap - EXIT INT TERM
   set +e
   if $TOUCH_DOWN; then release_touch || failed=1; TOUCH_DOWN=false; fi
+  if $MODIFIER_DOWN; then release_keys || failed=1; MODIFIER_DOWN=false; fi
   if [[ -n "$RUNNER_PID" ]]; then
     kill "$RUNNER_PID" 2>/dev/null
     wait "$RUNNER_PID" 2>/dev/null
@@ -98,7 +105,7 @@ sleep 3
 LOG="$OUT/TalkBackInstrumentation.txt"
 NONCE="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 timeout --signal=TERM --kill-after=5 100 "$ADB" -s "$SERIAL" shell am instrument -w -r \
-  -e talkback_nonce "$NONCE" org.jcode.mobile.nativeservicestests/.TalkBackInstrumentation > "$LOG" 2>&1 &
+  -e talkback_nonce "$NONCE" -e talkback_navigation "$NAVIGATION" org.jcode.mobile.nativeservicestests/.TalkBackInstrumentation > "$LOG" 2>&1 &
 RUNNER_PID=$!
 COORDINATES=''
 # Read only a unique, nonce-matching readiness record from this fresh instrumentation.
@@ -134,6 +141,19 @@ read -r X1 Y1 X2 Y2 <<< "$COORDINATES"
 SWIPES=0
 for gesture in {1..12}; do
   if ! kill -0 "$RUNNER_PID" 2>/dev/null; then break; fi
+  if [[ "$NAVIGATION" == keyboard ]]; then
+    # Explicit documented TalkBack Alt+Right hardware shortcut. This is keyboard
+    # traversal acceptance, never labeled as successful touch gesture recognition.
+    MODIFIER_DOWN=true
+    console_event EV_KEY:KEY_LEFTALT:1 EV_SYN:0:0
+    console_event EV_KEY:KEY_RIGHT:1 EV_SYN:0:0
+    sleep 0.05
+    release_keys
+    MODIFIER_DOWN=false
+    SWIPES=$((SWIPES + 1))
+    sleep 1.5
+    continue
+  fi
   # Emulator console hardware events enter InputReader and the accessibility
   # input filter. `adb shell input swipe` uses injection, bypassing that filter.
   TOUCH_DOWN=true
@@ -155,4 +175,4 @@ if [[ $runner_status -eq 0 ]]; then RUNNER_PID=''; fi
 cat "$LOG"
 [[ $runner_status -eq 0 && $SWIPES -gt 0 ]] || { echo 'FAIL: global gesture runner failed or injected no gestures' >&2; exit 1; }
 python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"
-echo 'PASS: bounded installed TalkBack hardware-path traversal plus native semantic action. Password and spoken audio NOT established.'
+echo "PASS: bounded installed TalkBack $NAVIGATION hardware-path traversal plus native semantic action. Password and spoken audio NOT established."
