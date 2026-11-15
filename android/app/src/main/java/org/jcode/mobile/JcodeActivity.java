@@ -121,6 +121,16 @@ public final class JcodeActivity extends NativeActivity {
         super.onDestroy();
     }
 
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (services != null) services.onConfigurationChanged();
+    }
+
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (services != null) services.onRequestPermissionsResult(request);
+    }
+
     @Override protected void onActivityResult(int request, int result, Intent data) {
         if (services == null || !services.onActivityResult(request, result, data)) {
             super.onActivityResult(request, result, data);

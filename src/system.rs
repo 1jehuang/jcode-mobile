@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(test))]
 use std::sync::atomic::AtomicU32;
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use gpui::{App, Pixels, px};
 
@@ -139,6 +140,8 @@ pub fn refresh(cx: &mut App) -> bool {
 /// Install observers (iOS: app-became-active and Spotlight continuation).
 pub fn install(cx: &mut App) {
     refresh(cx);
+    #[cfg(target_os = "android")]
+    install_refresh_channel(cx);
     imp::install();
 }
 
@@ -147,22 +150,36 @@ pub fn take_spotlight_opens() -> Vec<String> {
     std::mem::take(&mut *SPOTLIGHT_OPEN.lock().unwrap())
 }
 
+pub(crate) const PLATFORM_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
-struct IndexCache(Option<u64>);
+struct IndexCache {
+    applied: Option<u64>,
+    retry_at: Option<Instant>,
+    pending_clear: bool,
+}
 
 impl IndexCache {
-    fn changed(&mut self, hash: u64) -> bool {
-        if self.0 == Some(hash) { return false; }
-        self.0 = Some(hash);
-        true
+    fn prepare<T>(&self, hash: u64, now: Instant, build: impl FnOnce() -> T) -> Option<T> {
+        (self.applied != Some(hash) && !self.pending_clear
+            && self.retry_at.is_none_or(|retry| now >= retry)).then(build)
     }
 
-    fn prepare<T>(&mut self, hash: u64, build: impl FnOnce() -> T) -> Option<T> {
-        self.changed(hash).then(build)
+    fn complete(&mut self, hash: u64, accepted: bool, now: Instant) {
+        self.applied = accepted.then_some(hash);
+        self.retry_at = (!accepted).then_some(now + PLATFORM_RETRY_DELAY);
+    }
+
+    fn clear_result(&mut self, accepted: bool, now: Instant) {
+        self.applied = None;
+        self.pending_clear = !accepted;
+        self.retry_at = (!accepted).then_some(now + PLATFORM_RETRY_DELAY);
     }
 }
 
-static INDEX_CACHE: Mutex<IndexCache> = Mutex::new(IndexCache(None));
+static INDEX_CACHE: Mutex<IndexCache> = Mutex::new(IndexCache {
+    applied: None, retry_at: None, pending_clear: false,
+});
 // In-flight delete completions must not restore records after sign-out or a
 // newer account/list replacement.
 static INDEX_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -189,30 +206,33 @@ pub fn index_sessions<'a>(
 ) {
     let hash = index_fingerprint(owner, sessions);
     let mut cache = INDEX_CACHE.lock().unwrap();
-    if let Some(sessions) = cache.prepare(hash, build) {
+    if let Some(sessions) = cache.prepare(hash, Instant::now(), build) {
         INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
-        imp::index(&sessions);
+        let accepted = imp::index(&sessions);
+        cache.complete(hash, accepted, Instant::now());
     }
 }
 
 pub fn clear_index() {
     let mut cache = INDEX_CACHE.lock().unwrap();
-    cache.0 = None;
     INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
-    imp::clear_index();
+    let accepted = imp::clear_index();
+    cache.clear_result(accepted, Instant::now());
 }
 
 #[cfg(target_os = "android")]
 mod imp {
     pub fn read() -> (f32, bool, bool) { crate::android_services::settings() }
     pub fn install() {}
-    pub fn index(sessions: &[(String, String, Option<String>)]) {
+    pub fn index(sessions: &[(String, String, Option<String>)]) -> bool {
         let json = serde_json::to_string(sessions).unwrap_or_default();
-        if !crate::android_services::call_bool("indexSessions", &json) {
+        let accepted = crate::android_services::call_bool("indexSessions", &json);
+        if !accepted {
             log::debug!("Android launcher session shortcuts unavailable");
         }
+        accepted
     }
-    pub fn clear_index() { let _ = crate::android_services::call_bool("indexSessions", "[]"); }
+    pub fn clear_index() -> bool { crate::android_services::call_bool("indexSessions", "[]") }
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -228,10 +248,11 @@ mod imp {
         (scale, reduce, light)
     }
     pub fn install() {}
-    pub fn index(sessions: &[(String, String, Option<String>)]) {
+    pub fn index(sessions: &[(String, String, Option<String>)]) -> bool {
         log::debug!("spotlight: would index {} sessions", sessions.len());
+        true
     }
-    pub fn clear_index() {}
+    pub fn clear_index() -> bool { true }
 }
 
 #[cfg(target_os = "ios")]
@@ -361,8 +382,8 @@ mod imp {
         AnyClass::get(c"CSSearchableIndex")
     }
 
-    pub fn index(sessions: &[(String, String, Option<String>)]) {
-        let Some(index_cls) = index_class() else { return };
+    pub fn index(sessions: &[(String, String, Option<String>)]) -> bool {
+        let Some(index_cls) = index_class() else { return false };
         unsafe {
             let mut items: Vec<Retained<AnyObject>> = Vec::with_capacity(sessions.len());
             for (id, title, dir) in sessions {
@@ -404,25 +425,107 @@ mod imp {
             });
             let _: () = msg_send![index, deleteSearchableItemsWithDomainIdentifiers: &*domains, completionHandler: &*done];
         }
+        // Spotlight's completion remains asynchronous. This acknowledges the
+        // submission, not completion of the OS indexing operation.
+        true
     }
 
-    pub fn clear_index() {
-        let Some(index_cls) = index_class() else { return };
+    pub fn clear_index() -> bool {
+        let Some(index_cls) = index_class() else { return false };
         unsafe {
             let index: *mut AnyObject = msg_send![index_cls, defaultSearchableIndex];
             let domains = NSArray::from_retained_slice(&[NSString::from_str(DOMAIN)]);
             let _: () = msg_send![index, deleteSearchableItemsWithDomainIdentifiers: &*domains, completionHandler: std::ptr::null::<AnyObject>()];
         }
+        true
     }
 }
 
 /// Set from UIKit callbacks; the app polls it each frame (cheap atomic).
 pub static NEEDS_REFRESH: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(target_os = "android", test))]
+static REFRESH_TX: Mutex<Option<futures::channel::mpsc::UnboundedSender<()>>> = Mutex::new(None);
+
+/// Java callbacks only enqueue work. Never enter a cache or call back into
+/// Java here: the GPUI thread may already be waiting for Android's UI thread.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn request_refresh() {
+    NEEDS_REFRESH.store(true, Ordering::Relaxed);
+    if let Some(tx) = REFRESH_TX.lock().unwrap().as_ref() {
+        let _ = tx.unbounded_send(());
+    }
+}
+
+#[cfg(any(target_os = "android", test))]
+fn install_refresh_channel(cx: &mut App) {
+    use futures::StreamExt as _;
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    *REFRESH_TX.lock().unwrap() = Some(tx);
+    cx.spawn(async move |cx| {
+        while rx.next().await.is_some() {
+            cx.update(|cx| {
+                // Reading settings and applying pending platform work both
+                // happen on GPUI's UI thread, not the Activity callback thread.
+                if !poll(cx) { refresh(cx); }
+                cx.refresh_windows();
+            });
+        }
+    }).detach();
+}
+
+struct RetryWake {
+    at: Instant,
+    _task: gpui::Task<()>,
+}
+impl gpui::Global for RetryWake {}
+
+/// One delayed wake per App, not a frame loop or one timer per failed call.
+/// The next render reads current account data rather than replaying old records.
+pub(crate) fn schedule_platform_retry(cx: &mut App) {
+    let index_at = INDEX_CACHE.lock().unwrap().retry_at;
+    let live_at = crate::ios_ext::live_retry_at();
+    let at = index_at.into_iter().chain(live_at).min();
+    schedule_retry_wake(at, cx);
+}
+
+fn schedule_retry_wake(at: Option<Instant>, cx: &mut App) {
+    let Some(at) = at else {
+        if cx.has_global::<RetryWake>() { cx.remove_global::<RetryWake>(); }
+        return;
+    };
+    let now = Instant::now();
+    if cx.has_global::<RetryWake>() {
+        let wake = cx.global::<RetryWake>();
+        if wake.at > now && wake.at <= at { return; }
+    }
+    let task = cx.spawn(async move |cx| {
+        cx.background_executor().timer(at.saturating_duration_since(Instant::now())).await;
+        cx.update(|cx| {
+            if cx.has_global::<RetryWake>() && cx.global::<RetryWake>().at == at {
+                cx.remove_global::<RetryWake>();
+                cx.refresh_windows();
+            }
+        });
+    });
+    cx.set_global(RetryWake { at, _task: task });
+}
+
 /// Poll from render: re-read settings after a UIKit notification. Returns
 /// true when the app should redraw with new metrics or palette.
 pub fn poll(cx: &mut App) -> bool {
-    if NEEDS_REFRESH.swap(false, Ordering::Relaxed) {
+    let requested = NEEDS_REFRESH.swap(false, Ordering::Relaxed);
+    {
+        let mut cache = INDEX_CACHE.lock().unwrap();
+        if requested { cache.retry_at = None; }
+        if cache.pending_clear && cache.retry_at.is_none_or(|at| Instant::now() >= at) {
+            INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+            let accepted = imp::clear_index();
+            cache.clear_result(accepted, Instant::now());
+        }
+    }
+    crate::ios_ext::retry_live(Instant::now(), requested);
+    if requested {
         refresh(cx);
         return true;
     }
@@ -432,6 +535,40 @@ pub fn poll(cx: &mut App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn android_settings_signal_refreshes_on_gpui_thread_without_another_frame(cx: &mut gpui::TestAppContext) {
+        let _fixture = settings_fixture(1., false, false);
+        cx.update(|cx| {
+            refresh(cx);
+            install_refresh_channel(cx);
+        });
+        TEST_OVERRIDE.with(|value| value.set(Some((1.5, true, true))));
+        std::thread::spawn(request_refresh).join().unwrap();
+        assert_eq!(text_scale(), 1., "the Activity callback must not mutate UI settings directly");
+        cx.run_until_parked();
+        assert_eq!((text_scale(), reduce_motion(), is_light()), (1.5, true, true));
+        REFRESH_TX.lock().unwrap().take();
+    }
+
+    #[gpui::test]
+    fn platform_retry_uses_one_delayed_wake_and_can_be_cancelled(cx: &mut gpui::TestAppContext) {
+        let now = Instant::now();
+        cx.update(|cx| {
+            schedule_retry_wake(Some(now + PLATFORM_RETRY_DELAY), cx);
+            schedule_retry_wake(Some(now + PLATFORM_RETRY_DELAY + Duration::from_secs(1)), cx);
+            assert_eq!(cx.global::<RetryWake>().at, now + PLATFORM_RETRY_DELAY);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(PLATFORM_RETRY_DELAY);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!cx.has_global::<RetryWake>(), "retry must wake even without another platform event");
+            schedule_retry_wake(Some(Instant::now() + PLATFORM_RETRY_DELAY), cx);
+            schedule_retry_wake(None, cx);
+            assert!(!cx.has_global::<RetryWake>());
+        });
+    }
 
     #[test]
     fn settings_fixtures_are_thread_local_and_restore_on_unwind() {
@@ -454,17 +591,20 @@ mod tests {
     #[test]
     fn spotlight_unchanged_metadata_does_not_build_records() {
         let mut cache = IndexCache::default();
+        let now = Instant::now();
         let records = [("session_one_123", Some("Title"), Some("/project"))];
         let hash = index_fingerprint((1u64, 1u64), records);
-        assert_eq!(cache.prepare(hash, || 1), Some(1));
+        assert_eq!(cache.prepare(hash, now, || 1), Some(1));
+        assert_eq!(cache.applied, None, "preparation is not successful publication");
+        cache.complete(hash, true, now);
         for _ in 0..100 {
-            assert_eq!(cache.prepare(hash, || panic!("unchanged metadata rebuilt")), None::<()>);
+            assert_eq!(cache.prepare(hash, now, || panic!("unchanged metadata rebuilt")), None::<()>);
         }
         // Clear must permit exactly the same list to be indexed after login.
-        cache.0 = None;
-        assert_eq!(cache.prepare(hash, || 2), Some(2));
+        cache.clear_result(true, now);
+        assert_eq!(cache.prepare(hash, now, || 2), Some(2));
         // Zero is a valid fingerprint, not an uninitialized sentinel.
-        assert!(IndexCache::default().changed(0));
+        assert_eq!(IndexCache::default().prepare(0, now, || ()), Some(()));
     }
 
     #[test]
@@ -484,10 +624,45 @@ mod tests {
         assert_ne!(original, index_fingerprint((2u64, 1u64), records));
         assert_ne!(original, index_fingerprint((1u64, 2u64), records));
         let empty = index_fingerprint(owner, []);
-        let mut cache = IndexCache(Some(original));
-        assert_eq!(cache.prepare(empty, Vec::<()>::new), Some(vec![]));
-        assert_eq!(cache.prepare(empty, || panic!("empty replacement repeated")), None::<()>);
+        let now = Instant::now();
+        let mut cache = IndexCache::default();
+        cache.complete(original, true, now);
+        assert_eq!(cache.prepare(empty, now, Vec::<()>::new), Some(vec![]));
+        cache.complete(empty, true, now);
+        assert_eq!(cache.prepare(empty, now, || panic!("empty replacement repeated")), None::<()>);
         assert_ne!(empty, index_fingerprint((1u64, 2u64), []));
+    }
+
+    #[test]
+    fn shortcut_failures_retry_unchanged_metadata_without_frame_spam() {
+        let now = Instant::now();
+        let later = now + PLATFORM_RETRY_DELAY;
+        let mut cache = IndexCache::default();
+        assert_eq!(cache.prepare(1, now, || "records"), Some("records"));
+        cache.complete(1, false, now);
+        assert_eq!(cache.applied, None);
+        for hash in [1, 2] {
+            assert_eq!(cache.prepare(hash, now, || panic!("failed platform called every frame")), None::<()>);
+        }
+        assert_eq!(cache.prepare(1, later, || "same records"), Some("same records"));
+        cache.complete(1, true, later);
+        assert_eq!(cache.prepare(1, later, || panic!("successful metadata rebuilt")), None::<()>);
+        assert_eq!(cache.prepare(2, later, || "new records"), Some("new records"));
+    }
+
+    #[test]
+    fn shortcut_clear_bypasses_failure_and_failed_clear_blocks_private_republication() {
+        let now = Instant::now();
+        let mut cache = IndexCache::default();
+        cache.complete(1, false, now);
+        // clear_index always attempts the platform cancellation immediately,
+        // regardless of this earlier failed publication's retry deadline.
+        cache.clear_result(false, now);
+        assert!(cache.pending_clear);
+        assert_eq!(cache.prepare(1, now + PLATFORM_RETRY_DELAY, || panic!("old account republished before clear")), None::<()>);
+        cache.clear_result(true, now + PLATFORM_RETRY_DELAY);
+        assert!(!cache.pending_clear);
+        assert_eq!(cache.prepare(1, now + PLATFORM_RETRY_DELAY, || "same list after login"), Some("same list after login"));
     }
 
     #[test]
@@ -508,10 +683,12 @@ mod tests {
         let cloned = start.elapsed();
         let start = Instant::now();
         let mut cache = IndexCache::default();
+        let now = Instant::now();
         for _ in 0..1000 {
             let hash = index_fingerprint((1u64, 1u64), black_box(&records).iter()
                 .map(|(id, title, dir)| (id.as_str(), Some(title.as_str()), dir.as_deref())));
-            black_box(cache.prepare(hash, || records.clone()));
+            black_box(cache.prepare(hash, now, || records.clone()));
+            cache.complete(hash, true, now);
         }
         eprintln!("1000 sessions x 1000 frames: cloned={cloned:?}, borrowed={:?}", start.elapsed());
     }

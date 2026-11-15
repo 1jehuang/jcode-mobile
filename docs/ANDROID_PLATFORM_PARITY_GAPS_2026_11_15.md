@@ -66,4 +66,14 @@ Source wiring, hosted unit tests, isolated Java adapter execution and actual sha
 4. Exercise local notification permission/delivery/tap/reply, real deep-link entry, native selection and browser authentication before claiming service completeness.
 5. Decide product scope for inbound sharing, New/Ask shortcuts, richer ongoing interactions and background runtime. Record deliberate omissions explicitly.
 
+## Implemented followthrough, November 15 at 08:14 UTC
+
+The findings above record the original inspection, not the post-fix state. Shared fixes now acknowledge successful shortcut and ongoing-notification publication before deduplicating. Failed unchanged submissions retry after five seconds through a single scheduled GPUI wake, without frame-by-frame platform calls. Failed index clearing prevents private session republication, and live cancellation supersedes pending private content. Android foreground configuration changes, animator-duration changes, resume and notification-permission results enqueue settings invalidation onto the GPUI thread. Spotlight acknowledgement remains submission-only because its OS completion is asynchronous.
+
+Inbound sharing has a proven draft-only shared contract: `jcode://draft?text=...` preserves the incoming draft and other tabs without setting `auto_send`, including after connection. Ordinary `new`/`ask` routes retain existing send semantics. The separately owned Android helper must emit this exact draft route before its integration or share filter is enabled. A `new?text=...&draft=1` URI is **not** this contract and still follows ordinary new-route behavior.
+
+Validation: hosted `justrust test --lib` run `20261115-001215879-694113` passed **485 tests, zero failures, 11 ignored**. Hosted production `justrust check --lib` run `20261115-001240311-696066` passed. Focused system, live-cache/parser and deep-link tests passed separately, including failed publication recovery, urgent cancellation, one delayed wake, foreground GPUI invalidation and post-connect draft non-submission. Android production Java sources compiled with JDK 21 `javac --release 8` against SDK 36. These are source/unit/SDK checks, not emulator runtime proof.
+
+Coordinator runtime followthrough remains: deny then grant notifications with unchanged agent content, shortcut publication failure/recovery and deletion, foreground theme/animation changes without resume, and cold/warm Android share intent exactly-once draft ownership with no model request. No devices, notification delivery, share-filter configuration or FCM credentials were changed by this followthrough.
+
 This inspection makes no new Play/signing/production-release claim and does not alter the known FCM/backend transport gap.

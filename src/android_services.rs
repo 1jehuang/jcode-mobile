@@ -183,13 +183,21 @@ pub extern "system" fn Java_org_jcode_mobile_AndroidServices_nativeResume(
     _: JObject,
     url: JString,
 ) {
-    crate::system::NEEDS_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::system::request_refresh();
     crate::notify::android_foreground();
     if !url.is_null() {
         if let Ok(url) = env.get_string(&url) {
             crate::ios_ext::handle_urls(vec![url.into()]);
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_jcode_mobile_AndroidServices_nativeSettingsChanged(
+    _: JNIEnv,
+    _: JObject,
+) {
+    crate::system::request_refresh();
 }
 
 #[unsafe(no_mangle)]

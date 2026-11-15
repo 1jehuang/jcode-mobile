@@ -10,6 +10,7 @@ use crate::ios_ext::{self, DeepLink};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jcode_mobile_core::ConnectionPhase;
     use crate::app::{init, lifecycle_coverage::fixture_app};
     use gpui::TestAppContext;
 
@@ -56,6 +57,7 @@ mod tests {
             let tab = app.active_tab;
             for url in [
                 "jcode://new?text=not-authorized",
+                "jcode://draft?text=not-authorized",
                 "jcode://session/unknown",
                 "jcode://new",
             ] {
@@ -65,6 +67,38 @@ mod tests {
                 assert!(app.auto_send.is_none());
                 assert!(app.connection.is_none());
             }
+        });
+    }
+
+    #[gpui::test]
+    fn shared_draft_route_never_sends_on_connection_and_preserves_other_tab(cx: &mut TestAppContext) {
+        cx.update(init);
+        let (view, cx) = cx.add_window_view(fixture_app);
+        view.update(cx, |app, cx| {
+            let original = app.active_tab;
+            app.composer.update(cx, |input, cx| input.set_text("Unrelated draft", cx));
+            app.auto_send = Some("original pending request".into());
+            let shared = " Shared text ✓\nhttps://example.invalid/?q=a&b=c ";
+            let link = ios_ext::parse("jcode://draft?text=%20Shared+text+%E2%9C%93%0Ahttps%3A%2F%2Fexample.invalid%2F%3Fq%3Da%26b%3Dc%20").unwrap();
+            app.on_deep_link(link, cx);
+            let draft_tab = app.active_tab;
+            assert_ne!(draft_tab, original);
+            assert_eq!(app.composer.read(cx).text(), shared);
+            assert!(app.auto_send.is_none() && app.connection.is_none());
+            app.session.phase = ConnectionPhase::Connected;
+            app.session.session_id = Some("draft-only-fixture".into());
+            app.flush_pending_send(cx);
+            assert!(app.session.transcript.is_empty(), "connection must not submit shared content");
+            assert_eq!(app.composer.read(cx).text(), shared);
+            app.focus_tab(original, cx);
+            assert_eq!(app.composer.read(cx).text(), "Unrelated draft");
+            assert_eq!(app.auto_send.as_deref(), Some("original pending request"));
+            app.focus_tab(draft_tab, cx);
+            assert!(app.auto_send.is_none());
+            assert_eq!(app.composer.read(cx).text(), shared);
+            // Legacy user-invoked new/ask links retain their existing contract.
+            app.on_deep_link(ios_ext::parse("jcode://new?text=explicit+request").unwrap(), cx);
+            assert_eq!(app.auto_send.as_deref(), Some("explicit request"));
         });
     }
 
@@ -133,9 +167,23 @@ impl MobileApp {
     }
 
     fn on_deep_link(&mut self, link: DeepLink, cx: &mut Context<Self>) {
-        log::info!("deep link: {link:?}");
+        // External share contents and requested prompts can contain secrets.
+        log::info!("deep link: {}", match &link {
+            DeepLink::OpenSession { .. } => "session",
+            DeepLink::NewSession { .. } => "new",
+            DeepLink::NewDraft { .. } => "draft",
+        });
         match link {
             DeepLink::OpenSession { session_id } => self.open_external_session(session_id, None, cx),
+            DeepLink::NewDraft { text } => {
+                if self.account.is_none() { return; }
+                self.new_tab(cx);
+                // A share must never become a request merely by connecting.
+                // Keep the original/parked tab's draft untouched.
+                self.auto_send = None;
+                self.composer.update(cx, |input, cx| input.set_text(text, cx));
+                cx.notify();
+            }
             DeepLink::NewSession { prompt } => {
                 if self.account.is_none() {
                     return;

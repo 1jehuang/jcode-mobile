@@ -19,10 +19,13 @@
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use jcode_mobile_core::agents::{AgentState, AgentsState, LiveTokenKind, LocalAgent, headline};
 use std::sync::Mutex;
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeepLink {
     NewSession { prompt: Option<String> },
+    /// External shares are untrusted input. This route only fills an editor.
+    NewDraft { text: String },
     OpenSession { session_id: String },
 }
 
@@ -73,6 +76,10 @@ pub fn parse(url: &str) -> Option<DeepLink> {
         })
     };
     match path {
+        "draft" => {
+            let text = param("text")?;
+            (!text.trim().is_empty()).then_some(DeepLink::NewDraft { text })
+        }
         "new" | "ask" => {
             let prompt = param("text").map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
             Some(DeepLink::NewSession { prompt })
@@ -155,17 +162,62 @@ fn emit_token(kind: LiveTokenKind, hex: String) {
     }
 }
 
-/// Show `state` in the single account-wide Live Activity if its content
-/// changed. An empty state ends it.
-pub fn sync_live(state: &AgentsState) {
-    static LAST: Mutex<Option<AgentsState>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap();
-    if last.as_ref().is_some_and(|l| l.same_content(state)) {
-        return;
+#[derive(Default)]
+struct LiveCache {
+    applied: Option<AgentsState>,
+    pending: Option<AgentsState>,
+    retry_at: Option<Instant>,
+}
+
+impl LiveCache {
+    fn sync(&mut self, state: &AgentsState, now: Instant, apply: impl FnOnce(&AgentsState) -> bool) {
+        if self.pending.is_none() && self.applied.as_ref().is_some_and(|last| last.same_content(state)) {
+            return;
+        }
+        // Account teardown must never wait behind a failed nonempty update.
+        // Repeated failures to cancel are still rate-limited.
+        let clearing = state.is_empty() && self.pending.as_ref().or(self.applied.as_ref())
+            .is_some_and(|last| !last.is_empty());
+        self.pending = Some(state.clone());
+        if clearing { self.retry_at = None; }
+        self.retry(now, false, apply);
     }
-    *last = Some(state.clone());
-    drop(last);
-    imp::apply(state);
+
+    fn retry(&mut self, now: Instant, refresh: bool, apply: impl FnOnce(&AgentsState) -> bool) {
+        if refresh { self.retry_at = None; }
+        if self.retry_at.is_some_and(|at| now < at) { return; }
+        let Some(state) = self.pending.take() else { return };
+        if apply(&state) {
+            self.applied = Some(state);
+            self.retry_at = None;
+        } else {
+            // A failed/partial application is not evidence the older state is
+            // still installed. Keep only the newest desired account state.
+            self.applied = None;
+            self.pending = Some(state);
+            self.retry_at = Some(now + crate::system::PLATFORM_RETRY_DELAY);
+        }
+    }
+}
+
+static LIVE_CACHE: Mutex<LiveCache> = Mutex::new(LiveCache {
+    applied: None, pending: None, retry_at: None,
+});
+
+/// Show changed content, caching only successful platform submission. Failed
+/// updates remain pending for a bounded UI-thread retry, even without new data.
+pub fn sync_live(state: &AgentsState) {
+    LIVE_CACHE.lock().unwrap().sync(state, Instant::now(), imp::apply);
+}
+
+pub(crate) fn retry_live(now: Instant, refresh: bool) -> Option<Instant> {
+    let mut cache = LIVE_CACHE.lock().unwrap();
+    cache.retry(now, refresh, imp::apply);
+    cache.retry_at
+}
+
+pub(crate) fn live_retry_at() -> Option<Instant> {
+    LIVE_CACHE.lock().unwrap().retry_at
 }
 
 #[cfg(target_os = "ios")]
@@ -241,15 +293,16 @@ mod imp {
         }
     }
 
-    pub(super) fn apply(state: &AgentsState) {
-        let Some(b) = bridge() else { return };
+    pub(super) fn apply(state: &AgentsState) -> bool {
+        let Some(b) = bridge() else { return false };
         if state.is_empty() {
             unsafe { (b.end)() };
-            return;
+            return true;
         }
         let json = CString::new(serde_json::to_string(state).unwrap_or_default()).unwrap_or_default();
         let ok = unsafe { (b.sync)(json.as_ptr()) };
         log::debug!("live activity: sync {}", if ok == 1 { "showing" } else { "unavailable" });
+        ok == 1
     }
 }
 
@@ -260,11 +313,13 @@ mod imp {
         let _ = super::emit_token;
     }
     pub(super) fn donate_shortcuts() {}
-    pub(super) fn apply(state: &super::AgentsState) {
+    pub(super) fn apply(state: &super::AgentsState) -> bool {
         let text = if state.is_empty() { String::new() } else { super::headline(state) };
-        if !crate::android_services::call_bool("syncLive", &text) {
+        let accepted = crate::android_services::call_bool("syncLive", &text);
+        if !accepted {
             log::debug!("Android ongoing agent notification unavailable");
         }
+        accepted
     }
 }
 
@@ -274,14 +329,55 @@ mod imp {
         let _ = super::emit_token;
     }
     pub(super) fn donate_shortcuts() {}
-    pub(super) fn apply(state: &super::AgentsState) {
+    pub(super) fn apply(state: &super::AgentsState) -> bool {
         log::debug!("live activity (preview): {}", super::headline(state));
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_failed_content_retries_without_new_events_and_success_is_deduplicated() {
+        let now = Instant::now();
+        let state = AgentsState { running: 1, ..Default::default() };
+        let mut cache = LiveCache::default();
+        cache.sync(&state, now, |_| false);
+        assert!(cache.applied.is_none());
+        assert_eq!(cache.pending.as_ref(), Some(&state));
+        cache.sync(&state, now, |_| panic!("failed delivery retried every frame"));
+        cache.retry(now, false, |_| panic!("early retry"));
+        cache.retry(now + crate::system::PLATFORM_RETRY_DELAY, false, |value| {
+            assert_eq!(value, &state);
+            true
+        });
+        assert_eq!(cache.applied.as_ref(), Some(&state));
+        assert!(cache.pending.is_none() && cache.retry_at.is_none());
+        let timestamp_only = AgentsState { updated_at: 500, ..state };
+        cache.sync(&timestamp_only, now, |_| panic!("successful content repeated"));
+    }
+
+    #[test]
+    fn live_permission_refresh_retries_identical_content_and_account_clear_is_urgent() {
+        let now = Instant::now();
+        let state = AgentsState { running: 1, ..Default::default() };
+        let empty = AgentsState::default();
+        let mut cache = LiveCache::default();
+        cache.sync(&state, now, |_| false);
+        cache.retry(now, true, |value| { assert_eq!(value, &state); true });
+        cache.sync(&AgentsState { running: 2, ..Default::default() }, now, |_| false);
+        cache.sync(&empty, now, |value| { assert!(value.is_empty()); false });
+        assert!(cache.applied.is_none());
+        assert!(cache.pending.as_ref().unwrap().is_empty());
+        cache.sync(&empty, now, |_| panic!("failed cancellation must also be bounded"));
+        cache.retry(now + crate::system::PLATFORM_RETRY_DELAY, false, |value| {
+            assert!(value.is_empty(), "an old account's pending notification was replayed");
+            true
+        });
+        assert_eq!(cache.applied.as_ref(), Some(&empty));
+    }
 
     #[test]
     fn parses_links() {
@@ -296,6 +392,9 @@ mod tests {
         assert_eq!(parse("jcode://session/"), None);
         assert_eq!(parse("https://x"), None);
         assert_eq!(parse("jcode://new?text=50%"), Some(DeepLink::NewSession { prompt: Some("50%".into()) }));
+        assert_eq!(parse("jcode://draft?text=%20Shared+%E2%9C%93%0A"), Some(DeepLink::NewDraft { text: " Shared ✓\n".into() }));
+        assert_eq!(parse("jcode://draft"), None);
+        assert_eq!(parse("jcode://draft?text=%20%0A"), None);
     }
 
     #[test]

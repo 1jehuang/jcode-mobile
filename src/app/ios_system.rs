@@ -55,6 +55,7 @@ impl MobileApp {
                     .collect(),
             );
         }
+        system::schedule_platform_retry(cx);
     }
 
     /// Width of the chat column: the phone screen, or what the iPad sidebar leaves.

@@ -7,6 +7,7 @@ import android.content.pm.*;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.database.MatrixCursor;
+import android.database.ContentObserver;
 import android.graphics.*;
 import android.media.*;
 import android.net.Uri;
@@ -39,6 +40,12 @@ public final class AndroidServices {
     private File cameraFile;
     private AudioRecord recorder;
     private volatile boolean foreground;
+    private boolean observingSettings;
+    private final ContentObserver animationSettings = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override public void onChange(boolean selfChange) {
+            if (foreground) nativeSettingsChanged();
+        }
+    };
     private static final Object ACCOUNT_LOCK = new Object();
     private static final String ACCOUNT_KEY = "jcode.accounts.aes-gcm.v1";
     private static final int MAX_ACCOUNT = 1024 * 1024;
@@ -46,6 +53,7 @@ public final class AndroidServices {
     private native void nativeInit();
     private native void nativeMedia(int status, byte[] data);
     private native void nativeResume(String url);
+    private native void nativeSettingsChanged();
     private native void nativeReply(String session, String text);
 
     private boolean ui(Callable<Boolean> action) {
@@ -60,6 +68,7 @@ public final class AndroidServices {
     }
     public void onResume(Intent intent) {
         foreground = true;
+        observeSettings();
         Bundle reply = intent == null ? null : RemoteInput.getResultsFromIntent(intent);
         if (reply != null && reply.getCharSequence("reply") != null && intent.getData() != null) {
             nativeReply(intent.getData().getLastPathSegment(), reply.getCharSequence("reply").toString());
@@ -69,8 +78,29 @@ public final class AndroidServices {
         // Consume launch/new Intents exactly once, not every foreground transition.
         if (intent != null) intent.setData(null);
     }
-    public void onPause() { foreground = false; audioStop(); }
-    public void onDestroy() { audioStop(); cleanupCamera(); }
+    public void onPause() { foreground = false; stopObservingSettings(); audioStop(); }
+    public void onDestroy() { foreground = false; stopObservingSettings(); audioStop(); cleanupCamera(); }
+    public void onConfigurationChanged() { nativeSettingsChanged(); }
+    public void onRequestPermissionsResult(int request) {
+        // Refresh only, never ask again here. A denied notification must not
+        // cause an automatic permission-request loop.
+        if (request == NOTIFICATIONS) nativeSettingsChanged();
+    }
+    private void observeSettings() {
+        if (observingSettings) return;
+        try {
+            activity.getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE), false, animationSettings);
+            observingSettings = true;
+        } catch (RuntimeException error) {
+            android.util.Log.w("jcode", "Animation settings observer unavailable: " + error.getClass().getSimpleName());
+        }
+    }
+    private void stopObservingSettings() {
+        if (!observingSettings) return;
+        activity.getContentResolver().unregisterContentObserver(animationSettings);
+        observingSettings = false;
+    }
     public boolean shareText(String text) {
         return ui(() -> {
             Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
