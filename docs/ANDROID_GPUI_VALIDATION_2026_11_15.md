@@ -32,7 +32,7 @@ The API30 emulator exposed competing Vulkan/GLES ownership of the native window.
 
 The shared GPUI fork passed 470 library tests, 21 final backend tests and the actual Android NDK cross-check. The upstream preservation checker reports 441 files and zero violations. Apple host checks and active iOS-simulator font-kit cross-check passed. Active macOS cross-check remains blocked by existing Linux-host media bindings generation.
 
-Dual-ABI locked Android builds, APK signing, ELF/APK 16KiB alignment and bundletool validation passed for debug artifacts. Matching AABs are unsigned test-only bundles, not production releases. An AAB-derived APK still requires runtime acceptance after the remaining fixes land.
+Dual-ABI locked Android builds, APK signing, ELF/APK 16KiB alignment and bundletool validation passed for debug artifacts. Matching AABs are unsigned test-only bundles, not production releases. The actual `2932937` test AAB was converted with bundletool to a universal APK using only the debug signer. That AAB-derived APK passed all 13 real API36/16KiB UI checks in 49.3 seconds. APK SHA256: `135171bf2e71796f7cb1e4ffac26096daf538d9601afe6dbe397c6b2482330b3`. Evidence: `target/android/acceptance-2932937-aab-api36-16k/`. This validates the test bundle path, not production signing or release readiness.
 
 ## Publishing boundary
 
