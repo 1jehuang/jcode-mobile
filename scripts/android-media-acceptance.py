@@ -49,6 +49,14 @@ def fixture_node(xml):
                            a.get("content-desc", ""))))
 
 
+def shared_activity_resumed(activities):
+    """Read current activity markers only, never a historical task entry."""
+    top = re.findall(r"^\s*topResumedActivity\s*[:=]\s*(.*)$", activities, re.MULTILINE)
+    resumed = top or re.findall(r"^\s*mResumedActivity\s*[:=]\s*(.*)$", activities, re.MULTILINE)
+    component = re.compile(r"(?<![\w.])org\.jcode\.mobile/(?:\.JcodeActivity|org\.jcode\.mobile\.JcodeActivity)(?![\w.$])")
+    return bool(resumed) and all(component.search(line) for line in resumed)
+
+
 def blue_pixels(rgb):
     return sum(abs(r - 99) <= 24 and abs(g - 149) <= 24 and abs(b - 236) <= 24
                for r, g, b in zip(rgb[0::3], rgb[1::3], rgb[2::3]))
@@ -148,11 +156,23 @@ class Acceptance:
         self.xml(name)
         focus = self.text("shell", "dumpsys", "window", "windows")
         (self.out / f"{name}-window.txt").write_text(focus)
-        focused = [line for line in focus.splitlines() if "mCurrentFocus=" in line]
-        self.check(name + ": shared GPUI returned", any(PACKAGE in line for line in focused)
+        activities = self.text("shell", "dumpsys", "activity", "activities")
+        (self.out / f"{name}-activities.txt").write_text(activities)
+        self.check(name + ": shared GPUI returned", shared_activity_resumed(activities)
                    and "Core" in text and "progress" in text)
         self.check(name + ": app alive", bool(self.text("shell", "pidof", PACKAGE)))
         return path, text, words
+
+    def dismiss_initial_keyboard(self):
+        state = self.text("shell", "dumpsys", "input_method")
+        (self.out / "initial-input-method.txt").write_text(state)
+        if re.search(r"\bmInputShown=true\b", state):
+            self.capture("initial-keyboard")
+            self.adb("shell", "input", "keyevent", "KEYCODE_BACK")
+            time.sleep(1)
+            after = self.text("shell", "dumpsys", "input_method")
+            (self.out / "initial-input-method-after-back.txt").write_text(after)
+            self.check("Initial keyboard dismissed", not re.search(r"\bmInputShown=true\b", after))
 
     def open_plus(self, evidence_name):
         # Known shared Rust debug-todos composer anchor, scaled to the screenshot.
@@ -170,6 +190,8 @@ class Acceptance:
         self.adb("install", "-r", str(self.args.apk.resolve()))
         self.adb("shell", "am", "force-stop", PACKAGE)
         self.adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.JcodeActivity", "--es", "gpui_demo", "todos")
+        time.sleep(3)
+        self.dismiss_initial_keyboard()
         path, _, _ = self.shared_return("shared-demo")
         self.check("Portrait fixture coordinates apply", self.width < self.height)
         fixture = self.out / FIXTURE
@@ -267,6 +289,15 @@ def self_test():
     import tempfile
     from types import SimpleNamespace
 
+    current = "  topResumedActivity=ActivityRecord{abc u0 org.jcode.mobile/.JcodeActivity t42}\n"
+    legacy = "    mResumedActivity: ActivityRecord{abc u0 org.jcode.mobile/org.jcode.mobile.JcodeActivity t42}\n"
+    assert shared_activity_resumed(current) and shared_activity_resumed(legacy)
+    for stale in ("ActivityRecord{abc org.jcode.mobile/.JcodeActivity t42}",
+                  current.replace(".JcodeActivity t42", ".JcodeActivityOther t42"),
+                  current.replace("org.jcode.mobile/", "org.jcode.mobile.other/"),
+                  current.replace("org.jcode.mobile/.JcodeActivity", "com.android.camera2/.CameraActivity") + legacy,
+                  "  topResumedActivity=null\n" + legacy):
+        assert not shared_activity_resumed(stale), stale
     assert bounds_center("[10,20][30,60]") == (20, 40)
     for invalid in ("", "[1,1][1,2]", "[-1,0][2,2]", "[3,4][2,5]"):
         try:
@@ -293,6 +324,19 @@ def self_test():
     assert changed_pixels(bytes([99, 149, 236]) * 20, bytes([99, 149, 236]) * 20) == 0
     with tempfile.TemporaryDirectory(prefix="media-acceptance-test-") as temporary:
         runner = Acceptance(SimpleNamespace(out=Path(temporary), serial="synthetic", camera=True))
+        from unittest.mock import patch
+        calls = []
+        runner.capture = lambda name: calls.append(("capture", name))
+        runner.adb = lambda *args: calls.append(args)
+        states = iter(("mInputShown=true", "mInputShown=false"))
+        runner.text = lambda *args: next(states)
+        with patch("time.sleep"):
+            runner.dismiss_initial_keyboard()
+        assert calls == [("capture", "initial-keyboard"), ("shell", "input", "keyevent", "KEYCODE_BACK")]
+        calls.clear()
+        runner.text = lambda *args: "mInputShown=false"
+        runner.dismiss_initial_keyboard()
+        assert not calls
         runner.exercise = lambda: (_ for _ in ()).throw(AssertionError("camera unavailable"))
         try:
             runner.run()
