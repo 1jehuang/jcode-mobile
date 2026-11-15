@@ -10,8 +10,14 @@ public final class JcodeActivity extends NativeActivity {
 
     private AndroidServices services;
     private boolean resumed;
+    private static native void nativeConfigureDebugDemo(String mode);
 
     @Override public void onCreate(Bundle state) {
+        // Only debug APKs expose this shared Rust demo route. Release strips the call.
+        if (BuildConfig.DEBUG && getIntent() != null) {
+            String demo = getIntent().getStringExtra("gpui_demo");
+            if (demo != null) nativeConfigureDebugDemo(demo);
+        }
         // Install app-private storage/services before NativeActivity starts Rust.
         services = new AndroidServices(this);
         super.onCreate(state);

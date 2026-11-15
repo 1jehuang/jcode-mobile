@@ -78,6 +78,49 @@ impl gpui::AssetSource for Assets {
     }
 }
 
+#[cfg(all(target_os = "android", debug_assertions))]
+static ANDROID_DEBUG_DEMO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn android_debug_demo() -> Option<&'static str> {
+    #[cfg(all(target_os = "android", debug_assertions))]
+    {
+        return ANDROID_DEBUG_DEMO.get().map(String::as_str);
+    }
+    #[cfg(not(all(target_os = "android", debug_assertions)))]
+    {
+        None
+    }
+}
+
+pub(crate) fn android_debug_demo_enabled() -> bool {
+    android_debug_demo().is_some()
+}
+
+/// Debug-only test route into existing shared GPUI demo data, never a Java UI.
+#[cfg(all(target_os = "android", debug_assertions))]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_jcode_mobile_JcodeActivity_nativeConfigureDebugDemo(
+    mut env: jni::JNIEnv,
+    _: jni::objects::JClass,
+    mode: jni::objects::JString,
+) {
+    if let Ok(mode) = env.get_string(&mode) {
+        let mode: String = mode.into();
+        if matches!(
+            mode.as_str(),
+            "todos"
+                | "todos-expanded"
+                | "git"
+                | "git-expanded"
+                | "git-loading"
+                | "git-error"
+                | "git-clean"
+        ) {
+            let _ = ANDROID_DEBUG_DEMO.set(mode);
+        }
+    }
+}
+
 pub fn run() {
     run_with_application(gpui_platform::application);
 }
@@ -151,6 +194,7 @@ fn run_with_application(make_application: impl FnOnce() -> gpui::Application) {
         // connect skips every network round trip when the machine is awake.
         if let Some(account) = &account
             && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
+            && !android_debug_demo_enabled()
         {
             jcode_mobile_core::timing::timed("app prewarm", || {
                 jcode_mobile_core::cloud::prewarm(account)
@@ -237,6 +281,14 @@ fn run_with_application(make_application: impl FnOnce() -> gpui::Application) {
                             app.seed_todo_demo(false);
                             app.seed_git_demo(demo);
                         }
+                    }
+                    #[cfg(all(target_os = "android", debug_assertions))]
+                    if let Some(demo) = android_debug_demo() {
+                        app.seed_todo_demo(demo == "todos-expanded");
+                        if demo.starts_with("git") {
+                            app.seed_git_demo(demo);
+                        }
+                        log::info!("jcode-mobile: shared GPUI debug demo {demo}");
                     }
                     app
                 })

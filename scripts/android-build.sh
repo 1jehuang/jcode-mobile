@@ -6,8 +6,13 @@ cd "$ROOT"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
 NDK="${ANDROID_NDK_HOME:-$SDK/ndk/27.2.12479018}"
 TOOLS="$SDK/build-tools/${ANDROID_BUILD_TOOLS:-35.0.0}"
-PLATFORM="$SDK/platforms/android-${ANDROID_API:-35}/android.jar"
+API="${ANDROID_API:-36}"
+TARGET_API="${ANDROID_TARGET_API:-$API}"
+PLATFORM="$SDK/platforms/android-$API/android.jar"
+[[ "$API" =~ ^[0-9]+$ && "$TARGET_API" =~ ^[0-9]+$ ]] || { echo 'Android API levels must be integers' >&2; exit 1; }
+(( TARGET_API >= 26 && TARGET_API <= API )) || { echo 'Target SDK must be between 26 and compile SDK' >&2; exit 1; }
 OUT="$ROOT/target/android"
+APK_OUTPUT="${ANDROID_APK_OUTPUT:-$OUT/JcodeMobile.apk}"
 ABIS="${ANDROID_ABIS:-arm64-v8a x86_64}"
 PROFILE="${ANDROID_PROFILE:-debug}"
 # Reuse the existing SDK-local JDK when no system compiler is on PATH.
@@ -16,7 +21,7 @@ if [[ -z "${JAVA_HOME:-}" && -x "$HOME/Android/jdk-21/bin/javac" ]]; then
 fi
 JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}"
 [[ "$PROFILE" == debug || "$PROFILE" == release ]] || { echo 'ANDROID_PROFILE must be debug or release' >&2; exit 1; }
-for tool in "${JAVA_BIN}javac" "${JAVA_BIN}jar" "${JAVA_BIN}keytool" zip justrust; do
+for tool in "${JAVA_BIN}javac" "${JAVA_BIN}jar" "${JAVA_BIN}keytool" zip justrust python3; do
     command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 1; }
 done
 for tool in aapt2 d8 zipalign apksigner; do
@@ -24,7 +29,7 @@ for tool in aapt2 d8 zipalign apksigner; do
 done
 [[ -f "$PLATFORM" ]] || { echo "Missing Android platform: $PLATFORM" >&2; exit 1; }
 [[ -d "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" ]] || { echo "Missing Linux Android NDK: $NDK" >&2; exit 1; }
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$(dirname "$APK_OUTPUT")"
 # Each packaging run gets an empty staging directory, never stale classes/ABIs.
 STAGE="$(mktemp -d "$OUT/stage.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
@@ -66,7 +71,16 @@ if [[ -d android/app/src/main/res ]] && find android/app/src/main/res -type f -p
     "$TOOLS/aapt2" compile --dir android/app/src/main/res -o "$STAGE/resources.zip"
     resource_args+=("$STAGE/resources.zip")
 fi
-"$TOOLS/aapt2" link -I "$PLATFORM" --manifest android/app/src/main/AndroidManifest.xml --java "$STAGE/generated" -o "$STAGE/base.apk" "${resource_args[@]}"
+debug_args=()
+debug_constant=false
+if [[ "$PROFILE" == debug ]]; then
+    debug_args+=(--debug-mode)
+    debug_constant=true
+fi
+python3 "$ROOT/scripts/android-manifest.py" android/app/src/main/AndroidManifest.xml "$STAGE/AndroidManifest.xml" "$TARGET_API"
+"$TOOLS/aapt2" link -I "$PLATFORM" --manifest "$STAGE/AndroidManifest.xml" --target-sdk-version "$TARGET_API" "${debug_args[@]}" --java "$STAGE/generated" -o "$STAGE/base.apk" "${resource_args[@]}"
+mkdir -p "$STAGE/generated/org/jcode/mobile"
+printf 'package org.jcode.mobile; public final class BuildConfig { public static final boolean DEBUG = %s; private BuildConfig() {} }\n' "$debug_constant" > "$STAGE/generated/org/jcode/mobile/BuildConfig.java"
 find android/app/src/main/java "$STAGE/generated" -name '*.java' > "$STAGE/sources.txt"
 "${JAVA_BIN}javac" --release 8 -classpath "$PLATFORM" -d "$STAGE/classes" @"$STAGE/sources.txt"
 "${JAVA_BIN}jar" cf "$STAGE/classes.jar" -C "$STAGE/classes" .
@@ -84,7 +98,7 @@ fi
 # The built-in key is development-only. Production signing must be explicit.
 export JCODE_ANDROID_STORE_PASS="${ANDROID_KEYSTORE_PASSWORD:-android}"
 export JCODE_ANDROID_KEY_PASS="${ANDROID_KEY_PASSWORD:-$JCODE_ANDROID_STORE_PASS}"
-"$TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias "${ANDROID_KEY_ALIAS:-androiddebugkey}" --ks-pass env:JCODE_ANDROID_STORE_PASS --key-pass env:JCODE_ANDROID_KEY_PASS --out "$OUT/JcodeMobile.apk" "$STAGE/aligned.apk"
-"$TOOLS/apksigner" verify --verbose "$OUT/JcodeMobile.apk"
-"$TOOLS/zipalign" -c -P 16 4 "$OUT/JcodeMobile.apk"
-echo "APK: $OUT/JcodeMobile.apk ($ABIS, $PROFILE)"
+"$TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-key-alias "${ANDROID_KEY_ALIAS:-androiddebugkey}" --ks-pass env:JCODE_ANDROID_STORE_PASS --key-pass env:JCODE_ANDROID_KEY_PASS --out "$APK_OUTPUT" "$STAGE/aligned.apk"
+"$TOOLS/apksigner" verify --verbose "$APK_OUTPUT"
+"$TOOLS/zipalign" -c -P 16 4 "$APK_OUTPUT"
+echo "APK: $APK_OUTPUT ($ABIS, $PROFILE, compile SDK $API, target SDK $TARGET_API)"
