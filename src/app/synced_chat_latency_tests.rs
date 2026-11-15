@@ -1,10 +1,15 @@
 use super::*;
+
+#[path = "synced_chat_poll_task_tests.rs"]
+mod poll_task_tests;
 use std::io::{Read, Write};
 use std::time::Instant;
 
 // Identical two-page snapshots in both runs. Each page stalls for 200 ms.
 // The server services connections independently, as the real API does.
-fn delayed_history() -> (jcode_mobile_core::Account, std::thread::JoinHandle<()>) {
+fn delayed_history(
+    gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> (jcode_mobile_core::Account, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let account = jcode_mobile_core::Account {
@@ -27,6 +32,7 @@ fn delayed_history() -> (jcode_mobile_core::Account, std::thread::JoinHandle<()>
                 }
                 Err(error) => panic!("{error}"),
             };
+            let gate = gate.clone();
             workers.push(std::thread::spawn(move || {
                 socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                 let mut bytes = Vec::new();
@@ -40,6 +46,12 @@ fn delayed_history() -> (jcode_mobile_core::Account, std::thread::JoinHandle<()>
                 let body = if request.contains("/mobile/commands/") {
                     serde_json::json!({"command":{"command_id":command("done").command_id,"kind":"message","session_id":"local-chat","status":"done"}})
                 } else {
+                    if let Some(gate) = gate {
+                        while !gate.load(std::sync::atomic::Ordering::SeqCst) {
+                            assert!(Instant::now() < deadline, "history gate was not released");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(200));
                     let first = request.contains("after_seq=-1");
                     assert!(first || request.contains("after_seq=3"));
@@ -63,7 +75,8 @@ fn delayed_history_does_not_gate_pending_command_ack(cx: &mut gpui::TestAppConte
     let (view, cx) = cx.add_window_view(fixture_app);
     let mut durations = Vec::new();
     for independent in [false, true] {
-        let (account, server) = delayed_history();
+        let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (account, server) = delayed_history(independent.then(|| gate.clone()));
         view.update(cx, |app, cx| {
             app.open_local_chat(live(), None, cx);
             let tab = app.active_tab;
@@ -81,6 +94,10 @@ fn delayed_history_does_not_gate_pending_command_ack(cx: &mut gpui::TestAppConte
                 assert!(app.local_chat_ready(&app.session));
                 assert_eq!(app.session.transcript[1].text, "Old snapshot");
                 durations.push(start.elapsed());
+                // Causal assertion, not a machine-speed threshold: the fixture
+                // cannot finish history until after pending was observed clear.
+                assert!(!history.is_finished());
+                gate.store(true, std::sync::atomic::Ordering::SeqCst);
                 history.join().unwrap()
             } else {
                 let transcript = mobile_sync::transcript(&account, "local-chat");
@@ -103,6 +120,4 @@ fn delayed_history_does_not_gate_pending_command_ack(cx: &mut gpui::TestAppConte
         durations[0].as_secs_f64() * 1000.,
         durations[1].as_secs_f64() * 1000.
     );
-    assert!(durations[0] >= Duration::from_millis(400));
-    assert!(durations[1] < durations[0] / 2);
 }

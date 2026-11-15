@@ -23,6 +23,41 @@ enum LocalPoll {
     },
 }
 
+async fn fetch_local_poll(
+    account: jcode_mobile_core::Account,
+    id: String,
+    pending: Option<String>,
+    command_poll: bool,
+) -> LocalPoll {
+    let request = move || {
+        if command_poll {
+            let expected = pending.expect("command polls require a pending command");
+            LocalPoll::Command {
+                result: mobile_sync::command(&account, &expected),
+                expected,
+            }
+        } else {
+            // Complete snapshots retain rewritten assistant rows.
+            LocalPoll::Transcript(mobile_sync::transcript(&account, &id))
+        }
+    };
+    #[cfg(not(test))]
+    {
+        request()
+    }
+    #[cfg(test)]
+    {
+        // GPUI's deterministic scheduler runs background futures inline.
+        // Keep real blocking HTTP off that thread so loop tests can hold a
+        // history response open while pumping command completion callbacks.
+        let (send, receive) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(request());
+        });
+        receive.await.expect("HTTP fixture request worker panicked")
+    }
+}
+
 pub(super) struct LocalChat {
     session: SyncedSession,
     submitting: bool,
@@ -256,22 +291,29 @@ impl MobileApp {
     }
 
     fn poll_local_chat(&mut self, tab: u64, cx: &mut Context<Self>) {
+        for task in self.local_chat_poll_tasks(tab, cx) {
+            task.detach();
+        }
+    }
+
+    fn local_chat_poll_tasks(&mut self, tab: u64, cx: &mut Context<Self>) -> Vec<gpui::Task<()>> {
         if self.offline {
-            return;
+            return Vec::new();
         }
         let Some(account) = self.account.clone() else {
-            return;
+            return Vec::new();
         };
         let generation = self.auth_generation;
         let Some(chat) = self.synced.chats.get_mut(&tab) else {
-            return;
+            return Vec::new();
         };
         chat.poll_generation = chat.poll_generation.wrapping_add(1);
         let poll_generation = chat.poll_generation;
         // Joining requests would still block receipts behind slow history.
+        let mut tasks = Vec::with_capacity(2);
         for command_poll in [false, true] {
             let account = account.clone();
-            cx.spawn(async move |this, cx| {
+            tasks.push(cx.spawn(async move |this, cx| {
                 loop {
                     let state = this
                         .update(cx, |this, _| {
@@ -296,23 +338,12 @@ impl MobileApp {
                     if !offline && (!command_poll || pending.is_some()) {
                         let request_account = account.clone();
                         let result = cx
-                            .background_spawn(async move {
-                                if command_poll {
-                                    LocalPoll::Command {
-                                        expected: pending.clone().unwrap(),
-                                        result: mobile_sync::command(
-                                            &request_account,
-                                            &pending.unwrap(),
-                                        ),
-                                    }
-                                } else {
-                                    // Complete snapshots retain rewritten assistant rows.
-                                    LocalPoll::Transcript(mobile_sync::transcript(
-                                        &request_account,
-                                        &id,
-                                    ))
-                                }
-                            })
+                            .background_spawn(fetch_local_poll(
+                                request_account,
+                                id,
+                                pending,
+                                command_poll,
+                            ))
                             .await;
                         let keep = this
                             .update(cx, |this, cx| {
@@ -343,9 +374,9 @@ impl MobileApp {
                     }
                     cx.background_executor().timer(Duration::from_secs(2)).await;
                 }
-            })
-            .detach();
+            }));
         }
+        tasks
     }
 
     fn apply_local_command(
@@ -426,7 +457,7 @@ impl MobileApp {
                     };
                     state.session_title = title;
                     state.is_processing = busy;
-                    state.transcript = synced_transcript_entries(transcript.messages);
+                    state.apply_synced_messages(transcript.messages);
                     state.error_banner = error.or_else(|| {
                         if uncertain {
                             Some(DELIVERY_UNCERTAIN.into())
