@@ -8,4 +8,5 @@
   <instrumentation android:name=".NativeInstrumentation" android:targetPackage="org.jcode.mobile" android:label="Real GPUI NativeActivity adapters" />
   <instrumentation android:name=".CameraOwnerInstrumentation" android:targetPackage="org.jcode.mobile" android:label="Private camera output setup and cleanup" />
   <instrumentation android:name=".CameraExternalInstrumentation" android:targetPackage="org.jcode.mobile.nativeservicestests" android:label="External UID camera URI grants" />
+  <instrumentation android:name=".TalkBackInstrumentation" android:targetPackage="org.jcode.mobile" android:label="Installed TalkBack native GPUI traversal" />
 </manifest>
