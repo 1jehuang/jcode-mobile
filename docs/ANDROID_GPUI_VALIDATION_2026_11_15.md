@@ -78,6 +78,10 @@ Two earlier harness failures remain saved: the transparent IME window's top was 
 
 A fresh hosted full application `justrust test --lib` initially found **469 passed, 7 failed, 11 ignored** (run `20261114-233704606-520455`). These exposed process-global viewport-width ownership and parallel-test settings interference. Commit `dfd27ee` makes layout width per MobileApp and isolates test settings with panic-safe thread-local fixtures, without weakening the original assertions. The subsequent plain hosted full suite passed **478 tests, 0 failed, 11 ignored** (run `20261114-234421555-585022`), and hosted `justrust check --lib` passed (run `20261114-234604907-592817`). The new non-debug release-profile test artifact includes these exact fixes, as recorded in `ANDROID_RELEASE_PROFILE_PROVENANCE_2026_11_15.md`. Earlier debug-emulator results remain bound to their earlier APK, not silently transferred to the rebuilt release artifact.
 
+## API36 release-bundle cold-input followthrough
+
+The release AAB-derived APK `3396bca60dfe7eb32d3a4e013cfe2fc297bff67963980c20c96d29a832a7848a` has **not passed** API36/16KiB onboarding acceptance. Actual runs saved under `target/android/release-runtime-aab-api36-16k/` and `target/android/release-runtime-aab-api36-visible-ime/` reached the real shared onboarding without a bootstrap crash, but the InputMethod frame had zero visible content height. OCR also observed `easedraft` after injecting `releasedraft`. Explicitly enabling the simulator's software keyboard with a hardware keyboard attached did not resolve the failure. The original secure setting was restored and the debug target reinstalled afterward. The visible-keyboard parser remains strict. A source-level focused-input-handler readiness repair is in progress, and earlier API26/30/35 successes are not being transferred to this failing run.
+
 ## Publishing boundary
 
 Actual offline release inspection of the test AAB with official bundletool configured rejects it with `Debuggable/test-only bundle is not releasable`. No network or publication operation is needed for that gate.
