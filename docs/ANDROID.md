@@ -66,7 +66,7 @@ publish it.
 ## Immutable Android integration artifacts, November 15, 2026
 
 All four GPUI manifest specifications and the lockfile pin the published revision
-`2932937ef09f8b5f6fef4a8ad3c18751f3b3ebe2`. It preserves the prior iOS revision
+`c249c6cefd4f578867f6277c20fe037fb5523435`. It preserves the prior iOS revision
 and includes the Android backend, composing input/insets interfaces, and the
 Android-only Vulkan debug naming workaround. All existing registry versions and
 checksums were retained, with nine additional Android dependency packages.
@@ -77,19 +77,23 @@ signatures. These artifacts are debug/test only and must not be published:
 
 | Artifact under `target/android/` | SHA256 |
 | --- | --- |
-| `JcodeMobile-gpui-2932937-api36-a11y-debug.apk` | `4bae483435107d0cf43ff45a3823e8a0a0fac6a1382ceaebc0f86879a89965dd` |
-| `JcodeMobile-gpui-2932937-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab` | `c1a4bac85e39b001c6dcee313e735510444c26aff82c66e547ee0aabf7b5573a` |
+| `JcodeMobile-gpui-c249c6c-api36-a11y-debug.apk` | `51f45d38b9ebd18438c060c0e5f1699d5711dba3397bcadb713e941da7a95ff2` |
+| `JcodeMobile-gpui-c249c6c-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab` | `84247a41da5d8079d571b9287e151b4f82e04449e8346424abc1239c1928f827` |
 
-These supersede the earlier `5198b79` pairs. They retain app commit `dd343b9`,
-attaching the semantic provider to NativeActivity's real native content host
-rather than requiring a `SurfaceView`. GPUI `2932937` also probes Vulkan without
-creating a native surface, then creates exactly one Vulkan or GLES instance.
-This addresses the API30 BufferQueue producer collision without geometry changes.
-The locked dual-ABI APK rebuild passed in 64.9 seconds, including compilation of
-the Android-only probe. All registry versions/checksums were unchanged by this
-repin. Matching actual AAB build/validation passed in 19.2 seconds and the AAB
-remains unsigned. Runtime API30 rendering is not established by compilation,
-and API26 compatibility is not claimed by this artifact record.
+These supersede the earlier `2932937` pairs. They retain the real NativeActivity
+accessibility host fix and include app keyboard mapping `857110e` and shared
+secure-aware text semantics `b95c662`. GPUI `c249c6ce` includes the surface-free
+single-backend selection, 112-byte storage path stride (WebGL texture stride
+remains 104), and shared keyboard configuration mapping. The saved camera
+private-cache/URI-grant production patch was also present before this build
+started, not added after packaging.
+
+The locked dual-ABI APK rebuild passed in 75.0 seconds, compiling the Android
+backend/configuration bridge against its published immutable revision. All
+registry versions/checksums were unchanged by this repin. Matching actual AAB
+build/validation passed in 37.8 seconds and the AAB remains unsigned. Runtime
+API30/API36 acceptance belongs to the coordinator, and API26 compatibility is
+not claimed by this artifact record.
 
 The actual AAB was built from that APK, not mocked: `aapt2 convert
 --output-format proto`, `scripts/android-bundle.py`, then Google bundletool
