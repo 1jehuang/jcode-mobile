@@ -26,8 +26,28 @@ impl<T: Clone> WarmTarget<T> {
 
 type CachedSsh = WarmTarget<crate::cloud_ssh::PreparedSsh>;
 static WARM_TARGET: OnceLock<Mutex<Option<CachedSsh>>> = OnceLock::new();
-static COLD_CONNECT: Mutex<()> = Mutex::new(());
+static COLD_CONNECT: Mutex<Option<FailedPrewarm>> = Mutex::new(None);
 const TARGET_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct FailedPrewarm {
+    account: Account,
+    finished: Instant,
+}
+
+/// Share only a failed speculative attempt that overlapped this foreground
+/// call. This is not a negative cache: a later call still tries direct SSH,
+/// and a different account can never suppress this account's attempt.
+fn take_overlapping_prewarm_failure(
+    failure: &mut Option<FailedPrewarm>,
+    account: &Account,
+    started: Instant,
+) -> bool {
+    failure.take().is_some_and(|failure| {
+        failure.finished >= started
+            && failure.account.api_key == account.api_key
+            && failure.account.api_base == account.api_base
+    })
+}
 
 fn warm_target() -> &'static Mutex<Option<CachedSsh>> {
     WARM_TARGET.get_or_init(|| Mutex::new(None))
@@ -426,6 +446,7 @@ pub fn connect(
     progress: &dyn Fn(&str),
     cancelled: &dyn Fn() -> bool,
 ) -> jcode_sdk::Result<jcode_sdk::JcodeClient> {
+    let connect_started = Instant::now();
     let check_cancelled = || {
         if cancelled() {
             Err(jcode_sdk::Error::new(jcode_sdk::ErrorKind::Cancelled, "Connection cancelled"))
@@ -462,9 +483,10 @@ pub fn connect(
     // Concurrent new tabs must not all register new keys and hit the cloud's
     // instance-connect rate limit. Recheck after waiting for another opener.
     let lock_started = Instant::now();
-    let _opening = COLD_CONNECT.lock().unwrap();
+    let mut opening = COLD_CONNECT.lock().unwrap();
     crate::timing::stage("cold connect lock wait", lock_started.elapsed());
     check_cancelled()?;
+    let prewarm_failed = take_overlapping_prewarm_failure(&mut opening, account, connect_started);
     let cached = {
         let cache = warm_target().lock().unwrap();
         cache.as_ref().and_then(|entry| entry.for_account(account, Instant::now()))
@@ -489,7 +511,8 @@ pub fn connect(
     // Fast path: the machine is usually still awake. SSH straight to the last
     // control-plane-validated address with this device's authorized key and
     // the same pinned host keys. Any failure falls through to the control plane.
-    if let Some(state) = crate::cloud_direct::load_or_create(account)
+    if !prewarm_failed
+        && let Some(state) = crate::cloud_direct::load_or_create(account)
         && let (Some(target), Some(key)) = (state.target(), state.key())
     {
         progress("Connecting to your Jcode Cloud machine…");
@@ -633,14 +656,24 @@ pub fn prewarm(account: &Account) {
             forget_master(&ssh);
         }
         // A real connect in progress already does this work.
-        let Ok(_opening) = COLD_CONNECT.try_lock() else { return };
+        let Ok(mut opening) = COLD_CONNECT.try_lock() else { return };
+        *opening = None;
         let started = Instant::now();
         if let Some(state) = crate::cloud_direct::load_or_create(&account)
             && let (Some(target), Some(key)) = (state.target(), state.key())
-            && let Ok(ssh) = crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT)
         {
-            crate::timing::stage("prewarm direct ssh", started.elapsed());
-            cache_master(&account, ssh).refill();
+            match crate::cloud_ssh::CloudSsh::connect_timeout(target, key, crate::cloud_direct::DIRECT_AUTH_TIMEOUT) {
+                Ok(ssh) => {
+                    crate::timing::stage("prewarm direct ssh", started.elapsed());
+                    cache_master(&account, ssh).refill();
+                }
+                Err(_) => {
+                    // A foreground opener waiting on this lock must not repeat
+                    // the exact speculative attempt before using the control
+                    // plane. Later independent calls retain the normal retry.
+                    *opening = Some(FailedPrewarm { account, finished: Instant::now() });
+                }
+            }
         }
     });
 }
@@ -685,6 +718,76 @@ pub fn reset_badge(account: &Account) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prewarm_fixture_account() -> Account {
+        serde_json::from_value(serde_json::json!({
+            "api_key": "fixture-only", "api_base": "http://127.0.0.1:1"
+        })).unwrap()
+    }
+
+    #[test]
+    fn prewarm_failure_is_shared_only_with_overlapping_same_account_call() {
+        let account = prewarm_fixture_account();
+        let started = Instant::now();
+        let finished = started + Duration::from_millis(10);
+        let marker = || Some(FailedPrewarm { account: account.clone(), finished });
+        let mut failure = marker();
+        assert!(take_overlapping_prewarm_failure(&mut failure, &account, started));
+        assert!(!take_overlapping_prewarm_failure(&mut failure, &account, started));
+        assert!(!take_overlapping_prewarm_failure(&mut marker(), &account, finished + Duration::from_nanos(1)));
+        for other in [
+            Account { api_key: "other-fixture".into(), ..account.clone() },
+            Account { api_base: "http://127.0.0.1:2".into(), ..account.clone() },
+        ] {
+            assert!(!take_overlapping_prewarm_failure(&mut marker(), &other, started));
+        }
+    }
+
+    /// Offline timing fixture, not a device speedup: an in-flight failed
+    /// prewarm holds the same serialization lock as a foreground opener.
+    #[test]
+    fn overlapping_failed_prewarm_avoids_duplicate_probe_fixture() {
+        use std::sync::{Arc, Barrier, atomic::{AtomicUsize, Ordering}};
+        fn run(share_failure: bool) -> (usize, Duration) {
+            let state = Arc::new(Mutex::new(None));
+            let entered = Arc::new(Barrier::new(2));
+            let release = Arc::new(Barrier::new(2));
+            let probes = Arc::new(AtomicUsize::new(0));
+            let account = prewarm_fixture_account();
+            let worker = {
+                let (state, entered, release, probes, account) =
+                    (state.clone(), entered.clone(), release.clone(), probes.clone(), account.clone());
+                std::thread::spawn(move || {
+                    let mut guard = state.lock().unwrap();
+                    entered.wait();
+                    release.wait();
+                    probes.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(80));
+                    *guard = Some(FailedPrewarm { account, finished: Instant::now() });
+                })
+            };
+            entered.wait();
+            let started = Instant::now();
+            release.wait();
+            let mut guard = state.lock().unwrap();
+            let shared = share_failure && take_overlapping_prewarm_failure(&mut guard, &account, started);
+            if !shared {
+                probes.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            let elapsed = started.elapsed();
+            drop(guard);
+            worker.join().unwrap();
+            (probes.load(Ordering::Relaxed), elapsed)
+        }
+        let (before_probes, before) = run(false);
+        let (after_probes, after) = run(true);
+        assert_eq!(before_probes, 2);
+        assert_eq!(after_probes, 1);
+        // Exact counts, not scheduler-sensitive timing thresholds, establish
+        // removal of one complete 80ms simulated authentication attempt.
+        eprintln!("prewarm_overlap_fixture before_ms={:.2} after_ms={:.2} before_probes={before_probes} after_probes={after_probes}", before.as_secs_f64() * 1000.0, after.as_secs_f64() * 1000.0);
+    }
 
     /// Uses real account credentials without printing them. Unlike SSH fixture
     /// tests, this includes the control plane and the installed cloud binary.
