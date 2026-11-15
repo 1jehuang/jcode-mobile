@@ -2389,7 +2389,9 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {
+        "id:tuple:literal:text-input": 1
+      },
       "coverage": [
         {
           "kind": "state_model_mocked",
@@ -2399,6 +2401,15 @@
             "src/text_input.rs::ios_keyboard_tests::return_key_submits_not_inserts",
             "src/text_input.rs::ios_keyboard_tests::read_only_transcript_can_select_and_copy_but_not_edit",
             "src/text_input.rs::ios_keyboard_tests::keyboard_config_reaches_platform"
+          ]
+        },
+        {
+          "kind": "state_model_mocked",
+          "note": "Rendered accessibility node inspection checks stable entity IDs, text semantics and secret-value omission. Direct SetValue handler tests cover Unicode replacement, composition reset, payload rejection and read-only fencing. These do not drive native TalkBack/VoiceOver action dispatch or prove screen-reader navigation.",
+          "tests": [
+            "src/text_input.rs::ios_keyboard_tests::accessibility_render_exposes_real_text_and_stable_entity_id",
+            "src/text_input.rs::ios_keyboard_tests::accessibility_secure_fields_never_publish_value_or_secret_length",
+            "src/text_input.rs::ios_keyboard_tests::accessibility_set_value_resets_composition_and_rejects_read_only_or_wrong_payload"
           ]
         },
         {
@@ -2418,6 +2429,7 @@
       ],
       "coverage_scope": "partial",
       "events": {
+        "on_a11y_action": 1,
         "on_action": 11,
         "on_mouse_down": 1,
         "on_mouse_move": 1,

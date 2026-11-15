@@ -167,6 +167,57 @@ Normal mobile startup does not request recovery, so this is **not** a measured
 improvement to its 10.92-second readiness wait. Source changes are not deployed,
 and the backend's divergent-source inventory guard remains mandatory.
 
+## Follow-up: provisioning contention
+
+A cancelled connection previously used a blocking mutex acquisition behind any
+other cold opener. That opener may be waiting for a sleeping host, so the
+cancelled waiter could retain its connection worker until provisioning ended.
+The acquisition now checks cancellation while contended, without cancelling the
+active opener or bypassing provisioning serialization. Two causal fixtures
+require cancellation to complete while the owner still holds the lock; their
+watchdogs are deadlock protection, not latency benchmarks.
+
+After final authenticated-master publication, the provisioning lock is also
+released before independent API hello. A waiter already queued on that lock
+can then recheck the shared authenticated master instead of waiting for the
+first tab's API process startup. Host discovery/key registration remain
+serialized. The remembered-direct fallback branch intentionally retains its
+existing serialization because a failed API open there still falls back to
+control-plane provisioning. These changes remove contention, not SSH network
+round trips or VM boot time, and do not establish a phone speedup.
+
+Contention changes are committed as `58e4d6c`. Combined hosted core acceptance
+passed **156 tests, zero failed, four ignored**, receipt
+`20261114-231911143-424070`. That also includes the pre-attach push subscription
+regressions from `bec8a23` (typed assertion corrected in `08488a4`) for create,
+resume and fork. Early attach pushes are no longer lost before subscribing,
+which avoids missing fresh content and an unnecessary eight-second runtime
+metadata fallback. This is not an eight-second improvement to every connection.
+
+Fresh-history optimization `bf8e4f7` skips three reconciliation indexes when no
+live/optimistic tail exists. The controlled index-only benchmark measured
+**6.097 ms** of eliminated work for 250 messages of 4096 bytes and **95.971 ms**
+for 250 messages of 65536 bytes. The no-tail branch returns empty indexes
+without scanning transcript content. Tests retain the indexes when a live tail
+needs reconciliation and verify unchanged fresh/repeated snapshot contents.
+Benchmark receipt: `20261114-232052572-424068`. These are synthetic CPU savings,
+not phone end-to-end timings or a solution to the observed 21.63-second wait.
+
+Integrated hosted app acceptance ran 476 non-ignored tests: **475 passed** and
+one coverage-ledger drift check failed, receipt `20261114-232246113-445178`.
+Review confirmed the new text-input accessibility ID/SetValue wiring was absent
+from the ledger. Only that row was updated with three existing accessibility
+regressions and explicit native assistive-technology coverage limits. The
+inventory and all three fail-closed guard fixtures then passed (**4/4**), receipt
+`20261114-232628185-466563`, with no test binary rebuild. The entire app suite
+was not rerun after this documentation-only correction. No guard was disabled.
+
+At this point the remaining large observed costs are cloud readiness and SSH
+network/authentication, not transcript hashing. Further device-facing tuning
+needs a new installed-artifact stage breakdown. Do not infer that all remaining
+costs are unavoidable, promise universal subsecond cold boot, reduce security,
+or keep paid hosts awake merely to improve a benchmark.
+
 ## Real-device release gate
 
 Use an installed release artifact containing the source changes. Capture cold
