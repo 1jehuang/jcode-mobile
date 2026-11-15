@@ -8,6 +8,23 @@ The GPUI fork preserves the previous iOS revision through an ordinary merge. Pub
 
 ## Observed emulator results
 
+### Latest integrated artifact
+
+`JcodeMobile-gpui-c249c6c-api36-a11y-debug.apk`, SHA256 `51f45d38b9ebd18438c060c0e5f1699d5711dba3397bcadb713e941da7a95ff2`, includes the published keyboard mapping, GLES storage padding, shared text-input semantics and private camera provider.
+
+- **API30 Android11: all 14 shared-GPUI checks passed in49.0s.** Actual GLES shader creation and rendering now work. Evidence: `target/android/acceptance-c249-api30/`.
+- **API36 Android16, actual16384-byte pages: all14 checks passed in46.8s.** Evidence: `target/android/acceptance-c249-api36-16k/`.
+- **API35 native instrumentation passed in14.4s** against this installed artifact: actual GPUI field values after composing/replacing/committing/deleting through the production InputConnection, production email/OTP/composer EditorInfo mappings, unchanged-hint suppression, composing-shadow preservation, real temporary accessibility activation/restoration, real clipboard round-trip, actual content-host discovery, pause/resume callbacks, and production Keystore AES-GCM checks. This is not TalkBack acceptance or a claim about every keyboard's restart timing.
+- The matching test AAB is `JcodeMobile-gpui-c249c6c-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab`, SHA256 `84247a41da5d8079d571b9287e151b4f82e04449e8346424abc1239c1928f827`. It remains unsigned test-only, not a production release.
+
+- **API36 native instrumentation also passed**, including real composing InputConnection and production Keystore operations. Saved native log: `/home/jeremy/.jcode/scratch/native-c249-api36/NativeInstrumentation.txt`.
+- **API30 native checks and post-finish cleanup passed.** On Android11, the main instrumentation intentionally returns `NEEDS_CLEANUP_PROBE`, never PASS. A separate fresh instrumentation then verifies the real accessibility enabled state and unchanged original user-preference fingerprint after framework disconnect. Both phases and storage checks passed. Evidence: `/home/jeremy/.jcode/scratch/native-c249-api30-final/`.
+- **Latest AAB-derived universal APK passed all14 checks on actual16KiB API36 in40.2s.** APK SHA256 `b58208e29f06b19b5993cc1110c2a23320b3342c3a09cee5de1d278f0798726f`. Evidence: `target/android/acceptance-c249-aab-api36-16k-ime-ready/`. The harness now waits for stable real keyboard readiness before injecting adb text, saves command failures, and preserves cleanup errors rather than hiding them.
+- **Actual gallery plus virtual-camera capture passed14 checks on API35 in88.7s.** Real DocumentsUI import, external camera shutter/review acceptance, both thumbnails retained in the shared GPUI composer, and return without observed crashes. Evidence: `target/android/media-c249-api35-recovered/`.
+- **Distinct-UID camera grant security checks passed** with a unique terminal PASS/-1: external recipient reads/writes actual JPEG through the exact production URI, sibling/traversal access is denied, production decoding and cleanup execute, and the same still-live external recipient loses read/write access after explicit revocation. Evidence: `/home/jeremy/.jcode/scratch/android-native-services-tests/camera-grant-roundtrip.txt`. Earlier malformed Parcelable/false shell-success output is not counted.
+
+The chronological observations below retain the earlier failures and artifact-specific results. Those older failures are not attributed to this latest artifact unless explicitly retested.
+
 - Android 15, API 35: all 13 shared-GPUI screenshot/OCR acceptance checks passed against the dual-ABI API36 debug APK with the Vulkan naming fix.
 - Android 16, API 36: all 13 checks passed on the actual 16,384-byte-page emulator against `JcodeMobile-gpui-5198b79-api36-a11y-debug.apk`, SHA256 `1ac3fbedb05a16a95d11227ee2b20ca9df8f450fe49f6d4dd563ec0d6c4be450`.
 - These checks exercise shared onboarding, absence of Apple-only login, real software keyboard, email-field text, keyboard avoidance, unsent draft preservation, existing shared Rust chat demo, composer input, rotation and surface/background recreation. They do not authenticate, send email or invoke a live model.
@@ -40,4 +57,4 @@ Dual-ABI locked Android builds, APK signing, ELF/APK 16KiB alignment and bundlet
 
 Actual offline release inspection of the test AAB with official bundletool configured rejects it with `Debuggable/test-only bundle is not releasable`. No network or publication operation is needed for that gate.
 
-No Play upload, API edit or publishing commit has occurred. Production upload signing, authorized Play configuration and genuine complete parity evidence are required. Remote FCM push is not implemented and the backend remains APNs-only. Full authenticated cloud/network, TalkBack, composing IME, positive media workflows and release-bundle runtime acceptance are not claimed. Physical ARM64 runtime has not been tested because the user has no Android phone. Emulator checks will be exhausted without substituting unsupported hardware claims.
+No Play upload, API edit or publishing commit has occurred. Production upload signing, authorized Play configuration and genuine complete parity evidence are required. Remote FCM push is not implemented and the backend remains APNs-only. Full authenticated cloud/network, TalkBack, microphone/voice workflows and production release-bundle acceptance remain unverified. Composing InputConnection, positive gallery/virtual-camera workflows and the debug AAB-derived runtime now pass as recorded in the latest integrated-artifact section. Physical ARM64 runtime has not been tested because the user has no Android phone. Emulator checks will be exhausted without substituting unsupported hardware claims.

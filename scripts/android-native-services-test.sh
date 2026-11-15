@@ -45,7 +45,12 @@ FAILED=0
 for runner in StorageInstrumentation NativeInstrumentation; do
   LOG="$OUT/$runner.txt"
   if ! "$ADB" -s "$SERIAL" shell am instrument -w -r "org.jcode.mobile.nativeservicestests/.$runner" | tee "$LOG"; then FAILED=1; fi
-  if ! grep -q '^INSTRUMENTATION_RESULT: result=PASS' "$LOG" || ! grep -q '^INSTRUMENTATION_CODE: -1' "$LOG"; then FAILED=1; fi
+  if [[ "$runner" == NativeInstrumentation ]] && CLEANUP_ARGS="$(python3 "$ROOT/scripts/android-instrumentation-result.py" --cleanup-args "$LOG" 2>/dev/null)"; then
+    read -r EXPECTED_STATE EXPECTED_PREFERENCES <<< "$CLEANUP_ARGS"
+    PROBE_LOG="$OUT/AccessibilityCleanupProbe.txt"
+    if ! "$ADB" -s "$SERIAL" shell am instrument -w -r -e cleanup_probe true -e expected_accessibility "$EXPECTED_STATE" -e expected_preferences "$EXPECTED_PREFERENCES" "org.jcode.mobile.nativeservicestests/.NativeInstrumentation" | tee "$PROBE_LOG"; then FAILED=1; fi
+    if ! python3 "$ROOT/scripts/android-instrumentation-result.py" "$PROBE_LOG"; then FAILED=1; fi
+  elif ! python3 "$ROOT/scripts/android-instrumentation-result.py" "$LOG"; then FAILED=1; fi
 done
 if [[ $FAILED -ne 0 ]]; then echo "FAIL or UNTESTABLE: inspect $OUT/*Instrumentation.txt. No parity claim." >&2; exit 1; fi
 echo 'PASS: bounded native-service checks only. Not full platform parity or hardware acceptance.'

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,13 @@ def main():
 
     def adb(*command, binary=False):
         result = subprocess.run([str(adb_path), "-s", args.serial, *command],
-                                check=True, capture_output=True, timeout=45)
+                                capture_output=True, timeout=45)
+        if result.returncode:
+            with (out / "adb-errors.txt").open("a") as log:
+                log.write(json.dumps(command) + f" -> {result.returncode}\n")
+                log.write(result.stdout.decode(errors="replace") + "\n")
+                log.write(result.stderr.decode(errors="replace") + "\n")
+            result.check_returncode()
         return result.stdout if binary else result.stdout.decode(errors="replace").strip()
 
     def check(name, condition):
@@ -64,6 +71,20 @@ def main():
 
     def draft_present(text):
         return "paritydraft" in re.sub(r"[^a-z]", "", text.lower())
+
+    def await_keyboard():
+        # adb input bypasses the IME's own event buffering. Cold-boot keyboard
+        # startup can exceed one second, so wait for observed shown state to
+        # remain stable before injecting keys, not merely for a focus tap.
+        deadline = time.monotonic() + 15
+        stable = 0
+        while time.monotonic() < deadline:
+            state = adb("shell", "dumpsys", "input_method")
+            stable = stable + 1 if "mInputShown=true" in state else 0
+            if stable >= 3:
+                return
+            time.sleep(0.3)
+        raise AssertionError("Native keyboard did not reach stable shown state")
 
     rotation = None
     accelerometer = None
@@ -99,7 +120,7 @@ def main():
         check("Shared GPUI onboarding renders", "Jcode" in text and "Google" in text)
         check("Apple-only sign-in is absent on Android", "Apple" not in text)
         tap_word(words, "example.com")
-        time.sleep(1)  # Wait for Android's IME connection before injecting keys.
+        await_keyboard()
         adb("shell", "input", "text", "paritydraft%ssample")
         time.sleep(2)
         text, words = capture("onboarding-keyboard")
@@ -134,7 +155,7 @@ def main():
         text, words = capture("shared-demo")
         check("Existing shared Rust chat demo renders", "Core" in text and "progress" in text)
         tap_word(words, "Message")
-        time.sleep(1)
+        await_keyboard()
         adb("shell", "input", "text", "paritydraft%ssample")
         time.sleep(2)
         text, _ = capture("composer-keyboard")
@@ -164,15 +185,23 @@ def main():
         check("Native bootstrap is the shared GPUI app", "shared GPUI NativeActivity bootstrap" in logs)
         check("Native app remains alive without crash", "Fatal signal" not in logs and "FATAL EXCEPTION" not in logs)
     finally:
+        cleanup_failed = False
         for key, value in (("user_rotation", rotation), ("accelerometer_rotation", accelerometer)):
             if value is not None:
-                if value == "null":
-                    adb("shell", "settings", "delete", "system", key)
-                else:
-                    adb("shell", "settings", "put", "system", key, value)
+                try:
+                    if value == "null":
+                        adb("shell", "settings", "delete", "system", key)
+                    else:
+                        adb("shell", "settings", "put", "system", key, value)
+                except (subprocess.SubprocessError, OSError) as error:
+                    cleanup_failed = True
+                    checks.append({"name": f"Restore {key}", "passed": False,
+                                   "error": str(error)})
         (out / "result.json").write_text(json.dumps({**metadata, "checks": checks,
             "full_parity": False, "release_accepted": False,
             "remaining": ["real composing IME and TalkBack", "native platform services", "authenticated network workflows", "signed release AAB generated APK validation", "FCM backend delivery"]}, indent=2) + "\n")
+        if cleanup_failed and sys.exc_info()[0] is None:
+            raise AssertionError("Emulator settings cleanup failed, inspect result.json and adb-errors.txt")
 
 
 if __name__ == "__main__":
