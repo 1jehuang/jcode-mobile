@@ -15,10 +15,12 @@ def passed(text):
 def cleanup_args(text):
     results = re.findall(r"^INSTRUMENTATION_RESULT: result=(.*)$", text, re.MULTILINE)
     codes = re.findall(r"^INSTRUMENTATION_CODE: (.*)$", text, re.MULTILINE)
-    states = re.findall(r"^INSTRUMENTATION_RESULT: cleanup_expected_state=(true|false)\r?$", text, re.MULTILINE)
-    hashes = re.findall(r"^INSTRUMENTATION_RESULT: cleanup_expected_preferences=([0-9a-f]{64})\r?$", text, re.MULTILINE)
+    states = re.findall(r"^INSTRUMENTATION_RESULT: cleanup_expected_state=(.*)$", text, re.MULTILINE)
+    hashes = re.findall(r"^INSTRUMENTATION_RESULT: cleanup_expected_preferences=(.*)$", text, re.MULTILINE)
+    states = [value.strip() for value in states]
+    hashes = [value.strip() for value in hashes]
     failed = re.search(r"^INSTRUMENTATION_(?:RESULT|STATUS): (?:failure|Error|shortMsg)=", text, re.MULTILINE)
-    if [v.strip() for v in results] == ["NEEDS_CLEANUP_PROBE"] and [v.strip() for v in codes] == ["-1"] and len(states) == len(hashes) == 1 and not failed:
+    if [v.strip() for v in results] == ["NEEDS_CLEANUP_PROBE"] and [v.strip() for v in codes] == ["-1"] and len(states) == len(hashes) == 1 and states[0] in ("true", "false") and re.fullmatch(r"[0-9a-f]{64}", hashes[0]) and not failed:
         return states[0] + " " + hashes[0]
     return None
 
@@ -32,6 +34,9 @@ def self_test():
     assert cleanup_args(pending.replace("a" * 64, "bad")) is None
     assert cleanup_args(pending + "INSTRUMENTATION_RESULT: failure=bad\n") is None
     assert cleanup_args(good) is None
+    assert cleanup_args(pending + "INSTRUMENTATION_RESULT: cleanup_expected_state=bad\n") is None
+    assert cleanup_args(pending + "INSTRUMENTATION_RESULT: cleanup_expected_preferences=bad\n") is None
+    assert cleanup_args(pending.replace("\n", "\r\n")) == "false " + "a" * 64
     assert passed(good)
     assert passed(good.replace("\n", "\r\n"))
     assert not passed("")

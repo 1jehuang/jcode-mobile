@@ -12,6 +12,7 @@ The GPUI fork preserves the previous iOS revision through an ordinary merge. Pub
 
 `JcodeMobile-gpui-c249c6c-api36-a11y-debug.apk`, SHA256 `51f45d38b9ebd18438c060c0e5f1699d5711dba3397bcadb713e941da7a95ff2`, includes the published keyboard mapping, GLES storage padding, shared text-input semantics and private camera provider.
 
+- **API35 Android15: all14 shared-GPUI checks passed in38.5s against the latest combined APK.** Evidence: `target/android/acceptance-c249-api35-final/`.
 - **API30 Android11: all 14 shared-GPUI checks passed in49.0s.** Actual GLES shader creation and rendering now work. Evidence: `target/android/acceptance-c249-api30/`.
 - **API36 Android16, actual16384-byte pages: all14 checks passed in46.8s.** Evidence: `target/android/acceptance-c249-api36-16k/`.
 - **API35 native instrumentation passed in14.4s** against this installed artifact: actual GPUI field values after composing/replacing/committing/deleting through the production InputConnection, production email/OTP/composer EditorInfo mappings, unchanged-hint suppression, composing-shadow preservation, real temporary accessibility activation/restoration, real clipboard round-trip, actual content-host discovery, pause/resume callbacks, and production Keystore AES-GCM checks. This is not TalkBack acceptance or a claim about every keyboard's restart timing.
