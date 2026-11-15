@@ -66,7 +66,7 @@ publish it.
 ## Immutable Android integration artifacts, November 15, 2026
 
 All four GPUI manifest specifications and the lockfile pin the published revision
-`5198b79914318170b5cae0ce785c0b1d61f901d5`. It preserves the prior iOS revision
+`2932937ef09f8b5f6fef4a8ad3c18751f3b3ebe2`. It preserves the prior iOS revision
 and includes the Android backend, composing input/insets interfaces, and the
 Android-only Vulkan debug naming workaround. All existing registry versions and
 checksums were retained, with nine additional Android dependency packages.
@@ -77,14 +77,19 @@ signatures. These artifacts are debug/test only and must not be published:
 
 | Artifact under `target/android/` | SHA256 |
 | --- | --- |
-| `JcodeMobile-gpui-5198b79-api36-a11y-debug.apk` | `1ac3fbedb05a16a95d11227ee2b20ca9df8f450fe49f6d4dd563ec0d6c4be450` |
-| `JcodeMobile-gpui-5198b79-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab` | `405987cd67d7be49ff01a16fcfbc45fe2b278dd325fde54f0074a0dbf4dcc7f3` |
+| `JcodeMobile-gpui-2932937-api36-a11y-debug.apk` | `4bae483435107d0cf43ff45a3823e8a0a0fac6a1382ceaebc0f86879a89965dd` |
+| `JcodeMobile-gpui-2932937-api36-a11y-debug-UNSIGNED-TEST-ONLY.aab` | `c1a4bac85e39b001c6dcee313e735510444c26aff82c66e547ee0aabf7b5573a` |
 
-These supersede the earlier `api36-debug` pair. They include app commit
-`dd343b9`, attaching the semantic provider to NativeActivity's real native
-content host rather than requiring a `SurfaceView`. The locked dual-ABI APK
-rebuild passed in 16.9 seconds, and the matching actual AAB build/validation
-passed in 28.7 seconds. The AAB remains unsigned.
+These supersede the earlier `5198b79` pairs. They retain app commit `dd343b9`,
+attaching the semantic provider to NativeActivity's real native content host
+rather than requiring a `SurfaceView`. GPUI `2932937` also probes Vulkan without
+creating a native surface, then creates exactly one Vulkan or GLES instance.
+This addresses the API30 BufferQueue producer collision without geometry changes.
+The locked dual-ABI APK rebuild passed in 64.9 seconds, including compilation of
+the Android-only probe. All registry versions/checksums were unchanged by this
+repin. Matching actual AAB build/validation passed in 19.2 seconds and the AAB
+remains unsigned. Runtime API30 rendering is not established by compilation,
+and API26 compatibility is not claimed by this artifact record.
 
 The actual AAB was built from that APK, not mocked: `aapt2 convert
 --output-format proto`, `scripts/android-bundle.py`, then Google bundletool
