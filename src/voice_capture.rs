@@ -408,6 +408,39 @@ fn android_wav(pcm: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod android_audio_tests {
     #[test]
+    fn maximum_android_pcm_is_accepted_without_truncation() {
+        let mut pcm = vec![0; 9_600_000];
+        pcm[9_599_998..].copy_from_slice(&i16::MIN.to_le_bytes());
+        let wav = super::android_wav(&pcm).unwrap();
+        assert_eq!(wav.len(), 9_600_044);
+        assert_eq!(&wav[44..], pcm);
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 9_600_036);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 9_600_000);
+    }
+
+    #[test]
+    fn native_acceptance_hook_is_android_debug_only() {
+        use syn::parse::Parser;
+        let file = syn::parse_file(include_str!("voice_capture.rs")).unwrap();
+        let module = file.items.iter().find_map(|item| match item {
+            syn::Item::Mod(module) if module.ident == "android_acceptance" => Some(module),
+            _ => None,
+        }).expect("Native acceptance module missing");
+        let cfg = module.attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
+        let syn::Meta::List(cfg) = &cfg.meta else { panic!("Expected cfg list") };
+        let all: syn::Meta = syn::parse2(cfg.tokens.clone()).unwrap();
+        let syn::Meta::List(all) = all else { panic!("Expected all gate") };
+        assert!(all.path.is_ident("all"));
+        let gates = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+            .parse2(all.tokens).unwrap();
+        assert_eq!(gates.len(), 2);
+        assert!(gates.iter().any(|gate| matches!(gate, syn::Meta::Path(path) if path.is_ident("debug_assertions"))));
+        assert!(gates.iter().any(|gate| matches!(gate, syn::Meta::NameValue(value)
+            if value.path.is_ident("target_os") && matches!(&value.value,
+                syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) if text.value() == "android"))));
+    }
+
+    #[test]
     fn wav_validates_limits_and_encodes_mono_16khz() {
         assert!(super::android_wav(&[]).is_err());
         assert!(super::android_wav(&[1]).is_err());
@@ -494,6 +527,126 @@ mod imp {
             Ok(Err(error)) => { let _ = join.join(); Err(error) },
             Err(_) => { let _ = join.join(); Err("Microphone worker failed to start".into()) }
         }
+    }
+}
+
+/// Isolated instrumentation entry point. Never compiled into release libraries.
+/// It calls the real Recording worker and JNI bridge, not a substitute recorder.
+#[cfg(all(target_os = "android", debug_assertions))]
+mod android_acceptance {
+    use super::*;
+    use jni::{JNIEnv, objects::{JClass, JObject}, sys::jstring};
+    use std::{thread, time::{Duration, Instant}};
+
+    fn wait(mut condition: impl FnMut() -> Result<bool, String>) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if condition()? { return Ok(()); }
+            if Instant::now() >= deadline { return Err("Native capture acceptance timed out".into()); }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    fn verify_wav(bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() < 1644 || bytes.len() > 9_600_044
+            || bytes != android_wav(&bytes[44..])?.as_slice() {
+            return Err("Production worker did not produce canonical nonempty PCM16 WAV".into());
+        }
+        Ok(())
+    }
+    fn captured(recording: &Recording) -> Result<Vec<u8>, String> {
+        let mut snapshot = None;
+        wait(|| {
+            if let Some(error) = recording.error() { return Err(error); }
+            snapshot = recording.snapshot();
+            Ok(snapshot.as_ref().is_some_and(|bytes| bytes.len() >= 3244))
+        })?;
+        let bytes = snapshot.ok_or("Missing requested snapshot")?;
+        verify_wav(&bytes)?;
+        let levels = recording.levels();
+        if levels.is_empty() || levels.len() > 24 || levels.iter().any(|x| !x.is_finite() || !(0.0..=1.0).contains(x)) {
+            return Err("Worker did not publish bounded microphone levels".into());
+        }
+        Ok(bytes)
+    }
+    fn run(env: &mut JNIEnv, helper: &JObject, scenario: i32) -> Result<String, String> {
+        match scenario {
+            0 => {
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+                let recording = Recording::start_stream(sender)?;
+                if Recording::start().is_ok() { return Err("Duplicate Rust capture succeeded".into()); }
+                let snapshot = captured(&recording)?;
+                let wav = recording.stop()?;
+                verify_wav(&wav)?;
+                if !wav[44..].starts_with(&snapshot[44..]) { return Err("Snapshot is not final WAV prefix".into()); }
+                let mut samples = Vec::new();
+                while let Ok(frame) = receiver.try_recv() {
+                    if frame.is_empty() || frame.len() > 800 { return Err("Invalid streaming PCM frame".into()); }
+                    samples.extend(frame.into_iter().flat_map(i16::to_le_bytes));
+                }
+                if samples != wav[44..] || !receiver.is_closed() { return Err("Streaming PCM differs from production WAV or sender retained".into()); }
+                Ok(format!("PASS capture snapshot levels stream exact WAV bytes={}", wav.len()))
+            }
+            1 => {
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+                let recording = Recording::start_stream(sender)?;
+                captured(&recording)?;
+                let started = Instant::now();
+                drop(recording);
+                if started.elapsed() > Duration::from_millis(100) { return Err("Drop blocked caller".into()); }
+                wait(|| Ok(receiver.is_closed()))?;
+                while receiver.try_recv().is_ok() {}
+                // Release must include reservation and real AudioRecord cleanup.
+                let mut next = None;
+                wait(|| match Recording::start() {
+                    Ok(recording) => { next = Some(recording); Ok(true) }
+                    Err(error) if error.contains("Another microphone") => Ok(false),
+                    Err(error) => Err(error),
+                })?;
+                let next = next.ok_or("Canceled capture did not release reservation")?;
+                captured(&next)?;
+                verify_wav(&next.stop()?)?;
+                Ok("PASS nonblocking cancel closes stream and restart captures real PCM".into())
+            }
+            2 => {
+                let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+                let recording = Recording::start_stream(sender)?;
+                wait(|| Ok(recording.error().is_some()))?;
+                let error = recording.stop().expect_err("Backpressure must fail closed");
+                if !error.contains("keep up") { return Err(error); }
+                let next = Recording::start()?;
+                captured(&next)?;
+                verify_wav(&next.stop()?)?;
+                Ok("PASS real microphone backpressure errors and releases reservation".into())
+            }
+            3 | 4 => {
+                let recording = Recording::start()?;
+                captured(&recording)?;
+                let method = if scenario == 3 { "onPause" } else { "onDestroy" };
+                env.call_method(helper, method, "()V", &[]).map_err(|e| e.to_string())?;
+                wait(|| Ok(recording.error().is_some()))?;
+                if recording.stop().is_ok() { return Err("Lifecycle interruption returned successful WAV".into()); }
+                if Recording::start().is_ok() { return Err("Background capture succeeded".into()); }
+                Ok(format!("PASS {method} fails closed through real JNI worker"))
+            }
+            _ => Err("Unknown acceptance scenario".into()),
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_org_jcode_mobile_rustaudiotests_RustAudioInstrumentation_nativeRun(
+        mut env: JNIEnv, _: JClass, helper: JObject, scenario: i32,
+    ) -> jstring {
+        // Initialize only platform services. Never start GPUI, auth, or voice sending.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: nativeInit does not push/pop JNI local frames or retain
+            // local references. It promotes helper to a GlobalRef before return.
+            let bridge_env = unsafe { env.unsafe_clone() };
+            let bridge_helper = env.new_local_ref(&helper).map_err(|e| e.to_string())?;
+            crate::android_services::Java_org_jcode_mobile_AndroidServices_nativeInit(bridge_env, bridge_helper);
+            run(&mut env, &helper, scenario)
+        })).unwrap_or_else(|_| Err("Native acceptance panicked".into()));
+        let text = result.unwrap_or_else(|e| format!("FAIL {e}"));
+        env.new_string(text).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
     }
 }
 
