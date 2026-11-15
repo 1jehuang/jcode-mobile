@@ -5,6 +5,19 @@
 use jcode_sdk::{ApiEvent, HistoryMessage, TurnStopReason};
 use std::collections::{HashMap, HashSet};
 
+/// These indexes only reconcile live/optimistic entries with a snapshot.
+/// A fresh open has no tail, so hashing the entire transcript buys nothing.
+fn history_tail_indexes(messages: &[HistoryMessage], has_tail: bool) -> (HashSet<&str>, HashSet<&str>, HashSet<&str>) {
+    if !has_tail {
+        return Default::default();
+    }
+    (
+        messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect(),
+        messages.iter().filter(|m| m.role == "assistant").map(|m| m.content.as_str()).collect(),
+        messages.iter().filter_map(|m| m.tool.as_ref()).map(|t| t.id.as_str()).collect(),
+    )
+}
+
 /// Stored history prefixes assistant text with terminal-specific reasoning
 /// markup. Decode only the sentinel-tagged prefix, never ordinary Markdown or
 /// examples in the answer. Keep this in sync with jcode-render-core/reasoning.
@@ -825,12 +838,7 @@ impl SessionState {
         // Optimistic prompts the snapshot now contains. Their photos carry over
         // when the snapshot has none (cached history, or a server omitting them).
         let mut confirmed: Vec<(String, Vec<SessionImage>)> = Vec::new();
-        let history_user: HashSet<&str> =
-            messages.iter().filter(|m| m.role == "user").map(|m| m.content.as_str()).collect();
-        let history_assistant: HashSet<&str> =
-            messages.iter().filter(|m| m.role == "assistant").map(|m| m.content.as_str()).collect();
-        let history_tools: HashSet<&str> =
-            messages.iter().filter_map(|m| m.tool.as_ref()).map(|t| t.id.as_str()).collect();
+        let (history_user, history_assistant, history_tools) = history_tail_indexes(&messages, !tail.is_empty());
         let tail: Vec<_> = tail
             .into_iter()
             .filter_map(|mut e| {
@@ -1128,6 +1136,58 @@ mod tests {
     }
     fn sid() -> String {
         "s".into()
+    }
+
+    #[test]
+    fn fresh_history_skips_tail_indexes_but_live_reconciliation_keeps_them() {
+        let mut tool = hm("tool", "output");
+        tool.tool = Some(jcode_sdk::HistoryTool {
+            id: "call-1".into(), name: "bash".into(), input: serde_json::json!({"command":"pwd"}),
+        });
+        let messages = vec![hm("user", "prompt"), hm("assistant", &"answer".repeat(65536)), tool];
+        let (user, assistant, tools) = history_tail_indexes(&messages, false);
+        // No transcript-sized hash-table allocations or content hashing on a
+        // fresh open. This checks the eliminated work, not a timing threshold.
+        assert_eq!((user.capacity(), assistant.capacity(), tools.capacity()), (0, 0, 0));
+        let (user, assistant, tools) = history_tail_indexes(&messages, true);
+        assert!(user.contains("prompt"));
+        assert!(assistant.contains(messages[1].content.as_str()));
+        assert!(tools.contains("call-1"));
+
+        let mut fresh = SessionState::default();
+        fresh.apply_history(sid(), messages.clone(), vec![]);
+        assert_eq!(fresh.transcript.len(), 3);
+        assert_eq!(fresh.transcript[1].text, messages[1].content);
+        // A repeated snapshot has no live tail either and still replaces it.
+        fresh.apply_history(sid(), messages, vec![]);
+        assert_eq!(fresh.transcript.len(), 3);
+        assert_eq!(fresh.transcript[0].text, "prompt");
+    }
+
+    #[test]
+    #[ignore = "controlled fresh-history index benchmark, not a phone measurement"]
+    fn benchmark_fresh_history_tail_indexes() {
+        use std::{hint::black_box, time::{Duration, Instant}};
+        for bytes in [4096, 65536] {
+            let messages: Vec<_> = (0..250).map(|n| hm(
+                if n % 2 == 0 { "user" } else { "assistant" },
+                &format!("{n}:{}", "a".repeat(bytes)),
+            )).collect();
+            let mut before = Duration::ZERO;
+            let mut after = Duration::ZERO;
+            for n in 0..40 {
+                // Alternate ordering. The old unconditional path is exactly
+                // the same index builder with has_tail=true. Input creation
+                // stays outside timing, and both results are consumed.
+                for has_tail in if n % 2 == 0 { [true, false] } else { [false, true] } {
+                    let start = Instant::now();
+                    black_box(history_tail_indexes(black_box(&messages), black_box(has_tail)));
+                    let elapsed = start.elapsed();
+                    if has_tail { before += elapsed; } else { after += elapsed; }
+                }
+            }
+            eprintln!("fixture fresh_history_index 250x{bytes} bytes old_ms={:.6} skipped_ms={:.6} iterations=40", before.as_secs_f64()*25.0, after.as_secs_f64()*25.0);
+        }
     }
 
     #[test]
