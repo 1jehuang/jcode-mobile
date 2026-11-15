@@ -475,6 +475,41 @@ mod tests {
     }
 
     #[test]
+    fn shared_geometry_is_bounded_and_never_records_invalid_measurements() {
+        let heights = Heights::default();
+        let mut entry = entry();
+        let expanded = Default::default();
+        let oldest = key(1, &entry, 1, &expanded, 362.);
+        heights.record(oldest, px(20.));
+        for index in 0..MAX_SHARED_ROWS {
+            entry.text = format!("distinct measured prose {index}");
+            heights.record(key(1, &entry, 1, &expanded, 362.), px(30.));
+            assert!(heights.1.borrow().len() <= MAX_SHARED_ROWS);
+        }
+        assert_eq!(
+            heights.1.borrow().len(),
+            1,
+            "full cache is evicted before insertion"
+        );
+        assert_eq!(
+            heights.get(oldest),
+            None,
+            "eviction requires fresh measurement"
+        );
+        let latest = key(2, &entry, 1, &expanded, 362.);
+        assert_eq!(heights.get(latest), Some(px(30.)));
+        heights.record(latest, px(f32::NAN));
+        heights.record(latest, px(f32::INFINITY));
+        heights.record(latest, px(-1.));
+        assert_eq!(heights.get(latest), Some(px(30.)));
+        entry.text = "never measured".into();
+        let unknown = key(3, &entry, 1, &expanded, 362.);
+        heights.record(unknown, px(f32::NAN));
+        assert_eq!(heights.get(unknown), None);
+        assert_eq!(heights.1.borrow().len(), 1);
+    }
+
+    #[test]
     fn measurement_storage_is_bounded_and_rejects_invalid_sizes() {
         let heights = Heights::default();
         let mut entry = entry();
