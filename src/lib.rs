@@ -187,23 +187,26 @@ fn run_with_application(make_application: impl FnOnce() -> gpui::Application) {
     // First thing: capture panics to disk, upload last run's report in the background.
     let crash_path = jcode_mobile_core::crash::default_path();
     jcode_mobile_core::crash::install_hook(crash_path.clone());
-    jcode_mobile_core::diagnostics::start();
-    std::thread::spawn(move || {
-        let account = jcode_mobile_core::cloud::AccountStore::default_location().load();
-        // Open SSH and a ready API channel while the UI loads, so the first
-        // connect skips every network round trip when the machine is awake.
-        if let Some(account) = &account
-            && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
-            && !android_debug_demo_enabled()
-        {
-            jcode_mobile_core::timing::timed("app prewarm", || {
-                jcode_mobile_core::cloud::prewarm(account)
-            });
-        }
-        if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref()) {
-            log::warn!("jcode-mobile: crash upload failed: {e}");
-        }
-    });
+    if !android_debug_demo_enabled() {
+        jcode_mobile_core::diagnostics::start();
+        std::thread::spawn(move || {
+            let account = jcode_mobile_core::cloud::AccountStore::default_location().load();
+            // Open SSH and a ready API channel while the UI loads, so the first
+            // connect skips every network round trip when the machine is awake.
+            if let Some(account) = &account
+                && std::env::var_os("JCODE_MOBILE_DEMO").is_none()
+                && !android_debug_demo_enabled()
+            {
+                jcode_mobile_core::timing::timed("app prewarm", || {
+                    jcode_mobile_core::cloud::prewarm(account)
+                });
+            }
+            if let Err(e) = jcode_mobile_core::crash::upload_pending(&crash_path, account.as_ref())
+            {
+                log::warn!("jcode-mobile: crash upload failed: {e}");
+            }
+        });
+    }
     let application = make_application().with_assets(Assets);
     // jcode:// deep links (share extension, Shortcuts, Live Activity taps).
     application.on_open_urls(ios_ext::handle_urls);
