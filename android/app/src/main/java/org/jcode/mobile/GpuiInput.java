@@ -30,6 +30,19 @@ final class GpuiInput extends View {
     private String autofillHint = "";
     private boolean configurationDirty;
     private boolean configurationRefreshPosted;
+    private Connection currentConnection;
+
+    /** IME endpoint readiness only, not a claim that GPUI has painted a handler.
+     * Call on the Android UI thread. Keyboard visibility alone does not establish
+     * any of these conditions, especially during cold focus or restartInput.
+     */
+    boolean isImeConnectionReady() {
+        InputMethodManager manager = (InputMethodManager)getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        return currentConnection != null && !currentConnection.closed
+                && !configurationDirty && !configurationRefreshPosted
+                && isAttachedToWindow() && hasWindowFocus() && hasFocus()
+                && manager != null && manager.isActive(this);
+    }
 
     GpuiInput(Context context) {
         super(context);
@@ -95,7 +108,8 @@ final class GpuiInput extends View {
         info.initialSelStart = Math.max(0, Selection.getSelectionStart(editable));
         info.initialSelEnd = Math.max(info.initialSelStart, Selection.getSelectionEnd(editable));
         configurationDirty = false;
-        return new Connection();
+        currentConnection = new Connection();
+        return currentConnection;
     }
 
     private boolean key(KeyEvent event) {
@@ -128,6 +142,7 @@ final class GpuiInput extends View {
     }
 
     private final class Connection extends BaseInputConnection {
+        private boolean closed;
         Connection() { super(GpuiInput.this, true); }
         @Override public Editable getEditable() { return editable; }
 
@@ -185,6 +200,10 @@ final class GpuiInput extends View {
             return super.performContextMenuAction(id);
         }
         @Override public void closeConnection() {
+            closed = true;
+            // A late close from the previous restart must not invalidate the
+            // newer connection's readiness signal.
+            if (currentConnection == this) currentConnection = null;
             nativeEdit(FINISH, null, 0, 0);
             super.closeConnection();
         }
