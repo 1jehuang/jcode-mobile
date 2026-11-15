@@ -1557,8 +1557,9 @@ mod imp {
                 .is_err()
             );
             let worker = start_command(Command::new("false"), MAX_DURATION, MAX_PCM).unwrap();
-            thread::sleep(Duration::from_millis(50));
-            assert!(worker.finish(true).unwrap_err().contains("unexpectedly"));
+            // Observe natural subprocess failure. Sending Stop after an
+            // arbitrary delay races process scheduling under hosted load.
+            assert!(worker.join.join().unwrap().unwrap_err().contains("unexpectedly"));
         }
     }
 }
