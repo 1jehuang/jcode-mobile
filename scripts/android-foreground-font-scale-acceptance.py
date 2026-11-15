@@ -2,7 +2,8 @@
 """Root-run foreground font-scale OCR acceptance. Never launches or taps the app.
 
 Run only on a reserved, already-awake signed-out emulator. This measures visual
-control reachability, not authentication or touch dispatch. No reduced-motion claim.
+control reachability on EMPTY onboarding, not authentication or touch dispatch.
+No submit control or enabled-submit acceptance is claimed. No reduced-motion claim.
 """
 import argparse
 import csv
@@ -20,7 +21,7 @@ spec = importlib.util.spec_from_file_location("appearance", Path(__file__).with_
 appearance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(appearance)
 LABELS = {"heading": "Sign in to Jcode Cloud", "google": "Continue with Google",
-          "email": "you@example.com", "submit": "Send code"}
+          "email_separator": "or use email", "email": "you@example.com"}
 
 
 def font_row(text):
@@ -66,6 +67,11 @@ def measure(tsv, width, height):
         if not word["text"]:
             continue
         words.append(word)
+    # Empty onboarding has the placeholder, not a draft or an available submit.
+    # Never manufacture a Send code label or accept its absence as a clipping test.
+    recognized = "".join(word["text"] for word in words)
+    if "sendcode" in recognized or "verifycode" in recognized:
+        raise AssertionError("Require empty onboarding, submit state outside this acceptance scope")
     result = {}
     for name, label in LABELS.items():
         target = normalize(label)
@@ -218,13 +224,16 @@ class Acceptance(appearance.Acceptance):
                       "metadata": self.metadata, "observations": self.observations,
                       "font_scale_accepted": error is None, "reduce_motion_accepted": False,
                       "settings_changed": self.changed, "release_accepted": False,
-                      "limits": ["OCR label visibility and nonoverlap only, no touch/authentication dispatch tested",
+                      "scope": "empty signed-out onboarding heading, Google, email separator and placeholder only",
+                      "enabled_submit_accepted": False,
+                      "limits": ["No submit control, enabled-submit, touch or authentication dispatch acceptance",
+                                 "OCR label visibility and nonoverlap only, no touch/authentication dispatch tested",
                                  "Sampled Activity plus retained lifecycle events and process start identity, no native probe",
                                  "No reduced-motion, network, account or physical-device acceptance"]}
             (self.out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         if error:
             raise SystemExit(error)
-        print("PASS: actual onboarding glyph growth 1.0 to 1.5, visible control labels, continuous Activity/process, exact font_scale restoration. No touch/auth or reduced-motion claim.")
+        print("PASS: actual empty-onboarding glyph growth 1.0 to 1.5, visible Google/email labels, continuous Activity/process, exact font_scale restoration. No submit, touch/auth or reduced-motion claim.")
 
 
 def main():

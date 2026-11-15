@@ -58,11 +58,37 @@ class FontTests(unittest.TestCase):
 
     def test_missing_low_confidence_clipped_and_overlapping_labels_fail(self):
         cases = ({"email": {"text": "missing"}}, {"google": {"conf": 44}},
-                 {"submit": {"left": 0}}, {"submit": {"top": 1900}},
-                 {"submit": {"top": 230}})
+                 {"email": {"left": 0}}, {"email": {"top": 1900}},
+                 {"email": {"top": 230}})
         for replacements in cases:
             with self.subTest(replacements=replacements), self.assertRaises(AssertionError):
                 font.measure(fixture(replacements=replacements), 1080, 1920)
+
+    def test_root_empty_onboarding_without_submit_is_real_supported_state(self):
+        # Transcribed OCR words/bounds from root run961229i41e, no image loading.
+        actual = [
+            (162, 578, 130, 57, "Sign"), (337, 578, 59, 46, "in"),
+            (439, 582, 61, 42, "to"), (543, 581, 165, 44, "Jcode"),
+            (753, 580, 163, 45, "Cloud"), (281, 764, 46, 47, "G"),
+            (357, 772, 170, 29, "continue"), (553, 772, 84, 29, "with"),
+            (665, 774, 127, 34, "Google"), (428, 901, 33, 18, "or"),
+            (484, 901, 52, 18, "use"), (560, 894, 91, 25, "email"),
+            (99, 1014, 326, 34, "you@example.com")]
+        tsv = "level\tleft\ttop\twidth\theight\tconf\ttext\n" + "".join(
+            f"5\t{x}\t{y}\t{w}\t{h}\t90\t{text}\n" for x, y, w, h, text in actual)
+        labels = font.measure(tsv, 1080, 1920)
+        self.assertEqual(set(labels), {"heading", "google", "email_separator", "email"})
+        self.assertEqual(labels["email"]["bounds"], [99, 1014, 425, 1048])
+        # Missing real controls still fails, as do clipped glyph boxes.
+        for invalid in (tsv.replace("you@example.com", "draft"),
+                        tsv.replace("99\t1014\t326", "0\t1014\t326")):
+            with self.assertRaises(AssertionError):
+                font.measure(invalid, 1080, 1920)
+
+    def test_submit_state_is_outside_empty_onboarding_scope(self):
+        tsv = fixture() + "5\t40\t700\t100\t20\t95\tSend\n5\t150\t700\t100\t20\t95\tcode\n"
+        with self.assertRaisesRegex(AssertionError, "submit state outside"):
+            font.measure(tsv, 1080, 1920)
 
     def test_duplicate_labels_are_not_accepted(self):
         tsv = fixture()
@@ -130,6 +156,8 @@ class FontTests(unittest.TestCase):
                 self.assertFalse(result["passed"])
                 self.assertFalse(result["font_scale_accepted"])
                 self.assertFalse(result["reduce_motion_accepted"])
+                self.assertFalse(result["enabled_submit_accepted"])
+                self.assertIn("empty signed-out onboarding", result["scope"])
 
 
 if __name__ == "__main__":
