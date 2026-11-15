@@ -74,6 +74,15 @@ pub struct SyncedMessage {
     #[serde(rename = "text")]
     pub content: String,
     pub created_at: Option<String>,
+    /// Inline bytes from the owning computer, never a computer-local path.
+    #[serde(default)]
+    pub images: Vec<SyncedImage>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SyncedImage {
+    pub media_type: String,
+    pub data: String,
 }
 
 #[derive(Deserialize)]

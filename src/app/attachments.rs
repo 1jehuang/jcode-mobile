@@ -194,7 +194,7 @@ impl MobileApp {
                 .size(px(side))
                 .flex_none()
                 .rounded(px(8.))
-                .object_fit(gpui::ObjectFit::Cover)
+                .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
             None => div().size(px(side)).flex_none().rounded(px(8.)).bg(t.surface_elevated).into_any_element(),
         }
@@ -207,6 +207,18 @@ impl MobileApp {
         }
         Some(div().flex().flex_wrap().gap(px(4.)).pt(px(4.)).children(
             images.iter().map(|image| self.photo(image, PROMPT_PHOTO, t, cx)).collect::<Vec<_>>(),
+        ))
+    }
+
+    /// Generated and tool-result images, with a readable inline preview.
+    pub(super) fn render_assistant_photos(&self, images: &[SessionImage], t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if images.is_empty() {
+            return None;
+        }
+        let first = images[0].id;
+        Some(div().debug_selector(move || format!("assistant-image-{first}"))
+            .flex().flex_wrap().gap(px(6.)).pt(px(4.)).children(
+            images.iter().map(|image| self.photo(image, 240., t, cx)).collect::<Vec<_>>(),
         ))
     }
 

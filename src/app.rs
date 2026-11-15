@@ -2221,6 +2221,7 @@ impl MobileApp {
                 for call in &e.tool_calls {
                     col = col.child(self.tool_line(call, expanded_tools, t, cx));
                 }
+                col = col.children(self.render_assistant_photos(images, t, cx));
                 if !text.is_empty() {
                     let body = match visible {
                         Some(row) => crate::markdown::render_streaming(text, t, row.text_fade),

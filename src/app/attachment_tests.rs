@@ -60,6 +60,33 @@ fn invalid_thumbnail_is_rejected() {
     assert!(thumbnail(b"not a photo", 384).is_none());
 }
 
+#[gpui::test]
+fn assistant_image_only_row_has_a_visible_inline_preview(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    let pixels = image::RgbaImage::from_pixel(16, 8, image::Rgba([255, 0, 0, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let image = SessionImage::new("image/png", bytes.into_inner());
+    let id = image.id;
+    let (media_type, data) = image.wire();
+    view.update(cx, |app, cx| {
+        app.session.apply_synced_messages(serde_json::from_value(serde_json::json!([
+            {"seq":22,"role":"assistant","text":"","images":[
+                {"media_type":media_type,"data":data}]}
+        ])).unwrap());
+        cx.notify();
+    });
+    crate::app::navigation_coverage::draw(cx);
+    let selector = Box::leak(format!("assistant-image-{id}").into_boxed_str());
+    let bounds = cx.debug_bounds(selector).expect("assistant inline image region");
+    assert!(bounds.size.width >= px(240.) && bounds.size.height >= px(240.));
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(app.attach.thumbs.0.borrow().get(&id).is_some_and(Option::is_some),
+            "generated PNG must decode into a render image, not stay a placeholder");
+    });
+}
+
 #[test]
 fn thumbnail_decodes_png_and_converts_red_to_bgra() {
     let pixels = image::RgbaImage::from_pixel(16, 8, image::Rgba([255, 0, 0, 255]));

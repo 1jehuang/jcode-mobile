@@ -138,7 +138,7 @@ enum AssistantPhase {
     Tools,
 }
 
-/// A photo attached to a user prompt: encoded bytes plus their media type.
+/// An inline prompt or assistant image: encoded bytes plus their media type.
 /// `id` is a content hash, stable across clones, for UI decode caches.
 #[derive(Clone, PartialEq)]
 pub struct SessionImage {
@@ -202,10 +202,11 @@ pub fn synced_transcript_entries(
         let role = match message.role.as_str() {
             "user" => Role::User,
             "assistant" => Role::Assistant,
+            "tool" if !message.images.is_empty() => Role::Assistant,
             "system" | "tool" => Role::System,
             _ => return None,
         };
-        if message.content.is_empty() {
+        if message.content.is_empty() && message.images.is_empty() {
             return None;
         }
         let (text, reasoning) = match message.role.as_str() {
@@ -341,6 +342,15 @@ pub enum LocalIntent {
 }
 
 impl SessionState {
+    /// Replace a synced snapshot and its inline media as one reducer update.
+    pub fn apply_synced_messages(&mut self, messages: Vec<crate::mobile_sync::SyncedMessage>) {
+        self.images = messages.iter().filter_map(|message| {
+            let photos: Vec<_> = message.images.iter()
+                .filter_map(|image| SessionImage::from_wire(&image.media_type, &image.data)).collect();
+            (!photos.is_empty()).then_some((message.seq, photos))
+        }).collect();
+        self.transcript = synced_transcript_entries(messages);
+    }
     pub fn title_for(&self, session_id: &str) -> Option<&str> {
         self.session_titles.get(session_id).map(String::as_str)
     }
@@ -512,6 +522,7 @@ impl SessionState {
                 }
             }
             History { session_id, messages, images } => self.apply_history(session_id, messages, images),
+            SidePaneImages { images, .. } => self.apply_rendered_images(images),
             TextDelta { text, .. } => {
                 self.is_processing = true;
                 self.with_streaming_assistant(AssistantPhase::Text, |e| e.text.push_str(&text))
@@ -689,6 +700,33 @@ impl SessionState {
         }
     }
 
+    fn apply_rendered_images(&mut self, images: Vec<jcode_sdk::api::RenderedImage>) {
+        use jcode_sdk::api::RenderedImageAnchor;
+        for image in images {
+            let Some(decoded) = SessionImage::from_wire(&image.media_type, &image.data) else { continue };
+            let target = match &image.anchor {
+                Some(RenderedImageAnchor::UserPrompt { ordinal }) => self.transcript.iter()
+                    .filter(|e| e.role == Role::User).nth(*ordinal).map(|e| e.id),
+                Some(RenderedImageAnchor::ToolCall { id }) => self.transcript.iter()
+                    .find(|e| e.tool_calls.iter().any(|t| &t.id == id)).map(|e| e.id),
+                None => None,
+            };
+            let target = target.or_else(|| self.transcript.iter().rev()
+                .find(|e| e.role == Role::Assistant && self.images_for(e.id).iter().any(|p| p.id == decoded.id))
+                .map(|e| e.id));
+            let id = target.unwrap_or_else(|| {
+                let entry = self.entry(Role::Assistant, "");
+                let id = entry.id;
+                self.transcript.push(entry);
+                id
+            });
+            let photos = self.images.entry(id).or_default();
+            if !photos.iter().any(|p| p.id == decoded.id) {
+                photos.push(decoded);
+            }
+        }
+    }
+
     fn apply_history(&mut self, session_id: String, messages: Vec<HistoryMessage>, images: Vec<jcode_sdk::api::RenderedImage>) {
         self.session_id = Some(session_id);
         self.pending_interrupts.clear();
@@ -710,6 +748,7 @@ impl SessionState {
             .count();
         let tail: Vec<_> = self.transcript.split_off(self.transcript.len() - tail_len);
         let mut local_images = std::mem::take(&mut self.images);
+        let image_entries: HashSet<u64> = local_images.keys().copied().collect();
         // The server anchors a prompt's photos to its 0-based prompt ordinal.
         let mut anchored: HashMap<usize, Vec<SessionImage>> = HashMap::new();
         for image in &images {
@@ -732,7 +771,7 @@ impl SessionState {
             .into_iter()
             .filter_map(|mut e| {
                 e.tool_calls.retain(|t| !history_tools.contains(t.id.as_str()));
-                (e.role == Role::User || !e.tool_calls.is_empty() || !e.text.is_empty() || !e.reasoning.is_empty() || e.is_streaming)
+                (e.role == Role::User || !e.tool_calls.is_empty() || !e.text.is_empty() || !e.reasoning.is_empty() || e.is_streaming || image_entries.contains(&e.id))
                     .then_some(e)
             })
             .filter(|e| match e.role {
@@ -753,7 +792,9 @@ impl SessionState {
 
         let mut transcript: Vec<TranscriptEntry> = Vec::with_capacity(messages.len() + tail.len());
         let mut prompt_ordinal = 0usize;
+        let mut boundaries = Vec::with_capacity(messages.len() + 1);
         for m in messages {
+            boundaries.push(transcript.len());
             // Tool rows rebuild the cards a live client saw. Consecutive calls
             // share one entry, matching how live tool events group.
             if m.role == "tool" {
@@ -798,6 +839,34 @@ impl SessionState {
                 prompt_ordinal += 1;
             }
             transcript.push(entry);
+        }
+        boundaries.push(transcript.len());
+        // Tool images retain their tool anchor even when a restored server
+        // omits that tool row. In that case insert at its wire boundary.
+        for image in images {
+            if matches!(image.anchor, Some(jcode_sdk::api::RenderedImageAnchor::UserPrompt { .. })) {
+                continue;
+            }
+            let Some(decoded) = SessionImage::from_wire(&image.media_type, &image.data) else { continue };
+            let target = match &image.anchor {
+                Some(jcode_sdk::api::RenderedImageAnchor::ToolCall { id }) => transcript.iter()
+                    .find(|e| e.tool_calls.iter().any(|t| &t.id == id)).map(|e| e.id),
+                _ => None,
+            };
+            let id = target.unwrap_or_else(|| {
+                let entry = self.entry(Role::Assistant, "");
+                let id = entry.id;
+                let boundary = image.history_message_index
+                    .and_then(|i| boundaries.get(i).copied())
+                    .map(|i| i.min(transcript.len()))
+                    .unwrap_or(transcript.len());
+                transcript.insert(boundary, entry);
+                for position in &mut boundaries {
+                    if *position >= boundary { *position += 1; }
+                }
+                id
+            });
+            self.images.entry(id).or_default().push(decoded);
         }
         for (text, photos) in confirmed {
             if let Some(e) = transcript
@@ -1447,6 +1516,69 @@ mod tests {
 
     fn photo(tag: u8) -> SessionImage {
         SessionImage::new("image/jpeg", vec![0xff, 0xd8, tag])
+    }
+
+    fn generated(tag: u8, boundary: Option<usize>) -> jcode_sdk::api::RenderedImage {
+        let (media_type, data) = photo(tag).wire();
+        serde_json::from_value(serde_json::json!({
+            "media_type": media_type, "data": data, "label": "generated",
+            "source": {"kind": "tool_result", "tool_name": "image_gen"},
+            "anchor": {"kind": "tool_call", "id": "generate-1"},
+            "history_message_index": boundary,
+        })).unwrap()
+    }
+
+    #[test]
+    fn generated_images_render_live_on_their_tool_and_deduplicate() {
+        let mut s = SessionState::default();
+        ev(&mut s, E::ToolStart { session_id: sid(), call_id: "generate-1".into(), name: "image_gen".into() });
+        let id = s.transcript[0].id;
+        for _ in 0..2 {
+            ev(&mut s, E::SidePaneImages { session_id: sid(), images: vec![generated(7, None)] });
+        }
+        assert_eq!(s.images_for(id), [photo(7)]);
+        assert_eq!(s.transcript.len(), 1);
+    }
+
+    #[test]
+    fn restored_generated_images_use_wire_boundary_without_visible_tool() {
+        let mut s = SessionState::default();
+        ev(&mut s, E::History { session_id: sid(),
+            messages: vec![hm("user", "draw"), hm("assistant", "done")],
+            images: vec![generated(8, Some(1)), generated(9, Some(1))] });
+        assert_eq!(s.transcript.len(), 4);
+        assert_eq!(s.images_for(s.transcript[1].id), [photo(8)]);
+        assert_eq!(s.images_for(s.transcript[2].id), [photo(9)]);
+        assert_eq!(s.transcript[3].text, "done");
+        assert_eq!(s.transcript[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn image_only_live_row_survives_older_history_and_replayed_event() {
+        let mut s = SessionState::default();
+        s.is_processing = true;
+        ev(&mut s, E::SidePaneImages { session_id: sid(), images: vec![generated(10, None)] });
+        let id = s.transcript[0].id;
+        ev(&mut s, E::History { session_id: sid(), messages: vec![hm("user", "draw")], images: vec![] });
+        ev(&mut s, E::SidePaneImages { session_id: sid(), images: vec![generated(10, None)] });
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.images_for(id), [photo(10)]);
+    }
+
+    #[test]
+    fn synced_generated_image_bytes_survive_empty_text_and_refresh() {
+        let mut s = SessionState::default();
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":1,"role":"user","text":"draw"},
+            {"seq":2,"role":"tool","text":"","images":[
+                {"media_type":"image/png","data":"AQID"}]}
+        ])).unwrap();
+        s.apply_synced_messages(messages);
+        assert_eq!(s.transcript.len(), 2);
+        assert_eq!(s.transcript[1].role, Role::Assistant);
+        assert_eq!(s.images_for(2), [SessionImage::new("image/png", vec![1,2,3])]);
+        s.apply_synced_messages(vec![]);
+        assert!(s.images.is_empty());
     }
 
     fn rendered(ordinal: usize, image: &SessionImage) -> jcode_sdk::api::RenderedImage {
