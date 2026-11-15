@@ -106,25 +106,8 @@ use super::navigation_coverage::{draw, mount};
 use super::*;
 use gpui::{PlatformInput, TestAppContext, TouchEvent, TouchId, TouchPhase, VisualTestContext};
 
-fn scale_fixture(scale: f32) -> ScaleFixture {
-    let before = std::env::var_os("JCODE_MOBILE_TEXT_SCALE");
-    // This module's campaigns are run with --test-threads=1. Restore even on panic.
-    unsafe {
-        std::env::set_var("JCODE_MOBILE_TEXT_SCALE", scale.to_string());
-    }
-    ScaleFixture(before)
-}
-struct ScaleFixture(Option<std::ffi::OsString>);
-impl Drop for ScaleFixture {
-    fn drop(&mut self) {
-        unsafe {
-            if let Some(before) = &self.0 {
-                std::env::set_var("JCODE_MOBILE_TEXT_SCALE", before);
-            } else {
-                std::env::remove_var("JCODE_MOBILE_TEXT_SCALE");
-            }
-        }
-    }
+fn scale_fixture(scale: f32) -> crate::system::SettingsFixture {
+    crate::system::settings_fixture(scale, false, false)
 }
 
 fn settle(view: &Entity<MobileApp>, cx: &mut VisualTestContext) {

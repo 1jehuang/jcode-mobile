@@ -180,6 +180,8 @@ pub struct MobileApp {
     stream_test_now: Option<std::time::Instant>,
     /// Long-press on a tab: generation of the pending hold timer.
     tab_hold: Option<u64>,
+    /// Last measured chat column width, owned by this window's layout.
+    content_width: f32,
     /// The hold already fired, so the release must not also count as a tap.
     hold_fired: bool,
     /// Tab whose options sheet is open.
@@ -416,6 +418,7 @@ impl MobileApp {
             #[cfg(test)]
             stream_test_now: None,
             tab_hold: None,
+            content_width: 0.,
             hold_fired: false,
             tab_menu: None,
             feel: Default::default(),

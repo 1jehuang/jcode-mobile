@@ -9,21 +9,55 @@
 //! `JCODE_MOBILE_APPEARANCE=light|dark`.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(test))]
+use std::sync::atomic::AtomicU32;
 use std::hash::{Hash, Hasher};
 
 use gpui::{App, Pixels, px};
 
 use crate::theme::Theme;
 
+#[cfg(not(test))]
 static TEXT_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000); // 1.0f32
+#[cfg(not(test))]
 static REDUCE_MOTION: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
 static LIGHT: AtomicBool = AtomicBool::new(false);
+
+// Each GPUI test owns its UI thread. Process-wide settings allow another
+// window's initialization to change metrics halfway through layout.
+#[cfg(test)]
+thread_local! {
+    static TEST_SETTINGS: std::cell::Cell<(f32, bool, bool)> = const { std::cell::Cell::new((1., false, false)) };
+    static TEST_OVERRIDE: std::cell::Cell<Option<(f32, bool, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct SettingsFixture(Option<(f32, bool, bool)>, (f32, bool, bool));
+
+#[cfg(test)]
+pub(crate) fn settings_fixture(scale: f32, reduce: bool, light: bool) -> SettingsFixture {
+    let settings = (scale, reduce, light);
+    SettingsFixture(TEST_OVERRIDE.with(|value| value.replace(Some(settings))),
+        TEST_SETTINGS.with(|value| value.replace(settings)))
+}
+
+#[cfg(test)]
+impl Drop for SettingsFixture {
+    fn drop(&mut self) {
+        TEST_OVERRIDE.with(|value| value.set(self.0));
+        TEST_SETTINGS.with(|value| value.set(self.1));
+    }
+}
 /// Session ids tapped in Spotlight, waiting for the app to open them.
 static SPOTLIGHT_OPEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Dynamic Type multiplier (1.0 at the default "Large" size).
 pub fn text_scale() -> f32 {
+    #[cfg(test)]
+    { return TEST_SETTINGS.with(|value| value.get().0); }
+    #[cfg(not(test))]
     f32::from_bits(TEXT_SCALE.load(Ordering::Relaxed))
 }
 
@@ -43,10 +77,16 @@ impl HalfRound for f32 {
 }
 
 pub fn reduce_motion() -> bool {
+    #[cfg(test)]
+    { return TEST_SETTINGS.with(|value| value.get().1); }
+    #[cfg(not(test))]
     REDUCE_MOTION.load(Ordering::Relaxed)
 }
 
 pub fn is_light() -> bool {
+    #[cfg(test)]
+    { return TEST_SETTINGS.with(|value| value.get().2); }
+    #[cfg(not(test))]
     LIGHT.load(Ordering::Relaxed)
 }
 
@@ -77,11 +117,19 @@ pub fn scale_for_category(category: &str) -> f32 {
 /// Read current settings and install the matching theme. Returns true when
 /// anything changed. Call at startup and whenever the app becomes active.
 pub fn refresh(cx: &mut App) -> bool {
+    #[cfg(not(test))]
     let (scale, reduce, light) = imp::read();
+    #[cfg(test)]
+    let (scale, reduce, light) = TEST_OVERRIDE.with(|value| value.get().unwrap_or((1., false, false)));
     let changed = scale != text_scale() || reduce != reduce_motion() || light != is_light();
-    TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
-    REDUCE_MOTION.store(reduce, Ordering::Relaxed);
-    LIGHT.store(light, Ordering::Relaxed);
+    #[cfg(not(test))]
+    {
+        TEXT_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+        REDUCE_MOTION.store(reduce, Ordering::Relaxed);
+        LIGHT.store(light, Ordering::Relaxed);
+    }
+    #[cfg(test)]
+    TEST_SETTINGS.with(|value| value.set((scale, reduce, light)));
     if changed || !cx.has_global::<Theme>() {
         cx.set_global(if light { Theme::light_neutral() } else { Theme::pure_black() });
     }
@@ -386,6 +434,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settings_fixtures_are_thread_local_and_restore_on_unwind() {
+        let fixture = settings_fixture(2., true, true);
+        std::thread::spawn(|| {
+            assert_eq!((text_scale(), reduce_motion(), is_light()), (1., false, false));
+            let _fixture = settings_fixture(1.6, false, false);
+            assert_eq!(text_scale(), 1.6);
+        }).join().unwrap();
+        assert_eq!((text_scale(), reduce_motion(), is_light()), (2., true, true));
+        let _ = std::panic::catch_unwind(|| {
+            let _nested = settings_fixture(1.3, false, false);
+            panic!("fixture unwind");
+        });
+        assert_eq!((text_scale(), reduce_motion(), is_light()), (2., true, true));
+        drop(fixture);
+        assert_eq!((text_scale(), reduce_motion(), is_light()), (1., false, false));
+    }
+
+    #[test]
     fn spotlight_unchanged_metadata_does_not_build_records() {
         let mut cache = IndexCache::default();
         let records = [("session_one_123", Some("Title"), Some("/project"))];
@@ -462,9 +528,9 @@ mod tests {
 
     #[test]
     fn fs_rounds_to_half_points() {
-        TEXT_SCALE.store(1.3f32.to_bits(), Ordering::Relaxed);
+        let fixture = settings_fixture(1.3, false, false);
         assert_eq!(fs(13.), px(17.));
-        TEXT_SCALE.store(1.0f32.to_bits(), Ordering::Relaxed);
+        drop(fixture);
         assert_eq!(fs(13.5), px(13.5));
     }
 }

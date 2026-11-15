@@ -11,7 +11,6 @@ use crate::theme::Theme;
 /// Width at which the session list docks beside the chat (iPad, landscape).
 pub(super) const WIDE_MIN: f32 = 700.;
 const SIDEBAR_WIDTH: f32 = 300.;
-static CONTENT_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl MobileApp {
     /// Call at the top of `render`.
@@ -21,7 +20,7 @@ impl MobileApp {
         // Using its outer width rewraps neighboring panels on tab activation.
         let bezel = if self.device.is_some() && std::env::var_os("JCODE_MOBILE_FRAMELESS").is_none() { 2. } else { 0. };
         let content = (if w >= WIDE_MIN && self.account.is_some() { w - SIDEBAR_WIDTH } else { w } - bezel).max(1.);
-        CONTENT_WIDTH.store(content.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.content_width = content;
         let changed = system::poll(cx);
         // Setters are idempotent. Synchronize every entity, including newly
         // parked orbs, rather than a process-global "already synced" flag.
@@ -60,7 +59,7 @@ impl MobileApp {
 
     /// Width of the chat column: the phone screen, or what the iPad sidebar leaves.
     pub(super) fn content_width(&self) -> f32 {
-        let w = f32::from_bits(CONTENT_WIDTH.load(std::sync::atomic::Ordering::Relaxed));
+        let w = self.content_width;
         if w > 0. { w } else { self.device.map_or(390., |(w, _)| w) }
     }
 
@@ -103,4 +102,29 @@ impl MobileApp {
 /// Sign-out: drop the Spotlight entries for this account.
 pub(super) fn forget_index() {
     system::clear_index();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::navigation_coverage::{draw, mount};
+
+    #[gpui::test]
+    fn interleaved_app_layouts_keep_their_own_content_width(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = mount(cx);
+        draw(cx);
+        let original = view.read_with(cx, |app, _| app.content_width());
+        let other = cx.update(|window, cx| cx.new(|cx| {
+            let mut app = MobileApp::new_offline(crate::app::SafeArea { top: 20., bottom: 0. }, window, cx);
+            app.device = Some((320., 568.));
+            app.system_tick(window, cx);
+            app
+        }));
+        let narrow = other.read_with(cx, |app, _| app.content_width());
+        assert_eq!(original - narrow, 70.);
+        view.read_with(cx, |app, _| assert_eq!(app.content_width(), original,
+            "another app's layout may not change header sizing or transcript cache keys"));
+        draw(cx);
+        other.read_with(cx, |app, _| assert_eq!(app.content_width(), narrow));
+    }
 }
