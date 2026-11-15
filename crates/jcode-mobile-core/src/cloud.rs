@@ -96,6 +96,30 @@ fn open_after_provisioning_unlock<T, R>(
     open()
 }
 
+enum Provisioning<G, C> {
+    Guard(G),
+    Client(C),
+}
+
+/// Recheck the shared master on every acquisition, including after an unlocked
+/// direct hello fails. Only the returned guard authorizes new provisioning.
+fn acquire_provisioning<G, S, C, E>(
+    mut acquire: impl FnMut() -> Result<G, E>,
+    mut cached: impl FnMut(&mut G) -> Option<S>,
+    mut open: impl FnMut(S) -> Result<Option<C>, E>,
+) -> Result<Provisioning<G, C>, E> {
+    loop {
+        let mut guard = acquire()?;
+        let Some(ssh) = cached(&mut guard) else {
+            return Ok(Provisioning::Guard(guard));
+        };
+        drop(guard);
+        if let Some(client) = open(ssh)? {
+            return Ok(Provisioning::Client(client));
+        }
+    }
+}
+
 /// Share only a failed speculative attempt that overlapped this foreground
 /// call. This is not a negative cache: a later call still tries direct SSH,
 /// and a different account can never suppress this account's attempt.
@@ -545,35 +569,41 @@ pub fn connect(
     // Concurrent new tabs must not all register new keys and hit the cloud's
     // instance-connect rate limit. Recheck after waiting for another opener.
     let mut prewarm_failed = false;
-    let opening = loop {
-        let lock_started = Instant::now();
-        let mut opening = lock_cold_connect(cancelled)?;
-        crate::timing::stage("cold connect lock wait", lock_started.elapsed());
-        check_cancelled()?;
-        prewarm_failed |= take_overlapping_prewarm_failure(&mut opening, account, connect_started);
-        let cached = {
-            let mut cache = warm_target().lock().unwrap();
-            cache.as_mut().and_then(|entry| entry.for_account(account, Instant::now()))
-        };
-        let Some(ssh) = cached else { break opening };
-        // This lock protects host/key provisioning, not independent API
-        // channels. Release it before a potentially cold API hello. If this
-        // master is dead, retry acquisition and recheck a replacement rather
-        // than provisioning concurrently with another opener.
-        let client = open_after_provisioning_unlock(opening, || {
-            progress("Opening your Jcode session…");
-            ssh.open_client()
-        });
-        match client {
-            Ok(client) => {
+    let acquire = |prewarm_failed: &mut bool| {
+        acquire_provisioning(
+            || {
+                let lock_started = Instant::now();
+                let opening = lock_cold_connect(cancelled)?;
+                crate::timing::stage("cold connect lock wait", lock_started.elapsed());
                 check_cancelled()?;
-                return Ok(client);
-            }
-            Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
-                return Err(error);
-            }
-            Err(_) => forget_master(&ssh),
-        }
+                Ok(opening)
+            },
+            |opening| {
+                *prewarm_failed |= take_overlapping_prewarm_failure(opening, account, connect_started);
+                let mut cache = warm_target().lock().unwrap();
+                cache.as_mut().and_then(|entry| entry.for_account(account, Instant::now()))
+            },
+            |ssh| {
+                progress("Opening your Jcode session…");
+                match ssh.open_client() {
+                    Ok(client) => {
+                        check_cancelled()?;
+                        Ok(Some(client))
+                    }
+                    Err(error) if !ssh.is_closed() && error.kind != jcode_sdk::ErrorKind::Disconnected && ssh.revalidate() => {
+                        Err(error)
+                    }
+                    Err(_) => {
+                        forget_master(&ssh);
+                        Ok(None)
+                    }
+                }
+            },
+        )
+    };
+    let mut opening = match acquire(&mut prewarm_failed)? {
+        Provisioning::Guard(opening) => opening,
+        Provisioning::Client(client) => return Ok(client),
     };
     check_cancelled()?;
     // Fast path: the machine is usually still awake. SSH straight to the last
@@ -589,14 +619,24 @@ pub fn connect(
             Ok(ssh) => {
                 crate::timing::stage("direct ssh", direct_started.elapsed());
                 let ssh = cache_master(account, ssh);
-                progress("Opening your Jcode session…");
-                match ssh.open_client() {
+                let client = open_after_provisioning_unlock(opening, || {
+                    progress("Opening your Jcode session…");
+                    ssh.open_client()
+                });
+                match client {
                     Ok(client) => {
                         check_cancelled()?;
                         return Ok(client);
                     }
                     Err(_) => forget_master(&ssh),
                 }
+                // Another opener may have replaced this failed master during
+                // hello. Reacquire and recheck before control-plane fallback,
+                // without retrying the remembered-direct attempt.
+                opening = match acquire(&mut prewarm_failed)? {
+                    Provisioning::Guard(opening) => opening,
+                    Provisioning::Client(client) => return Ok(client),
+                };
             }
             Err(error) if error.kind == jcode_sdk::ErrorKind::HostKeyMismatch => {
                 // Address was reassigned. Never trust it again without the control plane.

@@ -101,13 +101,14 @@ fn warm_cache_wrong_account_and_old_timer_cannot_extend_or_evict_replacement() {
 }
 
 #[test]
-fn cached_api_open_releases_provisioning_before_blocked_hello() {
+fn authenticated_api_open_releases_provisioning_before_blocked_successful_hello() {
     let mutex = Arc::new(Mutex::new(0usize));
     let worker_mutex = mutex.clone();
     let (started, opening) = mpsc::channel();
     let (release, gate) = mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let guard = worker_mutex.lock().unwrap();
+        let mut guard = worker_mutex.lock().unwrap();
+        *guard = 7; // authenticated direct master is published before unlock
         open_after_provisioning_unlock(guard, || {
             started.send(()).unwrap();
             gate.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -118,11 +119,102 @@ fn cached_api_open_releases_provisioning_before_blocked_hello() {
     // A simulated API hello is still blocked. Other callers can acquire the
     // real production handoff's lock and recheck the authenticated cache now.
     let mut guard = mutex.try_lock().expect("API hello retained provisioning lock");
+    assert_eq!(*guard, 7, "authenticated master must be visible before hello");
     *guard = 1;
     drop(guard);
     release.send(()).unwrap();
     assert_eq!(worker.join().unwrap(), 42);
     assert_eq!(*mutex.lock().unwrap(), 1);
+}
+
+#[test]
+fn direct_hello_failure_reacquires_before_rechecking_replacement_or_provisioning() {
+    for replacement in [None, Some(2usize)] {
+        let provisioning = Arc::new(Mutex::new(()));
+        let cache = Arc::new(Mutex::new(None));
+        let checks = Arc::new(AtomicUsize::new(0));
+        let (hello_started, hello_observed) = mpsc::channel();
+        let (fail_hello, hello_gate) = mpsc::channel();
+        let (reacquiring, reacquire_observed) = mpsc::channel();
+        let (completed, result) = mpsc::channel();
+        let worker_provisioning = provisioning.clone();
+        let worker_cache = cache.clone();
+        let worker_checks = checks.clone();
+        let worker = std::thread::spawn(move || {
+            let guard = worker_provisioning.lock().unwrap();
+            *worker_cache.lock().unwrap() = Some(1); // publish authenticated direct master
+            let hello: Result<(), ()> = open_after_provisioning_unlock(guard, || {
+                hello_started.send(()).unwrap();
+                hello_gate.recv_timeout(Duration::from_secs(5)).unwrap();
+                Err(())
+            });
+            assert!(hello.is_err());
+            {
+                let mut cache = worker_cache.lock().unwrap();
+                if *cache == Some(1) {
+                    *cache = None;
+                }
+            }
+            let outcome = acquire_provisioning(
+                || lock_with_cancellation(&worker_provisioning, &|| {
+                    reacquiring.send(()).unwrap();
+                    false
+                }),
+                |_| {
+                    worker_checks.fetch_add(1, Ordering::SeqCst);
+                    *worker_cache.lock().unwrap()
+                },
+                |master| {
+                    assert!(worker_provisioning.try_lock().is_ok(), "replacement hello kept provisioning lock");
+                    Ok(Some(master))
+                },
+            ).unwrap();
+            let value = match outcome {
+                Provisioning::Client(client) => Some(client),
+                Provisioning::Guard(guard) => {
+                    assert!(worker_provisioning.try_lock().is_err(), "fallback provisioning is not serialized");
+                    assert!(worker_cache.lock().unwrap().is_none());
+                    drop(guard);
+                    None
+                }
+            };
+            completed.send(value).unwrap();
+        });
+        hello_observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let guard = provisioning.try_lock().expect("remembered-direct hello retained cold lock");
+        // The other opener owns provisioning through the failed hello. No
+        // replacement check or fallback may run before this owner publishes.
+        fail_hello.send(()).unwrap();
+        reacquire_observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(checks.load(Ordering::SeqCst), 0);
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        *cache.lock().unwrap() = replacement;
+        drop(guard);
+        assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), replacement);
+        worker.join().unwrap();
+        assert_eq!(checks.load(Ordering::SeqCst), 1, "fallback repeated direct authentication or missed shared cache recheck");
+    }
+}
+
+#[test]
+fn provisioning_rechecks_again_after_failed_replacement_hello() {
+    let provisioning = Mutex::new(());
+    let cache = Mutex::new(Some(1usize));
+    let attempts = AtomicUsize::new(0);
+    let outcome = acquire_provisioning(
+        || lock_with_cancellation(&provisioning, &|| false),
+        |_| *cache.lock().unwrap(),
+        |master| {
+            assert_eq!(master, 1);
+            assert!(provisioning.try_lock().is_ok());
+            attempts.fetch_add(1, Ordering::SeqCst);
+            *cache.lock().unwrap() = None;
+            Ok(None::<usize>)
+        },
+    ).unwrap();
+    assert!(matches!(outcome, Provisioning::Guard(_)));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(provisioning.try_lock().is_err());
 }
 
 fn await_permit_release(permit: &AtomicBool) {
