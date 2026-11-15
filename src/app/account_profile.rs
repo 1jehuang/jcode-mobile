@@ -11,6 +11,8 @@ impl MobileApp {
     /// completed sign-in replaces an account without visiting the sign-out UI.
     /// Device preferences and the APNs device token are intentionally retained.
     pub(super) fn discard_account_workspace(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "android")]
+        crate::notify::keep_alive(false);
         self.auto_send = None;
         self.blur_on_render = true;
         self.focus_code = false;

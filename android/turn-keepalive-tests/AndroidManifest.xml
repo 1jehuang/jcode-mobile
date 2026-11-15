@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.jcode.mobile.turnkeepalivetests">
+    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <queries><package android:name="org.jcode.mobile" /></queries>
+    <application android:label="Jcode isolated turn runtime tests" android:allowBackup="false" android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name="org.jcode.mobile.TurnTestActivity" android:exported="false" />
+        <service android:name="org.jcode.mobile.TurnKeepAliveService" android:exported="false" android:stopWithTask="true" android:foregroundServiceType="shortService" />
+    </application>
+    <instrumentation android:name="org.jcode.mobile.TurnInstrumentation" android:targetPackage="org.jcode.mobile.turnkeepalivetests" android:label="Isolated bounded turn service" />
+</manifest>

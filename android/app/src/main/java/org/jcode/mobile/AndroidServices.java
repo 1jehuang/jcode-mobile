@@ -69,6 +69,7 @@ public final class AndroidServices {
     }
     public void onResume(Intent intent) {
         foreground = true;
+        TurnKeepAliveService.checkLease(activity);
         observeSettings();
         // Handle SEND before RemoteInput or data deep links. Rejected payloads
         // must never fall through into an attacker-supplied auto-send URL.
@@ -86,7 +87,11 @@ public final class AndroidServices {
         if (intent != null) intent.setData(null);
     }
     public void onPause() { foreground = false; stopObservingSettings(); audioStop(); }
-    public void onDestroy() { foreground = false; stopObservingSettings(); audioStop(); cleanupCamera(); }
+    public void onDestroy() { foreground = false; TurnKeepAliveService.cancel(activity); stopObservingSettings(); audioStop(); cleanupCamera(); }
+    public boolean keepAlive(String busy) {
+        if (!"true".equals(busy) && !"false".equals(busy)) return false;
+        return ui(() -> TurnKeepAliveService.update(activity, "true".equals(busy), foreground));
+    }
     public void onConfigurationChanged() { nativeSettingsChanged(); }
     public void onRequestPermissionsResult(int request) {
         // Refresh only, never ask again here. A denied notification must not
@@ -188,6 +193,7 @@ public final class AndroidServices {
         }
     }
     public void accountClear() throws Exception {
+        new Handler(Looper.getMainLooper()).post(() -> TurnKeepAliveService.cancel(activity));
         synchronized (ACCOUNT_LOCK) {
             KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
             if (store.containsAlias(ACCOUNT_KEY)) store.deleteEntry(ACCOUNT_KEY);

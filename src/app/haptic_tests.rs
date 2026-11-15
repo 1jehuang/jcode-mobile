@@ -3,6 +3,31 @@ use super::*;
 use crate::haptics::{capture, Haptic};
 use gpui::TestAppContext;
 
+#[gpui::test]
+fn turn_keepalive_uses_only_owned_active_or_parked_processing_not_offline_demo(cx: &mut TestAppContext) {
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        MobileApp::new_offline(SafeArea { top: 20., bottom: 0. }, window, cx)
+    });
+    view.update(cx, |app, cx| {
+        app.account = Some(Account { given_name: None, name: None, api_key: "fixture".into(), api_base: "http://127.0.0.1:9".into(), email: None });
+        app.session.is_processing = true;
+        assert!(!app.turn_keepalive_busy(), "offline fixture never requests runtime");
+        app.new_tab(cx); // Offline-only fixture construction, no connection.
+        app.session.is_processing = false;
+        assert!(app.parked.iter().any(|p| p.session.is_processing));
+        app.offline = false; // Query only, never connect/send/store an account.
+        assert!(app.turn_keepalive_busy(), "parked turn counts even when active tab idle");
+        for parked in &mut app.parked { parked.session.is_processing = false; }
+        assert!(!app.turn_keepalive_busy());
+        app.session.is_processing = true;
+        assert!(app.turn_keepalive_busy());
+        app.account = None;
+        assert!(!app.turn_keepalive_busy(), "signed-out workspace never requests runtime");
+        app.offline = true;
+    });
+}
+
 fn touch(cx: &mut gpui::VisualTestContext, phase: gpui::TouchPhase, position: gpui::Point<gpui::Pixels>) {
     cx.update(|window, cx| {
         window.dispatch_event(gpui::PlatformInput::Touch(gpui::TouchEvent {

@@ -904,6 +904,7 @@ impl MobileApp {
                 c.stop();
             }
         }
+        self.sync_turn_keepalive();
         cx.notify();
     }
 
@@ -1053,9 +1054,12 @@ impl MobileApp {
                         for a in this.session.alerts.drain(..) {
                             crate::notify::post(&a);
                         }
-                        let busy = this.session.is_processing
-                            || this.parked.iter().any(|p| p.session.is_processing);
-                        crate::notify::keep_alive(busy);
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            let busy = this.session.is_processing
+                                || this.parked.iter().any(|p| p.session.is_processing);
+                            crate::notify::keep_alive(busy);
+                        }
                         this.sync_live_activity();
                         this.flush_pending_send(cx);
                         // Presentation releases visible blocks in render_chat; raw data is already current.
@@ -1177,6 +1181,8 @@ impl MobileApp {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "android")]
+        crate::notify::keep_alive(false);
         self.invalidate_auth();
         self.discard_account_workspace(cx);
         self.sign_in_error = None;
@@ -2805,6 +2811,7 @@ impl MobileApp {
                                 if this.is_local_chat() { return; }
                                 haptics::play(Haptic::Rigid);
                                 this.session.apply_intent(LocalIntent::ClearedConversation);
+                                this.sync_turn_keepalive();
                                 this.send(|id| Request::Clear { id });
                                 this.screen = Screen::Chat;
                                 cx.notify()

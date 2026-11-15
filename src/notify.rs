@@ -363,8 +363,10 @@ mod imp {
     }
     pub fn clear_badge() { let _ = crate::android_services::call_bool("clearNotifications", ""); }
     pub fn request_permission() { let _ = crate::android_services::call_bool("notificationPermission", ""); }
-    // Android does not grant arbitrary socket runtime without a foreground service.
-    pub fn keep_alive(_busy: bool) {}
+    // A foreground-admitted, nonrenewable lease only. No push or killed-process guarantee.
+    pub fn keep_alive(busy: bool) {
+        let _ = crate::android_services::call_bool("keepAlive", if busy { "true" } else { "false" });
+    }
     pub fn post(alert: &super::Alert) {
         let json = serde_json::json!({"session_id": alert.session_id, "title": alert.title, "body": alert.body});
         let _ = crate::android_services::call_bool("postNotification", &json.to_string());

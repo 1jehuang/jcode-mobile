@@ -156,6 +156,7 @@ impl MobileApp {
             LocalIntent::UserSentMessage(text.clone())
         });
         self.session.attach_images_to_last_prompt(images.clone());
+        self.sync_turn_keepalive();
         match (queued, images.is_empty()) {
             (false, true) => self.send(|id| Request::Message { id, content: text }),
             (false, false) => self.send(|id| Request::MessageWithImages { id, content: text, images }),

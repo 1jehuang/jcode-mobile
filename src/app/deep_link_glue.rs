@@ -196,9 +196,23 @@ impl MobileApp {
         }
     }
 
+    #[cfg(any(test, target_os = "android"))]
+    pub(super) fn turn_keepalive_busy(&self) -> bool {
+        !self.offline && self.account.is_some()
+            && (self.session.is_processing || self.parked.iter().any(|p| p.session.is_processing))
+    }
+
+    pub(super) fn sync_turn_keepalive(&self) {
+        #[cfg(target_os = "android")]
+        crate::notify::keep_alive(self.turn_keepalive_busy());
+    }
+
     /// Show every agent on the account in the single Live Activity: the
     /// Worker's account-wide view, corrected by this app's open tabs.
     pub(super) fn sync_live_activity(&self) {
+        // This runs for both active and parked connection batches. Account-wide
+        // discovery rows are never evidence that this process owns a busy turn.
+        self.sync_turn_keepalive();
         let local: Vec<_> = std::iter::once(&self.session)
             .chain(self.parked.iter().map(|p| &p.session))
             .filter_map(ios_ext::local_agent)

@@ -476,6 +476,7 @@ impl MobileApp {
                 }
             }
         }
+        self.sync_turn_keepalive();
     }
 
     pub(in crate::app) fn send_local_draft(&mut self, cx: &mut Context<Self>) {
