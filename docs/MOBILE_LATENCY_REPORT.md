@@ -193,8 +193,13 @@ not connection speed, and add no timeout-based censoring of real slow opens.
 
 Six dedicated GPUI regressions cover empty history, the real asynchronous pump,
 normal one-shot consumption, hidden screens, retry/terminal phases and tab
-parking. They are added but **not yet run**, pending the coordinator's hosted
-mirror-repair signal. No hosted Rust build was launched for this change yet.
+parking. All six passed in the coordinator's full current-source hosted app
+suite at 06:20 UTC: **467 passed, 0 failed, 11 ignored**, receipt
+`20261114-221715263-6127`. The full core suite also passed **139 tests** and the
+workspace test check passed. The coordinator recovered source-backed builds
+using the supported hosted SSH transport and fresh reconciliation, without
+local compilation or a battery-policy override. See
+`MOBILE_LATENCY_OPTIMIZATION_2026_11_15.md` for complete receipts and boundaries.
 
 The offline report now additionally accepts the five reviewed fixed stages
 `cold_connect_lock_wait`, `control_plane_request`, `wake_direct_ssh_probe`,

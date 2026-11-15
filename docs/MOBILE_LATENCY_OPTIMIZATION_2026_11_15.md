@@ -27,7 +27,7 @@ This demonstrates removed repeated connection setup, not measured iPhone/WAN/clo
 
 Mobile commit `1afc920` separates command-status polling from full paginated transcript refresh. A slow or blocked transcript request no longer prevents an independent terminal command receipt from clearing the existing pending-send guard. History remains a full snapshot to retain rewrite semantics. Authentication/account/tab/poll generations and the expected command ID fence late completions. Polling performs GETs only, never a repeated message POST.
 
-The controlled HTTP fixture serves two history pages with 200 ms delay per page. The before path waits for both before reading command status. Measured acknowledgement latency was **407.235 ms serial versus 1.345 ms independent**, with the same artificial 400 ms history delay. The new path can apply the command receipt while history is still gated. Assertions check causal ordering and exact state, not a machine-dependent timing ratio. Follow-up `05a939b` adds production-task acceptance for retained newer image drafts and stale auth/account/tab/poll completions. The final integrated rerun is required before treating that follow-up as fully validated.
+The controlled HTTP fixture serves two history pages with 200 ms delay per page. The before path waits for both before reading command status. Measured acknowledgement latency was **407.235 ms serial versus 1.345 ms independent**, with the same artificial 400 ms history delay. The new path can apply the command receipt while history is still gated. Assertions check causal ordering and exact state, not a machine-dependent timing ratio. Follow-up `05a939b` adds production-task acceptance for retained newer image drafts and stale auth/account/tab/poll completions. These tests passed in the full integrated app run below.
 
 ### Avoid repeating an already failed speculative SSH attempt
 
@@ -41,6 +41,23 @@ Mobile commit `33114e4` adds fixed timings for cold-connect lock wait, control-p
 
 Hosted startup validation: cloud tests 11 passed, one live-cloud test intentionally ignored (`20261114-215728297-4044102`), SSH fixture tests 11 passed (`20261114-215109703-3970435`), diagnostics 10 passed (`20261114-215410052-4023917`).
 
+### Retire completed or abandoned UI timing epochs
+
+Commit `d4c011a` clears the initial-open marker when empty history completes, a tab is parked/closed, the screen is hidden, or the connection retries/fails/disconnects. History-application timings are emitted only for active, auth-owned callbacks. A user composing the first message minutes after opening an empty chat must not produce a minutes-long connection latency. Six Rust regressions cover empty history (including the real event pump), one-shot consumption, hidden screens, retry/failure and tab parking. Nine offline report/privacy tests pass, including the five new precise startup labels. This is measurement correctness, not a measured latency reduction. All six Rust tests passed in the integrated app suite.
+
 ## Acceptance and remaining boundary
 
 All measurements above are offline/loopback or read-only diagnostics. No benchmark created a production session, submitted inference, woke a cloud host or changed production credentials. No production/device before-and-after timeline is available for this code yet. Changes must be compiled into the mobile app before they affect an installed TestFlight build. Do not claim the observed 21.63-second fresh-history milestone has been eliminated.
+
+Final workspace acceptance initially encountered an unrelated concurrent media-test lifetime error, then confirmed stale hosted inputs: the compiler used old binary modules, a different GPUI dependency and a voice source lacking a method present in the working checkout. Disabling in-flight build joining did not fix the stale mirror. Source-mirror repair is owned by the concurrent justrust maintainer lane.
+
+At 06:15 UTC, the supported hosted SSH transport with fresh source reconciliation recovered current-source library acceptance: `JUSTRUST_HOSTED_NATIVE=off JUSTRUST_REMOTE_RESUME=0 JUSTRUST_BUILDD=0 justrust check -p jcode-mobile --lib`, receipt `20261114-221405437-4190849`. It performed a fresh source sync and checked the actual working GPUI/library graph. This is a per-command hosted transport selection, not a local battery-policy override, billing/tenant bypass, global configuration change or claim that the underlying native-mirror race is fixed.
+
+Final integrated acceptance completed at 06:20 UTC with the same per-command hosted transport selection:
+
+- `justrust check --workspace --tests`: passed, receipt `20261114-221556178-6128`.
+- `justrust test -p jcode-mobile-core --lib -- --test-threads=1`: **139 passed, 0 failed, 3 ignored**, receipt `20261114-221612970-8850`.
+- `justrust test -p jcode-mobile --lib -- --test-threads=1`: **467 passed, 0 failed, 11 ignored**, receipt `20261114-221715263-6127`. Includes actual gated production poll tasks, stale completion fences, photo ownership and all six UI-open epoch regressions.
+- Offline report/privacy tests: **9 passed**.
+
+The working checkout also includes concurrent generated-media and lifecycle work and local GPUI path overrides. This validates that integrated working graph, not a separately signed/pinned TestFlight artifact. No new TestFlight upload was performed for this latency task.
