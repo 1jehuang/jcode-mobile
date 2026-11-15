@@ -167,6 +167,17 @@ Normal mobile startup does not request recovery, so this is **not** a measured
 improvement to its 10.92-second readiness wait. Source changes are not deployed,
 and the backend's divergent-source inventory guard remains mandatory.
 
+Normal-path follow-up backend `f4ebab3` supersedes rejected candidate
+`25ea39b`: console output is read only after provider ownership verification,
+then overlaps independent runtime accounting. Allowance/error precedence and
+EIC authorization gates stay intact. Independent real-handler fixture execution
+passed **6/6** recovery/normal tests. Under injected provider costs, normal
+readiness changes **1190 to 1180 ms**; with deliberately slow 1200 ms accounting,
+**2380 to 1480 ms**. These are modeled scheduling costs, not AWS measurements.
+The worker's full suite passed 682 tests with one existing skip and retained the
+mandatory inventory guard. Nothing was deployed. The rejected pre-ownership
+read's 190 ms claim is withdrawn and must not be used as release evidence.
+
 ## Follow-up: provisioning contention
 
 A cancelled connection previously used a blocking mutex acquisition behind any
@@ -239,7 +250,22 @@ revalidations measured **7.21 ms reused versus 610.28 ms fresh**, with an inject
 Combined hosted core acceptance passed **162 tests, zero failed, four ignored**,
 receipt `20261115-000826075-681885`, including cache-account/expiry fencing and
 blocked-hello lock handoff. Integrated app compilation is checked separately.
-Neither change establishes a new installed-device end-to-end latency result.
+
+Direct-auth follow-up `02d4d1e` also releases the provisioning guard before
+remembered-direct API hello. A failed hello reacquires the guard and checks for
+an authenticated replacement before control-plane fallback. It does not repeat
+the direct attempt or provision in parallel. Deterministic channel-barrier
+fixtures cover blocked hello, failure/replacement and serialized fallback.
+Hosted full core acceptance passed **164 tests, zero failed, four ignored**,
+receipt `20261115-001441684-703422`. These are contention guarantees, not a
+measurement of SSH network or VM startup time.
+
+Final integrated hosted `check --workspace --tests` passed. Full app acceptance
+then passed **485 tests, zero failed, eleven ignored**, receipt
+`20261115-001615956-710566`. This run includes the current concurrent platform
+work as well as the startup changes. The offline device-budget gate also passed
+all nine safety tests. These changes do not establish a new installed-device
+end-to-end latency result.
 
 ## Real-device release gate
 
