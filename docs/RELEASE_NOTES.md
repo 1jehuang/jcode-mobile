@@ -15,7 +15,7 @@ or upload an IPA. Run it only for an approved, tested candidate whose upload has
 already processed successfully. `BUILD_NUMBER` is the IPA's `CFBundleVersion`,
 not the marketing version `1.0` or an Apple build UUID.
 
-With `DISCORD_RELEASE_WEBHOOK` configured on the release machine, this command
+With a release webhook configured on the release machine, this command
 also attempts a Discord announcement, using the notes **read back from Apple**.
 It requires an explicit build and explicit `--notes` or `--notes-file` when the
 webhook is configured, so it cannot accidentally announce a different newest
@@ -48,9 +48,21 @@ not install a background poller for builds that remain in Apple review.
 ### Credentials and duplicate protection
 
 The release machine needs the existing App Store Connect key used by `asc.py`
-(Python `cryptography` dependency) and the announcements-channel webhook in
-`DISCORD_RELEASE_WEBHOOK`. Keep the webhook outside Git and never print it.
-A GitHub Actions secret is not automatically available to local release scripts.
+(Python `cryptography` dependency). Do not move or change the Apple key setup.
+All three release scripts automatically load the announcements-channel webhook
+from `~/.config/jcode-mobile/discord-release-webhook`, or
+`$XDG_CONFIG_HOME/jcode-mobile/discord-release-webhook` when set. Provision this
+UTF-8 file securely outside the repository on each release machine, including
+the managed VM. It must be a nonempty regular file owned by the current user
+with owner-only permissions (for example, `0600`), not a symlink. Surrounding
+whitespace is stripped. Missing files disable optional announcements, while
+invalid or insecure files fail before distribution changes.
+
+`DISCORD_RELEASE_WEBHOOK`, when present, takes precedence over the file (an
+empty override disables optional announcements). Keep the webhook outside Git
+and never print it or put its value in command history. The GitHub Actions
+secret is configured separately and is not automatically available to local
+release scripts. This does not change the direct TestFlight release process.
 
 Receipts are stored under
 `~/.local/share/jcode-mobile/testflight-announcements/APPLE_BUILD_ID.json`.

@@ -19,6 +19,10 @@ class PublicBetaTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        os.environ['XDG_CONFIG_HOME'] = directory
+        self.config = Path(directory) / 'jcode-mobile/discord-release-webhook'
+        self.enterContext(patch.object(Path, 'home', return_value=Path(directory) / 'home'))
 
     def call(self, method, path, body=None):
         self.requests.append((method, path, body))
@@ -55,6 +59,24 @@ class PublicBetaTests(unittest.TestCase):
         request = next(req for req in self.requests if req[0] == 'PATCH')
         self.assertEqual(request[1], '/v1/betaBuildLocalizations/loc-id')
         self.assertEqual(request[2]['data']['attributes']['whatsNew'], 'Build-specific fixes')
+
+    @patch('testflight_release.announce')
+    def test_private_config_announces(self, announce):
+        self.config.parent.mkdir()
+        self.config.write_text(' private-test-webhook\n', encoding='utf-8')
+        self.config.chmod(0o600)
+        self.run_beta(['123', '--notes', 'Build fixes'])
+        self.assertEqual(announce.call_args.args[2], 'private-test-webhook')
+
+    def test_insecure_config_fails_before_apple_changes(self):
+        self.config.parent.mkdir()
+        self.config.write_text('private-test-webhook', encoding='utf-8')
+        self.config.chmod(0o644)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.run_beta(['123', '--notes', 'Build fixes'])
+        self.assertFalse(self.requests)
+        self.assertNotIn('private-test-webhook', stderr.getvalue())
 
     @patch('testflight_release.announce')
     def test_configured_webhook_announces_even_if_already_reviewed(self, announce):

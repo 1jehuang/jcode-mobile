@@ -1,10 +1,97 @@
 import contextlib
 import io
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
 import post_discord_release as release
+
+
+class WebhookConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root)}, clear=True))
+        self.enterContext(patch.object(Path, 'home', return_value=self.root / 'home'))
+        self.enterContext(patch.object(release.urllib.request, 'urlopen', side_effect=AssertionError('No network')))
+        self.path = self.root / 'jcode-mobile' / 'discord-release-webhook'
+        self.path.parent.mkdir()
+
+    def write_config(self, content='  private-test-webhook\n', mode=0o600):
+        self.path.write_text(content, encoding='utf-8')
+        self.path.chmod(mode)
+
+    def test_missing_is_optional(self):
+        self.assertIsNone(release.load_webhook())
+
+    def test_private_utf8_file_is_stripped(self):
+        self.write_config('  private-test-webhook-é\n')
+        self.assertEqual(release.load_webhook(), 'private-test-webhook-é')
+
+    def test_env_wins_without_opening_config_even_if_empty(self):
+        for value in ('environment-webhook', ''):
+            os.environ['DISCORD_RELEASE_WEBHOOK'] = value
+            with patch.object(release.os, 'open', side_effect=AssertionError('No file access')):
+                self.assertEqual(release.load_webhook(), value)
+
+    def test_default_home_config(self):
+        del os.environ['XDG_CONFIG_HOME']
+        self.path = self.root / 'home/.config/jcode-mobile/discord-release-webhook'
+        self.path.parent.mkdir(parents=True)
+        self.write_config()
+        self.assertEqual(release.load_webhook(), 'private-test-webhook')
+
+    def test_empty_or_non_utf8_rejected_without_disclosure(self):
+        for content in (b'  \n', b'private-test-webhook\xff'):
+            self.path.write_bytes(content)
+            self.path.chmod(0o600)
+            with self.assertRaises(ValueError) as caught:
+                release.load_webhook()
+            self.assertNotIn('private-test-webhook', str(caught.exception))
+
+    def test_all_group_and_other_permissions_rejected(self):
+        for bit in (0o040, 0o020, 0o010, 0o004, 0o002, 0o001):
+            self.write_config(mode=0o600 | bit)
+            with self.assertRaises(ValueError):
+                release.load_webhook()
+
+    def test_symlink_directory_and_fifo_rejected(self):
+        target = self.root / 'target'
+        target.write_text('private-test-webhook')
+        target.chmod(0o600)
+        self.path.symlink_to(target)
+        with self.assertRaises(ValueError):
+            release.load_webhook()
+        self.path.unlink()
+        self.path.mkdir(mode=0o700)
+        with self.assertRaises(ValueError):
+            release.load_webhook()
+        self.path.rmdir()
+        os.mkfifo(self.path, 0o600)
+        with self.assertRaises(ValueError):
+            release.load_webhook()
+
+    def test_wrong_owner_rejected(self):
+        self.write_config()
+        with patch.object(release.os, 'getuid', return_value=os.getuid() + 1):
+            with self.assertRaises(ValueError):
+                release.load_webhook()
+
+    def test_github_main_uses_loader(self):
+        self.write_config()
+        os.environ['GH_TOKEN'] = 'test-token'
+        with patch('sys.argv', ['post_discord_release.py', '--tag', 'v1']), patch.object(release, 'announce') as announce:
+            self.assertEqual(release.main(), 0)
+        self.assertEqual(announce.call_args.args[3], 'private-test-webhook')
+
+    def test_testflight_main_uses_loader(self):
+        import testflight_release
+        self.write_config()
+        with patch('sys.argv', ['testflight_release.py', '--build', '123']), patch.object(testflight_release, 'announce') as announce:
+            self.assertEqual(testflight_release.main(), 0)
+        self.assertEqual(announce.call_args.args[2], 'private-test-webhook')
 
 
 def fixture(**kwargs):

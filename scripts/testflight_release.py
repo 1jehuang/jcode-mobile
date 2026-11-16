@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from urllib.parse import urlencode, urlsplit
 
-from post_discord_release import post_to_discord
+from post_discord_release import load_webhook, post_to_discord
 
 APP = '6830033634'
 
@@ -134,7 +134,7 @@ def main():
     args = parser.parse_args()
     from asc import call
     try:
-        announce(args.build, call, os.environ.get('DISCORD_RELEASE_WEBHOOK'), args.execute, args.state_dir)
+        announce(args.build, call, load_webhook(), args.execute, args.state_dir)
         return 0
     except ValueError as error:
         print(str(error), file=sys.stderr)

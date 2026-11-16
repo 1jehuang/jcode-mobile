@@ -4,7 +4,7 @@
 Usage: asc_public_beta.py [BUILD_VERSION] [--notes-file release-notes.md]
 Defaults to the newest VALID build. Sets en-US "What to Test", adds the build
 to the "Public Beta" group and submits it for beta app review (idempotent).
-With DISCORD_RELEASE_WEBHOOK configured, announces the exact build's notes
+With a release webhook configured, announces the exact build's notes
 only after external availability is confirmed. An exact build and explicit
 notes are required when announcing.
 """
@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 sys.path.insert(0, os.path.dirname(__file__))
 from asc import call
+from post_discord_release import load_webhook
 
 APP = "6830033634"
 GROUP = "Public Beta"
@@ -45,9 +46,12 @@ def main(argv=None):
     notes = args.notes_file.read_text(encoding='utf-8') if args.notes_file else args.notes
     if notes is not None and (not notes.strip() or len(notes) > 4000):
         parser.error('Release notes must contain 1 to 4000 characters')
-    webhook = os.environ.get('DISCORD_RELEASE_WEBHOOK')
+    try:
+        webhook = load_webhook()
+    except ValueError as error:
+        parser.error(str(error))
     if args.announce_discord and not webhook:
-        parser.error('--announce-discord requires DISCORD_RELEASE_WEBHOOK')
+        parser.error('--announce-discord requires DISCORD_RELEASE_WEBHOOK or a private webhook config file')
     if (args.announce_discord or webhook) and (not args.build or notes is None):
         parser.error('Discord announcements require an exact build and --notes or --notes-file')
     notes = notes.strip() if notes is not None else DEFAULT_NOTES

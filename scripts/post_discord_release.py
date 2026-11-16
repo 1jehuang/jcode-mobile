@@ -3,13 +3,42 @@
 import argparse
 import json
 import os
+from pathlib import Path
 import re
+import stat
 import sys
 import urllib.parse
 import urllib.request
 
 MARKER = 'jcode-mobile-discord-announced'
 LIMIT = 2000
+
+
+def load_webhook():
+    """Load an environment override or a private release-machine config file."""
+    if 'DISCORD_RELEASE_WEBHOOK' in os.environ:
+        return os.environ['DISCORD_RELEASE_WEBHOOK']
+    path = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'jcode-mobile' / 'discord-release-webhook'
+    try:
+        # NOFOLLOW rejects symlinks. NONBLOCK avoids hanging on a FIFO before
+        # fstat can reject it. Validate the opened file, not a racy path stat.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ValueError('Cannot securely open Discord webhook config') from None
+    try:
+        with os.fdopen(fd, 'r', encoding='utf-8') as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
+                    or info.st_uid != os.getuid()):
+                raise ValueError('Discord webhook config must be an owner-only regular file owned by this user')
+            webhook = handle.read().strip()
+    except (OSError, UnicodeError):
+        raise ValueError('Cannot read Discord webhook config as UTF-8') from None
+    if not webhook:
+        raise ValueError('Discord webhook config must not be empty')
+    return webhook
 
 
 def marker(tag):
@@ -101,7 +130,7 @@ def main():
     if not token:
         parser.error('GH_TOKEN or GITHUB_TOKEN required')
     try:
-        announce(args.repository, args.tag, token, os.environ.get('DISCORD_RELEASE_WEBHOOK'), args.execute)
+        announce(args.repository, args.tag, token, load_webhook(), args.execute)
         return 0
     except Exception as error:
         # Network exceptions can contain the webhook token. Never print their URLs or bodies.
