@@ -28,6 +28,25 @@ SSH addresses/keys, tokens and raw server error messages. The authenticated
 backend attributes diagnostics to the signed-in account, so this is not
 anonymous telemetry.
 
+## Mobile sync request outcomes
+
+Mobile sync HTTP timings also enter the durable queue as
+`mobile_sync_<operation>_<outcome>`. The fixed operation set is `lookup`,
+`transcript`, `list`, `transfer`, `message`, `command` and `commands`.
+Outcomes distinguish `transport_error`, `invalid_json`, `http_error`,
+`unavailable` (the server has no mobile sync route) and `success`.
+For successful list HTTP replies, `success_empty` and `success_nonempty`
+describe only whether the expected JSON array contains any entries.
+`invalid_response` means that array is missing or has the wrong JSON type.
+These are HTTP/JSON observations, not proof of typed transcript or command
+validation, delivery to a computer, or successful UI rendering.
+
+No session IDs, titles, previews, array counts, request paths, credentials or
+server error text are included. Every request records one duration, including
+early HTTP/JSON failures. These labels require an updated mobile build and
+physical-device upload validation. Adding instrumentation does not itself
+publish a TestFlight release or recover historical sync outcomes.
+
 ## Delivery and resource bounds
 
 `diagnostics::start()` starts a background worker during normal application

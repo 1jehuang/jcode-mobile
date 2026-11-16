@@ -178,6 +178,14 @@ fn safe_name(name: &str) -> Option<String> {
         "list_sessions",
     ];
     let allowed = NAMES.contains(&name)
+        || name.strip_prefix("mobile sync ").is_some_and(|label| {
+            label.split_once(' ').is_some_and(|(operation, outcome)| {
+                ["lookup", "transcript", "list", "transfer", "message", "command", "commands"]
+                    .contains(&operation)
+                    && ["transport_error", "invalid_json", "http_error", "unavailable", "success",
+                        "success_empty", "success_nonempty", "invalid_response"].contains(&outcome)
+            })
+        })
         || name
             .strip_prefix("initial ")
             .is_some_and(|n| ["history", "models", "sessions", "other"].contains(&n))
@@ -484,6 +492,27 @@ fn upload(agent: &ureq::Agent, account: &Account, batch: &Batch) -> Upload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_sync_labels_are_fixed_and_survive_durable_serialization() {
+        for operation in ["lookup", "transcript", "list", "transfer", "message", "command", "commands"] {
+            for outcome in ["transport_error", "invalid_json", "http_error", "unavailable", "success", "success_empty", "success_nonempty", "invalid_response"] {
+                let label = format!("mobile sync {operation} {outcome}");
+                let mut e = event(now_ms());
+                e.name = safe_name(&label).expect("sync label must be uploadable");
+                e.kind = "timing".into();
+                e.duration_ms = Some(12.5);
+                let b = batch("run", "dev", vec![e]);
+                let restored: Batch = serde_json::from_slice(&serde_json::to_vec(&b).unwrap()).unwrap();
+                assert_eq!(restored.events[0].name, format!("mobile_sync_{operation}_{outcome}"));
+                assert_eq!(restored.events[0].duration_ms, Some(12.5));
+                assert!(safe_name(&format!("{label} private-data")).is_none());
+            }
+        }
+        for label in ["mobile sync private-id success", "mobile sync list Bearer secret", "mobile sync list https://private", "mobile sync list success_empty private-title"] {
+            assert!(safe_name(label).is_none());
+        }
+    }
 
     #[test]
     fn only_known_labels_can_leave_device() {

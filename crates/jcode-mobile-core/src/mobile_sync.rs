@@ -36,12 +36,17 @@ struct RequestTiming {
 
 impl Drop for RequestTiming {
     fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        crate::diagnostics::record(
+            &format!("mobile sync {} {}", self.operation, self.outcome),
+            Some(elapsed),
+        );
         // Fixed operation labels only. Never include keys, URLs, IDs or bodies.
         eprintln!(
             "[CLOUD_TIMING] stage=mobile_sync_request operation={} outcome={} duration_ms={:.3}",
             self.operation,
             self.outcome,
-            self.started.elapsed().as_secs_f64() * 1000.0
+            elapsed.as_secs_f64() * 1000.0
         );
     }
 }
@@ -278,8 +283,17 @@ fn request(
     let mut timing = RequestTiming {
         operation,
         started: Instant::now(),
-        outcome: "error",
+        outcome: "transport_error",
     };
+    request_timed(account, path, body, &mut timing)
+}
+
+fn request_timed(
+    account: &Account,
+    path: &str,
+    body: Option<serde_json::Value>,
+    timing: &mut RequestTiming,
+) -> Result<serde_json::Value, String> {
     let url = format!("{}{path}", account.api_base.trim_end_matches('/'));
     let agent = agent();
     let auth = format!("Bearer {}", account.api_key);
@@ -292,6 +306,7 @@ fn request(
     }
     .map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
+    timing.outcome = if status >= 400 { "http_error" } else { "invalid_json" };
     let value: serde_json::Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
     if status == 404
         && value["error"]["code"] == "not_found"
@@ -299,6 +314,7 @@ fn request(
             .as_str()
             .is_some_and(|m| m.starts_with("no route for "))
     {
+        timing.outcome = "unavailable";
         return Err(SYNC_UNAVAILABLE.into());
     }
     if status >= 400 {
@@ -308,6 +324,17 @@ fn request(
             .into());
     }
     timing.outcome = "success";
+    if let Some(field) = match timing.operation {
+        "list" => Some("sessions"),
+        "commands" => Some("commands"),
+        _ => None,
+    } {
+        timing.outcome = match value[field].as_array() {
+            Some(rows) if rows.is_empty() => "success_empty",
+            Some(_) => "success_nonempty",
+            None => "invalid_response",
+        };
+    }
     Ok(value)
 }
 
@@ -416,6 +443,58 @@ pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn durable_request_outcomes_distinguish_lists_and_failures() {
+        for (operation, status, body, expected) in [
+            ("list", 200, serde_json::json!({"sessions":[]}), "success_empty"),
+            ("list", 200, serde_json::json!({"sessions":[{"session_id":"private-id","source":"local"}]}), "success_nonempty"),
+            ("commands", 200, serde_json::json!({"commands":[]}), "success_empty"),
+            ("commands", 200, serde_json::json!({"commands":[{}]}), "success_nonempty"),
+            ("list", 200, serde_json::json!({"sessions":null}), "invalid_response"),
+            ("lookup", 200, serde_json::json!({}), "success"),
+            ("list", 401, serde_json::json!({"error":{"message":"private error"}}), "http_error"),
+            ("list", 429, serde_json::json!({}), "http_error"),
+            ("list", 500, serde_json::json!({}), "http_error"),
+            ("list", 404, serde_json::json!({"error":{"code":"not_found","message":"no route for private-path"}}), "unavailable"),
+        ] {
+            let (account, server) = mock_response(status, body);
+            let mut timing = RequestTiming { operation, started: Instant::now(), outcome: "transport_error" };
+            let result = request_timed(&account, "/mobile/sessions", None, &mut timing);
+            assert_eq!(timing.outcome, expected);
+            assert_eq!(result.is_err(), status >= 400);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn request_timing_covers_transport_and_invalid_json_errors() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let account = Account {
+            given_name: None, name: None, email: None,
+            api_base: format!("http://{}", listener.local_addr().unwrap()),
+            api_key: "private-key".into(),
+        };
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                assert_eq!(stream.read(&mut byte).unwrap(), 1);
+                bytes.push(byte[0]);
+            }
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnot").unwrap();
+        });
+        let mut timing = RequestTiming { operation: "list", started: Instant::now(), outcome: "transport_error" };
+        assert!(request_timed(&account, "/mobile/sessions", None, &mut timing).is_err());
+        assert_eq!(timing.outcome, "invalid_json");
+        server.join().unwrap();
+        timing.outcome = "transport_error";
+        assert!(request_timed(&account, "/mobile/sessions", None, &mut timing).is_err());
+        assert_eq!(timing.outcome, "transport_error");
+    }
+
     #[test]
     fn synced_photo_budget_accepts_four_camera_photos_and_rejects_oversized_data() {
         let image = crate::SessionImage::new("image/jpeg", vec![1; 240 * 1024]);
