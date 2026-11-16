@@ -118,23 +118,34 @@ pub fn subject(input: &str) -> Option<String> {
 }
 
 fn intent_from(input: &str, parsed: Option<&Value>) -> Option<String> {
-    complete(parsed, "intent")
-        .map(clean)
-        .or_else(|| partial(input, "intent"))
+    match parsed {
+        Some(value) => complete(Some(value), "intent").map(clean),
+        None => partial(input, "intent"),
+    }
+    .filter(|value| !value.is_empty())
 }
 
 fn subject_from(input: &str, parsed: Option<&Value>) -> Option<String> {
     for key in SUBJECT_KEYS {
-        if let Some(value) = complete(parsed, key) {
-            return Some(clean(value));
-        }
-    }
-    for key in SUBJECT_KEYS {
-        if let Some(value) = partial(input, key) {
+        if let Some(value) = complete(parsed, key)
+            .map(clean)
+            .filter(|value| !value.is_empty())
+        {
             return Some(value);
         }
     }
-    (!input.is_empty() && !input.starts_with('{')).then(|| clean(input))
+    // A complete JSON value is authoritative. Searching its raw text would
+    // mistake nested object fields for tool inputs.
+    if parsed.is_none() {
+        for key in SUBJECT_KEYS {
+            if let Some(value) = partial(input, key).filter(|value| !value.is_empty()) {
+                return Some(value);
+            }
+        }
+    }
+    (!input.trim_start().starts_with('{'))
+        .then(|| clean(input))
+        .filter(|value| !value.is_empty())
 }
 
 fn complete<'a>(parsed: Option<&'a Value>, key: &str) -> Option<&'a str> {
@@ -531,6 +542,38 @@ mod tests {
     }
 
     #[test]
+    fn blank_intent_and_subject_do_not_hide_useful_headlines() {
+        for input in [
+            r#"{"intent":" \t\n ","command":"list files"}"#,
+            r#"{"command":"   ","path":"src/main.rs","intent":""}"#,
+            r#"{"intent":"   ","command":"list files""#,
+        ] {
+            let expected = if input.contains("src/main.rs") {
+                "src/main.rs"
+            } else {
+                "list files"
+            };
+            assert_eq!(headline(input).as_deref(), Some(expected), "{input}");
+            assert_eq!(cached_headline(input), headline(input));
+        }
+        assert_eq!(headline("   \t\n"), None);
+        assert_eq!(headline(" {\"intent\":false}"), None);
+    }
+
+    #[test]
+    fn complete_json_never_uses_nested_tool_fields_as_headlines() {
+        for input in [
+            r#"{"nested":{"intent":"wrong","command":"wrong"},"target":"actual"}"#,
+            r#"{"intent":null,"nested":{"intent":"wrong"},"target":"actual"}"#,
+            r#"{"intent":"","nested":{"intent":"wrong"},"target":"actual"}"#,
+        ] {
+            assert_eq!(headline(input).as_deref(), Some("actual"), "{input}");
+        }
+        assert_eq!(headline(r#"{"nested":{"command":"wrong"}}"#), None);
+        assert_eq!(headline(r#"{"nested":{"intent":"wrong"}}"#), None);
+    }
+
+    #[test]
     fn prefers_intent_and_handles_partial() {
         assert_eq!(
             headline(r#"{"command":"ls","intent":"list files"}"#).unwrap(),
@@ -554,11 +597,14 @@ mod tests {
             r#"{"intent":null,"command":42,"path":" p  q "}"#,
             " plain\u{2003}text\n ",
             "{\"intent\":\"   ",
-            " {\"intent\":false}",
         ] {
             for end in (0..=input.len()).filter(|&end| input.is_char_boundary(end)) {
                 let prefix = &input[..end];
-                assert_eq!(headline(prefix), old_headline(prefix), "prefix {prefix:?}");
+                assert_eq!(
+                    headline(prefix),
+                    old_headline(prefix).filter(|value| !value.is_empty()),
+                    "prefix {prefix:?}"
+                );
             }
         }
     }
@@ -574,7 +620,7 @@ mod tests {
                 assert!(actual.capacity() <= 2 * (HEADLINE_CHARS * 4 + 3));
             }
         }
-        assert_eq!(intent("{\"intent\":\"   ").as_deref(), Some(""));
+        assert_eq!(intent("{\"intent\":\"   ").as_deref(), None);
     }
 
     /// Run: justrust test --release benchmark_tool_headlines -- --ignored --nocapture --test-threads=1
