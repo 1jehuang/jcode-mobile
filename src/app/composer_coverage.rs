@@ -301,6 +301,39 @@ fn transcript_and_empty_error_banners_dismiss_safely_offline(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn long_error_banner_wraps_inside_its_flex_slot_without_interaction(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    let message = "Your message was saved, but the desktop is offline. Reconnect the desktop to continue this conversation without losing your draft or sending it twice.";
+    for with_history in [false, true] {
+        for width in [390., 320.] {
+            cx.simulate_resize(gpui::size(px(width), px(844.)));
+            for _ in 0..3 {
+                // Polls rebuild the same warning without any click or resize to
+                // repair a stale text layout after its first appearance.
+                view.update(cx, |app, cx| {
+                    app.session.transcript = if with_history {
+                        vec![entry(31, "Preserved history")]
+                    } else {
+                        vec![]
+                    };
+                    app.session.error_banner = Some(message.into());
+                    cx.notify();
+                });
+                draw(cx);
+                let card = cx
+                    .debug_bounds(if with_history { "err" } else { "err-empty" })
+                    .unwrap();
+                let text = cx.debug_bounds("banner-text").unwrap();
+                assert!(text.size.width < card.size.width - px(20.));
+                assert!(text.size.height > crate::system::fs(12.) * 2.);
+                assert!(text.left() > card.left() && text.right() < card.right());
+                assert!(text.top() >= card.top() && text.bottom() <= card.bottom());
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn metadata_picker_actions_preserve_each_tabs_unsent_draft(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     view.update(cx, |app, cx| {

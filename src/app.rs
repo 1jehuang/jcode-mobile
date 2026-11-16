@@ -2933,8 +2933,15 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
         .border_color(with_alpha(tint, 0.3))
         .overflow_hidden()
         .child(label("✗", tint, 12.).flex_none())
-        // min_w_0 lets long errors wrap instead of overflowing the card.
-        .child(label(msg.to_string(), t.text, 12.).flex_1().min_w_0().whitespace_normal())
+        // Keep the flex sizing on a separate slot. Measuring the text itself as
+        // a flex item can leave GPUI's final text layout at its unconstrained
+        // intrinsic width even when the row reserved the wrapped height.
+        .child(div().flex_1().min_w_0().child(
+            label(msg.to_string(), t.text, 12.)
+                .debug_selector(|| "banner-text".into())
+                .w_full()
+                .whitespace_normal(),
+        ))
 }
 
 /// Logs a frame build that blows the budget badly enough to feel like a hang.
