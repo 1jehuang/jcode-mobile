@@ -55,7 +55,7 @@ fn long_indented_code_keeps_literal_lines_and_scrolls_to_the_end(cx: &mut TestAp
         code_only: true,
         scroll: ScrollHandle::new(),
     });
-    for scale in [1., 2., 3.1] {
+    for scale in [1., 1.6, 2., 3.1] {
         let _settings = crate::system::settings_fixture(scale, false, false);
         for width in [160., 240., 320.] {
             view.update(cx, |view, cx| {
@@ -111,7 +111,7 @@ fn rich_prose_wraps_even_inside_a_nowrap_ancestor(cx: &mut TestAppContext) {
         code_only: false,
         scroll: ScrollHandle::new(),
     });
-    for scale in [1., 2., 3.1] {
+    for scale in [1., 1.6, 2., 3.1] {
         let _settings = crate::system::settings_fixture(scale, false, false);
         let mut previous_height = px(0.);
         for width in [320., 240., 160.] {
@@ -139,4 +139,43 @@ fn rich_prose_wraps_even_inside_a_nowrap_ancestor(cx: &mut TestAppContext) {
             });
         }
     }
+}
+
+struct ListFixture;
+
+impl Render for ListFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::pure_black();
+        let text = ParsedInline::new(
+            "Nested **rich text** should wrap onto multiple readable lines instead of painting beyond the right edge of a narrow transcript.",
+        );
+        let mut row = list_row("999.".into(), 2, &text, &theme, StreamFade::default());
+        assert_eq!(
+            row.style()
+                .display
+                .unwrap_or(gpui::Style::default().display),
+            gpui::Display::Block,
+            "native list text must remain in block flow, not a flex text child"
+        );
+        div().w(px(320.)).whitespace_nowrap().child(
+            row.text_size(crate::system::fs(13.5))
+                .line_height(crate::system::fs(21.))
+                .debug_selector(|| "list-block-row".into()),
+        )
+    }
+}
+
+#[gpui::test]
+fn native_list_layout_uses_block_flow_and_wraps_at_large_text(cx: &mut TestAppContext) {
+    let _settings = crate::system::settings_fixture(1.6, false, false);
+    let (_, cx) = cx.add_window_view(|_, _| ListFixture);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let row = cx
+        .debug_bounds("list-block-row")
+        .expect("list row laid out");
+    assert_eq!(row.size.width, px(320.));
+    assert!(
+        row.size.height > crate::system::fs(21.) * 2.,
+        "list body must wrap: {row:?}"
+    );
 }

@@ -54,8 +54,9 @@ fn block_inline(block: &Block) -> Option<&ParsedInline> {
     match block {
         Block::Paragraph(text)
         | Block::Heading(text)
-        | Block::Bullet(text)
-        | Block::Ordered(_, text) => Some(text),
+        | Block::Bullet(_, text)
+        | Block::Ordered(_, _, text)
+        | Block::Quote(text) => Some(text),
         Block::Code(_) => None,
     }
 }
@@ -180,8 +181,9 @@ impl ParsedInline {
 enum Block {
     Paragraph(ParsedInline),
     Heading(ParsedInline),
-    Bullet(ParsedInline),
-    Ordered(SharedString, ParsedInline),
+    Bullet(usize, ParsedInline),
+    Ordered(usize, SharedString, ParsedInline),
+    Quote(ParsedInline),
     Code(SharedString),
 }
 
@@ -197,10 +199,11 @@ impl ParsedMarkdown {
                 .0
                 .iter()
                 .map(|block| match block {
-                    Block::Paragraph(text) | Block::Heading(text) | Block::Bullet(text) => {
-                        text.bytes()
-                    }
-                    Block::Ordered(number, text) => number.len() + 64 + text.bytes(),
+                    Block::Paragraph(text)
+                    | Block::Heading(text)
+                    | Block::Bullet(_, text)
+                    | Block::Quote(text) => text.bytes(),
+                    Block::Ordered(_, number, text) => number.len() + 64 + text.bytes(),
                     Block::Code(text) => text.len() + 64,
                 })
                 .sum::<usize>()
@@ -296,13 +299,20 @@ fn parse_markdown(src: &str) -> ParsedMarkdown {
             .or_else(|| trimmed.strip_prefix("* "))
         {
             flush(&mut para, &mut blocks);
-            blocks.push(Block::Bullet(ParsedInline::new(item)));
+            blocks.push(Block::Bullet(list_indent(line), ParsedInline::new(item)));
         } else if let Some((num, item)) = ordered_item(trimmed) {
             flush(&mut para, &mut blocks);
             blocks.push(Block::Ordered(
+                list_indent(line),
                 format!("{num}.").into(),
                 ParsedInline::new(item),
             ));
+        } else if let Some(quote) = trimmed
+            .strip_prefix("> ")
+            .or_else(|| (trimmed == ">").then_some(""))
+        {
+            flush(&mut para, &mut blocks);
+            blocks.push(Block::Quote(ParsedInline::new(quote)));
         } else {
             para.push(trimmed);
         }
@@ -349,38 +359,66 @@ fn render_parsed(
                         .child(inline(h, t, fade)),
                 );
             }
-            Block::Bullet(item) => {
-                col = col.child(
-                    div()
-                        .flex()
-                        .min_w_0()
-                        .max_w_full()
-                        .gap(px(8.))
-                        .pl(px(4.))
-                        .child(div().flex_shrink_0().text_color(t.text_muted).child("•"))
-                        .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
-                );
+            Block::Bullet(indent, item) => {
+                col = col.child(list_row("•".into(), *indent, item, t, fade));
             }
-            Block::Ordered(num, item) => {
+            Block::Ordered(indent, num, item) => {
+                col = col.child(list_row(num.clone(), *indent, item, t, fade));
+            }
+            Block::Quote(text) => {
                 col = col.child(
                     div()
-                        .flex()
+                        .w_full()
                         .min_w_0()
                         .max_w_full()
-                        .gap(px(6.))
-                        .pl(px(4.))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_color(t.text_muted)
-                                .child(num.clone()),
-                        )
-                        .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
+                        .border_l_2()
+                        .border_color(t.border)
+                        .pl(px(10.))
+                        .child(inline(text, t, fade)),
                 );
             }
         }
     }
     col.into_any_element()
+}
+
+/// Retain a visible nesting hint without consuming an unbounded narrow viewport.
+fn list_indent(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| matches!(c, ' ' | '\t'))
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum::<usize>()
+        .min(8)
+        / 2
+}
+
+/// Keep text in normal block flow. Native GPUI flex text can measure a bounded
+/// row yet paint an unwrapped line, so geometry-only checks are not sufficient.
+/// The marker is independently positioned and never participates in text sizing.
+fn list_row(
+    marker: SharedString,
+    indent: usize,
+    item: &ParsedInline,
+    t: &Theme,
+    fade: StreamFade,
+) -> gpui::Div {
+    let offset = px(indent as f32 * 12.);
+    let gutter = crate::system::fs(if marker.len() > 3 { 42. } else { 28. });
+    div()
+        .relative()
+        .w_full()
+        .min_w_0()
+        .max_w_full()
+        .pl(gutter + offset)
+        .child(
+            div()
+                .absolute()
+                .left(px(4.) + offset)
+                .top(px(0.))
+                .text_color(t.text_muted)
+                .child(marker),
+        )
+        .child(inline(item, t, fade))
 }
 
 /// Literal code must remain reachable rather than clipped. GPUI repeats leading
@@ -650,6 +688,52 @@ mod tests {
     }
 
     #[test]
+    fn nested_lists_and_quotes_preserve_structure_without_raw_markers() {
+        assert_eq!(
+            parse_markdown("- outer\n  - nested\n    12. deeper\n\t- tab\n> **quote**\n>\nplain"),
+            ParsedMarkdown(vec![
+                Block::Bullet(0, ParsedInline::new("outer")),
+                Block::Bullet(1, ParsedInline::new("nested")),
+                Block::Ordered(2, "12.".into(), ParsedInline::new("deeper")),
+                Block::Bullet(2, ParsedInline::new("tab")),
+                Block::Quote(ParsedInline::new("**quote**")),
+                Block::Quote(ParsedInline::new("")),
+                Block::Paragraph(ParsedInline::new("plain")),
+            ])
+        );
+        assert_eq!(list_indent(&format!("{}- deep", " ".repeat(100))), 4);
+    }
+
+    #[test]
+    fn inline_links_present_labels_and_keep_code_and_malformed_input_literal() {
+        let source = "See [**é docs**](https://example.test/a_(b)) and `[raw](url)` [broken](url";
+        let (text, spans) = parse_inline(source);
+        assert_eq!(text, "See é docs and [raw](url) [broken](url");
+        assert!(
+            spans
+                .iter()
+                .any(|(range, style)| &text[range.clone()] == "é docs" && style.link && style.bold)
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(range, style)| &text[range.clone()] == "[raw](url)"
+                    && style.code
+                    && !style.link)
+        );
+        assert_eq!(parse_inline(source), parse_inline_impl::<false>(source));
+        for source in [
+            "\\[label](url)",
+            "[label]()",
+            "[label](unfinished",
+            "[label](two words)",
+            "[outer [inner]](url)",
+        ] {
+            assert_eq!(parse_inline(source), parse_inline_impl::<false>(source));
+        }
+    }
+
+    #[test]
     fn block_formatting_preserves_existing_semantics() {
         let parsed = parse_markdown(
             "  first  \r\n\tsecond\n\n ### **é** ##  \n - `x`\n * *y*\n 007) z\n2026. literal\n3.5 literal\n ```rust\n  **raw**\n\tcode\n ```closing\nlast\nline\n```\nunclosed\n",
@@ -659,9 +743,9 @@ mod tests {
             ParsedMarkdown(vec![
                 Block::Paragraph(ParsedInline::new("first   second")),
                 Block::Heading(ParsedInline::new("**é** ##")),
-                Block::Bullet(ParsedInline::new("`x`")),
-                Block::Bullet(ParsedInline::new("*y*")),
-                Block::Ordered("007.".into(), ParsedInline::new("z")),
+                Block::Bullet(0, ParsedInline::new("`x`")),
+                Block::Bullet(0, ParsedInline::new("*y*")),
+                Block::Ordered(0, "007.".into(), ParsedInline::new("z")),
                 Block::Paragraph(ParsedInline::new("2026. literal 3.5 literal")),
                 Block::Code("  **raw**\n\tcode".into()),
                 Block::Paragraph(ParsedInline::new("last line")),
@@ -869,6 +953,36 @@ struct InlineStyle {
     bold: bool,
     italic: bool,
     code: bool,
+    link: bool,
+}
+
+/// Presentation-only inline links. Destinations are never opened by rendering.
+/// Balanced parentheses support ordinary URL paths without exposing raw syntax.
+fn inline_link(src: &str) -> Option<(&str, usize)> {
+    let rest = src.strip_prefix('[')?;
+    let end = rest.find("](")?;
+    let label = &rest[..end];
+    if label.is_empty() || label.contains(['[', '\\', '\n']) {
+        return None;
+    }
+    let start = end + 3;
+    let mut depth = 1usize;
+    for (offset, c) in src[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let destination = &src[start..start + offset];
+                    return (!destination.is_empty()
+                        && !destination.chars().any(char::is_whitespace))
+                    .then_some((label, start + offset + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_inline(src: &str) -> (String, Vec<(std::ops::Range<usize>, InlineStyle)>) {
@@ -944,7 +1058,7 @@ fn parse_inline_impl<const CHUNKED: bool>(
                 // ASCII marker bytes cannot occur inside a UTF-8 scalar.
                 rest.as_bytes()[1..]
                     .iter()
-                    .position(|b| matches!(b, b'\\' | b'`' | b'*'))
+                    .position(|b| matches!(b, b'\\' | b'`' | b'*' | b'['))
                     .map_or(rest.len(), |next| next + 1)
             } else {
                 rest.chars().next().unwrap().len_utf8()
@@ -1033,6 +1147,23 @@ fn parse_inline_impl<const CHUNKED: bool>(
                 src = &src[count..];
                 continue;
             }
+            if depth < 32
+                && let Some((label, consumed)) = inline_link(src)
+            {
+                parse::<CHUNKED>(
+                    label,
+                    InlineStyle {
+                        link: true,
+                        ..style
+                    },
+                    depth + 1,
+                    out,
+                    spans,
+                    code,
+                );
+                src = &src[consumed..];
+                continue;
+            }
             let marker = if src.starts_with("***") {
                 "***"
             } else if src.starts_with("**") {
@@ -1080,7 +1211,7 @@ fn parse_inline_impl<const CHUNKED: bool>(
                 // run. Stop only at ASCII syntax, preserving byte-based span ranges.
                 src.as_bytes()[1..]
                     .iter()
-                    .position(|b| matches!(b, b'\\' | b'`' | b'*'))
+                    .position(|b| matches!(b, b'\\' | b'`' | b'*' | b'['))
                     .map_or(src.len(), |next| next + 1)
             } else {
                 src.chars().next().unwrap().len_utf8()
@@ -1114,9 +1245,9 @@ fn inline(parsed: &ParsedInline, t: &Theme, fade: StreamFade) -> AnyElement {
             (
                 range.clone(),
                 HighlightStyle {
-                    color: style.code.then_some(t.text_strong),
+                    color: (style.code || style.link).then_some(t.text_strong),
                     background_color: style.code.then_some(t.inline_code_bg),
-                    font_weight: style.bold.then_some(FontWeight::SEMIBOLD),
+                    font_weight: (style.bold || style.link).then_some(FontWeight::SEMIBOLD),
                     font_style: style.italic.then_some(FontStyle::Italic),
                     ..Default::default()
                 },
