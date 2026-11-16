@@ -151,10 +151,9 @@ fn invalid_command_ids_never_reach_transport() {
         api_key: "fixture-only".into(),
         email: None,
     };
-    assert_eq!(
-        command(&account, "../invalid").unwrap_err(),
-        "Invalid command id"
-    );
+    for id in ["../invalid", "------------------------------------", "12345678123412341234123456789abcdef012", "12345678_1234-1234-1234-123456789abc"] {
+        assert_eq!(command(&account, id).unwrap_err(), "Invalid command id", "{id}");
+    }
 }
 
 #[test]

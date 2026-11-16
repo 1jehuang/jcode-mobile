@@ -226,11 +226,14 @@ impl Command {
     }
     /// Never navigate to the original local transcript or a missing result.
     pub fn destination(&self, source: &str) -> Result<Option<String>, String> {
+        if self.kind != "transfer" || self.session_id.as_deref() != Some(source) {
+            return Err("Transfer command returned a different session or kind".into());
+        }
         match self.status.as_str() {
             "done" => self
                 .result_session_id
                 .as_ref()
-                .filter(|id| !id.is_empty() && id.as_str() != source)
+                .filter(|id| id.as_str() != source && transcript_path(id).is_ok())
                 .cloned()
                 .map(Some)
                 .ok_or_else(|| "Transfer completed without a new cloud session".into()),
@@ -255,6 +258,7 @@ fn transfer_body<'a>(session: &'a SyncedSession, text: &'a str) -> Result<Transf
     if !session.can_transfer() {
         return Err("Only local synced sessions can be transferred".into());
     }
+    transcript_path(&session.session_id)?;
     if text.trim().is_empty() {
         return Err("Enter a message to continue in cloud".into());
     }
@@ -315,7 +319,16 @@ pub fn list(account: &Account) -> Result<Vec<SyncedSession>, String> {
 pub fn transfer(account: &Account, session: &SyncedSession, text: &str) -> Result<Command, String> {
     let body = serde_json::to_value(transfer_body(session, text)?).map_err(|e| e.to_string())?;
     let value = request(account, "transfer", "/mobile/commands", Some(body))?;
-    serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())
+    let command: Command = serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())?;
+    validate_command_id(&command.command_id)?;
+    // A receipt for another operation must never clear this draft or navigate.
+    if command.kind != "transfer" || command.session_id.as_deref() != Some(&session.session_id) {
+        return Err("Transfer command returned a different session or kind".into());
+    }
+    if !matches!(command.status.as_str(), "queued" | "running" | "done" | "failed") {
+        return Err("Unknown cloud command status".into());
+    }
+    Ok(command)
 }
 
 pub fn message(account: &Account, session: &SyncedSession, text: &str) -> Result<Command, String> {
@@ -371,16 +384,28 @@ pub fn message_with_images(
     let value = request(account, "message", "/mobile/commands", Some(body))?;
     let command: Command =
         serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())?;
+    validate_command_id(&command.command_id)?;
     command.message_complete(&session.session_id)?;
     Ok(command)
 }
 
-pub fn command(account: &Account, id: &str) -> Result<Command, String> {
-    if id.len() != 36 || !id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+fn validate_command_id(id: &str) -> Result<(), String> {
+    if id.len() != 36 || !id.bytes().enumerate().all(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) { byte == b'-' } else { byte.is_ascii_hexdigit() }
+    }) {
         return Err("Invalid command id".into());
     }
+    Ok(())
+}
+
+pub fn command(account: &Account, id: &str) -> Result<Command, String> {
+    validate_command_id(id)?;
     let value = request(account, "command", &format!("/mobile/commands/{id}"), None)?;
-    serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())
+    let command: Command = serde_json::from_value(value["command"].clone()).map_err(|e| e.to_string())?;
+    if command.command_id != id {
+        return Err("Mobile sync returned a different command".into());
+    }
+    Ok(command)
 }
 
 pub fn commands(account: &Account) -> Result<Vec<Command>, String> {
@@ -691,6 +716,47 @@ mod tests {
         s.source = "cloud".into();
         assert!(transfer_body(&s, "next").is_err());
     }
+    #[test]
+    fn command_responses_must_match_the_requested_operation() {
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let source: SyncedSession = serde_json::from_value(serde_json::json!({
+            "session_id":"local-1", "source":"local"
+        })).unwrap();
+        for (kind, session_id, command_id) in [
+            ("message", "local-1", id),
+            ("transfer", "other-local", id),
+            ("transfer", "local-1", "not-pollable"),
+        ] {
+            let (account, server) = mock_response(202, serde_json::json!({"command":{
+                "command_id":command_id, "kind":kind, "session_id":session_id, "status":"queued"
+            }}));
+            assert!(transfer(&account, &source, "next").is_err(), "accepted {kind}/{session_id}/{command_id}");
+            server.join().unwrap();
+        }
+        let (account, server) = mock_response(200, serde_json::json!({"command":{
+            "command_id":"87654321-4321-4321-4321-cba987654321", "kind":"transfer",
+            "session_id":"local-1", "status":"done", "result_session_id":"cloud-new"
+        }}));
+        assert!(command(&account, id).is_err(), "receipt for another command must not acknowledge this request");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn transfer_destination_rejects_wrong_source_kind_and_unsafe_destination() {
+        for (kind, source, destination) in [
+            ("message", "local", "cloud-new"),
+            ("transfer", "other-local", "cloud-new"),
+            ("transfer", "local", "../unsafe"),
+            ("transfer", "local", " "),
+        ] {
+            let command: Command = serde_json::from_value(serde_json::json!({
+                "command_id":"fixture", "kind":kind, "session_id":source,
+                "status":"done", "result_session_id":destination
+            })).unwrap();
+            assert!(command.destination("local").is_err(), "accepted {kind}/{source}/{destination}");
+        }
+    }
+
     #[test]
     fn completion_navigates_only_to_new_cloud_id() {
         let mut c = Command {
