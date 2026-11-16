@@ -43,6 +43,9 @@ fn uncertain_submission_needs_positive_reconciliation(cx: &mut TestAppContext) {
         app.complete_synced_refresh(&expected, app.auth_generation, Err("offline".into()), cx);
         assert!(app.synced.uncertain_submission);
         app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![command()])), cx);
+        assert!(app.synced.uncertain_submission, "a same-source command from another client cannot identify our lost POST");
+        app.synced.uncertain_command = Some(("same-poll".into(), "local-work".into()));
+        app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![command()])), cx);
         assert!(!app.synced.uncertain_submission);
     });
 }

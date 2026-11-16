@@ -225,13 +225,14 @@
       "coverage": [{ "kind": "gap", "tests": [], "note": "Scrollbar thumb geometry, visibility at scroll boundaries, and physical device rendering have no dedicated visual regression yet. Existing transcript scrolling tests do not independently assert this new indicator." }]
     },
     {
-      "controls": {},
+      "controls": { "debug_selector:literal:banner-text": 1 },
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "This visual helper is mounted under both error-banner hit targets in the transcript tests. Dismissal routing is tested, not every tint/message/width combination.",
+          "note": "Dismissal routing is tested under empty/history error targets. Long-message text and banner bounds are checked across repeated frames at 320/390 points without interaction. These are geometry assertions, not independent painted-glyph verification.",
           "tests": [
-            "src/app/composer_coverage.rs::transcript_and_empty_error_banners_dismiss_safely_offline"
+            "src/app/composer_coverage.rs::transcript_and_empty_error_banners_dismiss_safely_offline",
+            "src/app/composer_coverage.rs::long_error_banner_wraps_inside_its_flex_slot_without_interaction"
           ]
         },
         {

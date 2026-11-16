@@ -28,7 +28,6 @@ pub(super) struct State {
     submitted_draft: Option<(String, String)>,
     uncertain_submission: bool,
     uncertain_command: Option<(String, String)>,
-    uncertain_known_commands: Vec<String>,
     polling: Option<String>,
     error: Option<String>,
     /// Additional pages explicitly requested in the drawer.
@@ -650,18 +649,13 @@ impl MobileApp {
         match result {
             Ok((sessions, commands)) => {
                 self.synced.replace_sessions(sessions);
-                // An empty/eventually-consistent command list cannot prove a lost
-                // POST was rejected. Only a newly observed matching command can
-                // reconcile an uncertain submission.
+                // A command list cannot correlate a lost POST with an unknown
+                // receipt ID. Another client may submit the same source. Only
+                // the exact known command may release the duplicate guard.
                 if self.synced.uncertain_submission {
                     let reconciled = self.synced.uncertain_command.as_ref().is_some_and(|(id, source)| {
                         commands.iter().any(|c| &c.command_id == id && c.kind == "transfer"
                             && c.session_id.as_ref() == Some(source) && (c.status == "failed" || c.destination(source).is_ok()))
-                    }) || self.synced.submitted_draft.as_ref().is_some_and(|(source, _)| {
-                        commands.iter().any(|c| c.kind == "transfer"
-                            && c.session_id.as_ref() == Some(source)
-                            && !self.synced.uncertain_known_commands.contains(&c.command_id)
-                            && (c.status == "failed" || c.destination(source).is_ok()))
                     });
                     self.synced.uncertain_submission = !reconciled;
                     if reconciled { self.synced.submitted_draft = None; self.synced.uncertain_command = None; }
@@ -704,7 +698,6 @@ impl MobileApp {
                 // A lost response may have enqueued successfully. Reconcile before retrying.
                 haptics::play(Haptic::Error);
                 self.synced.submitted_draft = submitted_draft;
-                self.synced.uncertain_known_commands = self.synced.commands.iter().map(|c| c.command_id.clone()).collect();
                 self.synced.uncertain_submission = true;
                 self.synced.error = Some(format!("{error}. Refresh sessions before retrying."));
                 self.refresh_synced_sessions(cx);
