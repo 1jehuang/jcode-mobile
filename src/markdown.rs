@@ -19,11 +19,11 @@ pub fn render_reasoning(src: &str, t: &Theme) -> AnyElement {
         text_strong: t.text_muted,
         ..*t
     };
-    render(src, &muted)
+    render_parsed(&cached_parse(src), &muted, &[], "markdown-reasoning")
 }
 
 pub fn render(src: &str, t: &Theme) -> AnyElement {
-    render_parsed(&cached_parse(src), t, &[])
+    render_parsed(&cached_parse(src), t, &[], "markdown-answer")
 }
 
 /// A uniform alpha deficit over the newest released source bytes only.
@@ -36,7 +36,7 @@ pub(crate) struct StreamFade {
 pub(crate) fn render_streaming(src: &str, t: &Theme, fade: StreamFade) -> AnyElement {
     let parsed = cached_parse(src);
     let fades = block_fades(src, &parsed, fade);
-    render_parsed(&parsed, t, &fades)
+    render_parsed(&parsed, t, &fades, "markdown-answer")
 }
 
 pub(crate) fn render_reasoning_streaming(src: &str, t: &Theme, fade: StreamFade) -> AnyElement {
@@ -45,7 +45,9 @@ pub(crate) fn render_reasoning_streaming(src: &str, t: &Theme, fade: StreamFade)
         text_strong: t.text_muted,
         ..*t
     };
-    render_streaming(src, &muted, fade)
+    let parsed = cached_parse(src);
+    let fades = block_fades(src, &parsed, fade);
+    render_parsed(&parsed, &muted, &fades, "markdown-reasoning")
 }
 
 fn block_inline(block: &Block) -> Option<&ParsedInline> {
@@ -309,8 +311,16 @@ fn parse_markdown(src: &str) -> ParsedMarkdown {
     ParsedMarkdown(blocks)
 }
 
-fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> AnyElement {
+fn render_parsed(
+    parsed: &ParsedMarkdown,
+    t: &Theme,
+    fades: &[StreamFade],
+    scope: &'static str,
+) -> AnyElement {
+    // Code panes retain scroll state by block index. Reasoning and answer may
+    // both contain block zero within the same transcript row.
     let mut col = div()
+        .id(scope)
         .w_full()
         .min_w_0()
         .max_w_full()
@@ -326,26 +336,14 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> An
                 col = col.child(inline(text, t, fade));
             }
             Block::Code(code) => {
-                col = col.child(
-                    div()
-                        .min_w_0()
-                        .max_w_full()
-                        .overflow_hidden()
-                        .p(px(10.))
-                        .rounded(px(8.))
-                        .bg(t.code_bg)
-                        .border_1()
-                        .border_color(t.border)
-                        .font_family(crate::theme::FONT)
-                        .text_size(crate::system::fs(12.))
-                        .line_height(crate::system::fs(18.))
-                        .text_color(t.text)
-                        .child(code.clone()),
-                );
+                col = col.child(code_block(code, t, index));
             }
             Block::Heading(h) => {
                 col = col.child(
                     div()
+                        .w_full()
+                        .min_w_0()
+                        .max_w_full()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_size(crate::system::fs(14.))
                         .child(inline(h, t, fade)),
@@ -359,7 +357,7 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> An
                         .max_w_full()
                         .gap(px(8.))
                         .pl(px(4.))
-                        .child(div().text_color(t.text_muted).child("•"))
+                        .child(div().flex_shrink_0().text_color(t.text_muted).child("•"))
                         .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
                 );
             }
@@ -371,7 +369,12 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> An
                         .max_w_full()
                         .gap(px(6.))
                         .pl(px(4.))
-                        .child(div().text_color(t.text_muted).child(num.clone()))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(t.text_muted)
+                                .child(num.clone()),
+                        )
                         .child(div().flex_1().min_w_0().child(inline(item, t, fade))),
                 );
             }
@@ -379,6 +382,39 @@ fn render_parsed(parsed: &ParsedMarkdown, t: &Theme, fades: &[StreamFade]) -> An
     }
     col.into_any_element()
 }
+
+/// Literal code must remain reachable rather than clipped. GPUI repeats leading
+/// indentation on soft wraps, which can consume the whole content width at large
+/// text sizes. Bound horizontal scrolling to the code pane, not the transcript.
+fn code_block(code: &SharedString, t: &Theme, index: usize) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(("markdown-code", index))
+        .w_full()
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .items_start()
+        .overflow_x_scroll()
+        .p(px(10.))
+        .rounded(px(8.))
+        .bg(t.code_bg)
+        .border_1()
+        .border_color(t.border)
+        .font_family(crate::theme::FONT)
+        .text_size(crate::system::fs(12.))
+        .line_height(crate::system::fs(18.))
+        .text_color(t.text)
+        .child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .child(code.clone()),
+        )
+}
+
+#[cfg(test)]
+#[path = "markdown/overflow_tests.rs"]
+mod overflow_tests;
 
 /// `12. item` or `12) item` -> ("12", "item").
 fn ordered_item(line: &str) -> Option<(&str, &str)> {
@@ -1089,8 +1125,10 @@ fn inline(parsed: &ParsedInline, t: &Theme, fade: StreamFade) -> AnyElement {
         .collect::<Vec<_>>();
     let highlights = merge_fade_highlights(&parsed.text, highlights, fade);
     div()
+        .w_full()
         .min_w_0()
         .max_w_full()
+        .whitespace_normal()
         .overflow_hidden()
         .text_color(t.text)
         .child(StyledText::new(parsed.text.clone()).with_highlights(highlights))
