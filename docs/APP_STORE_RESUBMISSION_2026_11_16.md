@@ -52,4 +52,17 @@ The final lightweight voice suite passed 26 tests. Live production configuration
 
 Replacement build `1794811219` was built and distribution-signed from mobile `bdf1148d8ab23fa4958248ed1f48985e45171cfd` and repaired shared `5bc6ea6bf4a8331811ab6c6d8405693dd4cab057`. IPA SHA-256: `b6574b37a7b5a0303fb01bc437c4419d346cb03dec1e81b437dcc367cc5770e0`. Protected final archive: `~/.appstoreconnect/builds/1794811219/`.
 
-Upload and final Apple review-state verification remain pending. The old submission is still preserved at this checkpoint.
+## Verified Apple outcome
+
+- Exact replacement build `1794811219` uploaded and processed `VALID`, `APP_STORE_ELIGIBLE`. Apple build ID: `e60bb9f9-5410-4791-8687-54d51ef2ad0e`.
+- Independent artifact verification matched all VM hashes, ZIP CRC, ARM64 identity, all four bundle versions, three embedded profiles and four CodeResources. SDK metadata is `iphoneos27.1`, Xcode `2710`. `rcodesign verify` reported no problems for all four executables, with its explicit incomplete-verifier warning preserved in the protected receipt.
+- Shared repair source was pushed as tag `mobile-appstore-1794811219`, pointing to `5bc6ea6bf4a8331811ab6c6d8405693dd4cab057`, without merging divergent histories or touching unrelated work.
+- The old review submission was canceled only after the corrected build was valid. Apple version state transitioned to `DEVELOPER_REJECTED` before the listing/build update.
+- Refreshed the en-US description, keywords, promotional text, support/marketing URLs and reviewer notes. Attached the exact new build, not the latest-build heuristic.
+- New review submission: `d4da06e1-ea35-4a47-99eb-45ef74092a42`, submitted `2026-11-16T06:58:58.591Z`.
+- Final independent readback verified both version and review submission are `WAITING_FOR_REVIEW`, with the exact replacement build attached and `AFTER_APPROVAL` preserved.
+- Independent listing verification matched all requested fields and notes. Existing demo credentials and contact details were unchanged. All three existing screenshots remain `COMPLETE`. Pricing, age rating and availability were not mutated.
+
+Protected receipts include `apple-build-valid.json`, `withdraw-verified.json`, `new-review-submitted.json`, `store-version-final.json`, `review-submission-final.json` and `independent-listing-verification.json` under `~/.appstoreconnect/builds/1794811219/`. They contain private review data and are not committed to the repository.
+
+**Resubmitted, not yet published.** Apple review and approval remain external. Automatic release after approval is configured, but no approval or live App Store availability is claimed.
