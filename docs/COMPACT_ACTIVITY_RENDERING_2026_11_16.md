@@ -20,3 +20,13 @@ Desktop commits `baed38b29` and `2142e70d9` retain visible user/tool image block
 Backend commit `eb5a7d3` on the existing `feat/browser-code-subscribe` branch accepts validated attachments without changing their original transcript roles. The existing image validation limits and account isolation remain enforced.
 
 These producer and backend changes are committed and pushed, not deployed or activated by this work. Deploy the compatible backend change before activating the new producer. Do not deploy the unrelated feature branch wholesale. These changes are not included in the previously published TestFlight build 1794827452.
+
+## TestFlight release
+
+The mobile rendering changes are now available in TestFlight **1.0 (1794831158)**, built from immutable mobile commit `032da214dce1096db1ff0cdc16cfc7f0b6fbd784` with unchanged voice dependency commit `beaa566b86ff3e87d3f9ce8ff5eb36f64a04637e`.
+
+- Signed IPA SHA-256: `274ee99d905a2f1750b4cf1ebb0d2249552fa6a18a148e28d5dfcf7c0d1c96ff`.
+- Apple build ID: `138864da-e281-443e-be66-d3f796905787`.
+- Independently verified November 16, 2026 at 12:18:47 UTC: processing `VALID`, internal and external state `IN_BETA_TESTING`, automatic notification enabled, and membership in the public-link-enabled Public Beta group.
+- All four app bundle versions and three embedded provisioning profiles were verified. Downloaded IPA hash, ZIP CRC, source provenance, and actual release-visible activity/image renderer strings were checked before upload.
+- This mobile release does not deploy the backend or activate the desktop producer. The image-upload role compatibility rollout gate above still applies.
