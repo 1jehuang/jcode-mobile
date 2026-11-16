@@ -48,6 +48,42 @@ fn header_new_session_is_inert_without_account_and_parks_existing_draft(cx: &mut
 }
 
 #[gpui::test]
+fn composer_action_icons_are_centered_equal_and_keep_full_touch_targets(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    for width in [320., 390., 430.] {
+        cx.simulate_resize(gpui::size(px(width), px(844.)));
+        for draft in ["", "A draft", "A longer draft\nwith multiple lines\nand a final line"] {
+            view.update(cx, |app, cx| {
+                app.session.phase = ConnectionPhase::Connected;
+                app.session.session_id = Some("offline-icon-fixture".into());
+                app.composer.update(cx, |input, cx| input.set_text(draft, cx));
+                cx.notify();
+            });
+            draw(cx);
+            let attach = cx.debug_bounds("attach-photo").unwrap();
+            let send = cx.debug_bounds("send").unwrap();
+            assert_eq!(attach.size, gpui::size(px(44.), px(44.)));
+            assert_eq!(send.size, attach.size);
+            assert_eq!(attach.center().y, send.center().y);
+            for (control, circle, icon) in [
+                (attach, "attach-photo-circle", "attach-photo-icon"),
+                (send, "send-circle", "send-icon"),
+            ] {
+                let circle = cx.debug_bounds(circle).unwrap();
+                let icon = cx.debug_bounds(icon).unwrap();
+                assert_eq!(circle.size, gpui::size(px(36.), px(36.)));
+                assert_eq!(icon.size, gpui::size(px(20.), px(20.)));
+                assert_eq!(circle.center(), control.center());
+                assert_eq!(icon.center(), control.center());
+            }
+            let input = cx.debug_bounds("composer-input").unwrap();
+            assert!(input.left() >= attach.right(), "input overlaps plus target");
+            assert!(input.right() <= send.left(), "input overlaps send target");
+        }
+    }
+}
+
+#[gpui::test]
 fn composer_send_disabled_for_disconnected_missing_session_and_blank_input(
     cx: &mut TestAppContext,
 ) {

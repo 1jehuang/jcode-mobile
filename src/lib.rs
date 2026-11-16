@@ -60,6 +60,8 @@ struct Assets;
 impl gpui::AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
         Ok(match path {
+            "icons/plus.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/plus.svg"))),
+            "icons/arrow-up.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/arrow-up.svg"))),
             "icons/cloud.svg" => Some(Cow::Borrowed(include_bytes!("../assets/icons/cloud.svg"))),
             "icons/git-branch.svg" => Some(Cow::Borrowed(include_bytes!(
                 "../assets/icons/git-branch.svg"
@@ -73,6 +75,8 @@ impl gpui::AssetSource for Assets {
 
     fn list(&self, _path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
         Ok(vec![
+            "icons/plus.svg".into(),
+            "icons/arrow-up.svg".into(),
             "icons/cloud.svg".into(),
             "icons/git-branch.svg".into(),
             "icons/refresh.svg".into(),

@@ -879,13 +879,16 @@
     {
       "controls": {
         "debug_selector:dynamic:id": 1,
+        "debug_selector:macro:format:literal:{id}-circle": 1,
+        "debug_selector:macro:format:literal:{id}-icon": 1,
         "id:dynamic:id": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "Rendered composer send/stop uses the shared round control. This covers representative caller states rather than every icon/button invocation.",
+          "note": "Rendered composer send/stop uses the shared round control. Centered vector icons retain 44-point hit targets around 36-point painted circles, with equal 20-point icon boxes across narrow/wide phones and multiline drafts. Geometry is headless GPUI evidence, not native pixel acceptance.",
           "tests": [
+            "src/app/composer_coverage.rs::composer_action_icons_are_centered_equal_and_keep_full_touch_targets",
             "src/app/composer_coverage.rs::composer_send_records_local_message_then_queues_processing_followup",
             "src/app/composer_coverage.rs::composer_stop_requires_ready_session_and_does_not_fake_cancel_ack"
           ]

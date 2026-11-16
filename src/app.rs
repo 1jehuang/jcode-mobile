@@ -2449,11 +2449,10 @@ impl MobileApp {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .pl(px(16.))
-                    .pr(px(4.))
-                    .min_h(px(48.))
-                    .rounded(px(22.))
+                    .gap(px(4.))
+                    .px(px(4.))
+                    .min_h(px(52.))
+                    .rounded(px(26.))
                     .bg(t.field)
                     .border_1()
                     .border_color(if focused { t.border_focus } else { t.input_border })
@@ -2856,12 +2855,25 @@ fn round_button(id: &'static str, glyph: &'static str, fg: Hsla, enabled: bool, 
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(t.surface_elevated)
         .text_color(fg)
-        .text_size(crate::system::fs(15.))
-        .when(enabled, |d| d.cursor_pointer().active(|s| s.bg(t.surface)))
+        .when(enabled, |d| d.cursor_pointer().active(|s| s.opacity(0.7)))
         .when(!enabled, |d| d.opacity(0.4))
-        .child(glyph)
+        // Keep a 44-point touch target, but inset the painted circle. Fixed
+        // vector geometry avoids font baseline drift and accessibility scaling
+        // making the two actions appear different sizes.
+        .child(div()
+            .debug_selector(move || format!("{id}-circle"))
+            .size(px(36.)).flex_none().flex().items_center().justify_center()
+            .rounded_full().bg(t.surface_elevated)
+            .child(div()
+                .debug_selector(move || format!("{id}-icon"))
+                .size(px(20.)).flex_none().flex().items_center().justify_center()
+                .text_size(px(20.)).line_height(px(20.))
+                .child(match glyph {
+                    "+" => gpui::svg().path("icons/plus.svg").size(px(20.)).text_color(fg).into_any_element(),
+                    "↑" => gpui::svg().path("icons/arrow-up.svg").size(px(20.)).text_color(fg).into_any_element(),
+                    _ => div().child(glyph).into_any_element(),
+                })))
 }
 
 /// Thin overlay thumb showing transcript position. Hidden when nothing scrolls.
