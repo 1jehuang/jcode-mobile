@@ -13,6 +13,63 @@ fn command() -> Command {
 }
 
 #[gpui::test]
+fn external_lookup_origin_rejects_manual_tab_or_session_navigation(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        app.adopt_account(account(), cx);
+        app.session.session_id = Some("origin-session".into());
+        let tab = app.active_tab;
+        let session = app.session.session_id.clone();
+        assert!(app.external_lookup_origin_current(tab, &session));
+        app.new_tab_in_dir(None, cx);
+        assert!(!app.external_lookup_origin_current(tab, &session));
+        app.focus_tab(tab, cx);
+        app.session.session_id = Some("manually-opened".into());
+        assert!(!app.external_lookup_origin_current(tab, &session));
+    });
+}
+
+#[gpui::test]
+fn uncertain_submission_needs_positive_reconciliation(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        app.synced = State::fixture();
+        app.synced.uncertain_submission = true;
+        app.synced.submitted_draft = Some(("local-work".into(), "draft".into()));
+        app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![])), cx);
+        assert!(app.synced.uncertain_submission);
+        app.complete_synced_refresh(&expected, app.auth_generation, Err("offline".into()), cx);
+        assert!(app.synced.uncertain_submission);
+        app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![command()])), cx);
+        assert!(!app.synced.uncertain_submission);
+    });
+}
+
+#[gpui::test]
+fn invalid_poll_stays_blocked_until_valid_matching_refresh(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        for status in ["unknown", "done"] {
+            app.synced = State::fixture();
+            app.synced.polling = Some("same-poll".into());
+            let mut invalid = command();
+            invalid.status = status.into();
+            invalid.result_session_id = None;
+            assert!(app.complete_transfer_poll(&expected, app.auth_generation, "same-poll", "local-work", Ok(invalid), cx));
+            assert!(app.synced.uncertain_submission);
+            app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![])), cx);
+            assert!(app.synced.uncertain_submission);
+            app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![command()])), cx);
+            assert!(!app.synced.uncertain_submission);
+        }
+    });
+}
+
+#[gpui::test]
 fn same_account_aba_refresh_cannot_replace_new_login_inventory(cx: &mut TestAppContext) {
     let (view, cx) = mount(cx);
     view.update(cx, |app, cx| {
@@ -37,7 +94,7 @@ fn same_account_aba_refresh_cannot_replace_new_login_inventory(cx: &mut TestAppC
         app.complete_synced_refresh(&expected, old, Err("old refresh error".into()), cx);
         assert!(app.synced.error.is_none());
         app.complete_synced_refresh(&expected, app.auth_generation, Ok((vec![], vec![])), cx);
-        assert!(!app.synced.loading && !app.synced.uncertain_submission);
+        assert!(!app.synced.loading && app.synced.uncertain_submission);
         assert!(app.synced.sessions.is_empty());
     });
     draw(cx);

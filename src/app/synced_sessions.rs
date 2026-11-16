@@ -27,6 +27,8 @@ pub(super) struct State {
     /// Only the submitted draft may be cleared by its asynchronous response.
     submitted_draft: Option<(String, String)>,
     uncertain_submission: bool,
+    uncertain_command: Option<(String, String)>,
+    uncertain_known_commands: Vec<String>,
     polling: Option<String>,
     error: Option<String>,
     /// Additional pages explicitly requested in the drawer.
@@ -461,6 +463,8 @@ impl MobileApp {
             return;
         }
         let generation = self.synced.external_open;
+        let origin_tab = self.active_tab;
+        let origin_session = self.session.session_id.clone();
         let auth_generation = self.auth_generation;
         self.synced.external_retry = Some((id.clone(), reply.clone()));
         self.screen = Screen::Chat;
@@ -475,6 +479,11 @@ impl MobileApp {
             let _ = this.update(cx, |this, cx| {
                 if this.auth_generation != auth_generation || !same_account(this.account.as_ref(), &account) || this.synced.external_open != generation { return; }
                 this.synced.external_loading = false;
+                if !this.external_lookup_origin_current(origin_tab, &origin_session) {
+                    this.synced.external_retry = None;
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(session) => {
                         this.synced.external_retry = None;
@@ -491,6 +500,10 @@ impl MobileApp {
             });
         }).detach();
         cx.notify();
+    }
+
+    fn external_lookup_origin_current(&self, tab: u64, session: &Option<String>) -> bool {
+        self.active_tab == tab && &self.session.session_id == session
     }
 
     fn apply_external_sessions(&mut self, id: String, reply: Option<String>, sessions: Vec<SyncedSession>, cx: &mut Context<Self>) {
@@ -637,8 +650,24 @@ impl MobileApp {
         match result {
             Ok((sessions, commands)) => {
                 self.synced.replace_sessions(sessions);
+                // An empty/eventually-consistent command list cannot prove a lost
+                // POST was rejected. Only a newly observed matching command can
+                // reconcile an uncertain submission.
+                if self.synced.uncertain_submission {
+                    let reconciled = self.synced.uncertain_command.as_ref().is_some_and(|(id, source)| {
+                        commands.iter().any(|c| &c.command_id == id && c.kind == "transfer"
+                            && c.session_id.as_ref() == Some(source) && (c.status == "failed" || c.destination(source).is_ok()))
+                    }) || self.synced.submitted_draft.as_ref().is_some_and(|(source, _)| {
+                        commands.iter().any(|c| c.kind == "transfer"
+                            && c.session_id.as_ref() == Some(source)
+                            && !self.synced.uncertain_known_commands.contains(&c.command_id)
+                            && (c.status == "failed" || c.destination(source).is_ok()))
+                    });
+                    self.synced.uncertain_submission = !reconciled;
+                    if reconciled { self.synced.submitted_draft = None; self.synced.uncertain_command = None; }
+                    else { self.synced.error = Some("Could not confirm whether cloud continuation was accepted. Retry refresh, not submission.".into()); }
+                }
                 self.synced.commands = commands;
-                self.synced.uncertain_submission = false;
                 if let Some(command) = self.synced.commands.iter().find(|c| {
                     c.kind == "transfer" && matches!(c.status.as_str(), "queued" | "running")
                 }).cloned() {
@@ -674,6 +703,8 @@ impl MobileApp {
             Err(error) => {
                 // A lost response may have enqueued successfully. Reconcile before retrying.
                 haptics::play(Haptic::Error);
+                self.synced.submitted_draft = submitted_draft;
+                self.synced.uncertain_known_commands = self.synced.commands.iter().map(|c| c.command_id.clone()).collect();
                 self.synced.uncertain_submission = true;
                 self.synced.error = Some(format!("{error}. Refresh sessions before retrying."));
                 self.refresh_synced_sessions(cx);
@@ -702,6 +733,8 @@ impl MobileApp {
                     || command.session_id.as_deref() != Some(source)
                 {
                     self.synced.polling = None;
+                    self.synced.uncertain_submission = true;
+                    self.synced.uncertain_command = Some((id.into(), source.into()));
                     self.synced.error = Some("Cloud continuation returned a different command, session or kind".into());
                     cx.notify();
                     return true;
@@ -739,6 +772,10 @@ impl MobileApp {
             }
             Err(error) => {
                 self.synced.polling = None;
+                // A malformed terminal response is not evidence that the
+                // transfer failed. Keep duplicate submissions blocked.
+                self.synced.uncertain_submission = self.synced.commands.first().is_some_and(|c| c.status != "failed");
+                self.synced.uncertain_command = self.synced.uncertain_submission.then(|| (id.into(), source.into()));
                 haptics::play(Haptic::Error);
                 self.synced.error = Some(error);
                 cx.notify();
