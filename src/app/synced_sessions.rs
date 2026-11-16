@@ -24,6 +24,8 @@ pub(super) struct State {
     selected: Option<String>,
     loading: bool,
     submitting: bool,
+    /// Only the submitted draft may be cleared by its asynchronous response.
+    submitted_draft: Option<(String, String)>,
     uncertain_submission: bool,
     polling: Option<String>,
     error: Option<String>,
@@ -600,6 +602,7 @@ impl MobileApp {
             return;
         }
         self.synced.submitting = true;
+        self.synced.submitted_draft = Some((session.session_id.clone(), self.transfer_input.read(cx).text().to_string()));
         let generation = self.auth_generation;
         haptics::play(Haptic::Light);
         self.synced.error = None;
@@ -656,9 +659,15 @@ impl MobileApp {
     ) {
         if !self.synced_request_current(account, generation) { return; }
         self.synced.submitting = false;
+        let submitted_draft = self.synced.submitted_draft.take();
         match result {
             Ok(command) => {
-                self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
+                if submitted_draft.as_ref().is_some_and(|(source, text)| {
+                    self.synced.selected.as_ref() == Some(source)
+                        && self.transfer_input.read(cx).text() == *text
+                }) {
+                    self.transfer_input.update(cx, |input, cx| input.set_text("", cx));
+                }
                 self.synced.commands.insert(0, command.clone());
                 self.poll_transfer(command, account.clone(), cx);
             }
@@ -689,6 +698,14 @@ impl MobileApp {
         }
         let result = match result {
             Ok(command) => {
+                if command.command_id != id || command.kind != "transfer"
+                    || command.session_id.as_deref() != Some(source)
+                {
+                    self.synced.polling = None;
+                    self.synced.error = Some("Cloud continuation returned a different command, session or kind".into());
+                    cx.notify();
+                    return true;
+                }
                 self.synced.commands.retain(|c| c.command_id != command.command_id);
                 self.synced.commands.insert(0, command.clone());
                 command.destination(source)
@@ -708,7 +725,9 @@ impl MobileApp {
             Ok(Some(destination)) => {
                 self.synced.polling = None;
                 self.synced.error = None;
-                if self.drawer_open && self.synced.selected.as_deref() == Some(source) {
+                if self.drawer_open && self.synced.selected.as_deref() == Some(source)
+                    && self.session.session_id.as_deref() == Some(source)
+                {
                     self.synced.selected = None;
                     self.screen = Screen::Chat;
                     self.drawer_open_session(destination, cx);

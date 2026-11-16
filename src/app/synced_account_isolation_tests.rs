@@ -56,6 +56,7 @@ fn same_account_aba_transfer_cannot_clear_new_login_draft_or_install_old_command
         app.adopt_account(expected.clone(), cx);
         app.synced = State::fixture();
         app.synced.submitting = true;
+        app.synced.submitted_draft = Some(("local-work".into(), "new login continuation draft".into()));
         app.transfer_input.update(cx, |input, cx| {
             input.set_text("new login continuation draft", cx)
         });
@@ -88,6 +89,56 @@ fn same_account_aba_transfer_cannot_clear_new_login_draft_or_install_old_command
         );
     });
     draw(cx);
+}
+
+#[gpui::test]
+fn transfer_response_preserves_edited_or_other_session_drafts(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        for (selected, draft) in [("local-work", "edited draft"), ("other-local", "original draft")] {
+            app.synced = State::fixture();
+            app.synced.submitting = true;
+            app.synced.selected = Some(selected.into());
+            app.synced.submitted_draft = Some(("local-work".into(), "original draft".into()));
+            app.transfer_input.update(cx, |input, cx| input.set_text(draft, cx));
+            app.complete_synced_transfer(&expected, app.auth_generation, Ok(command()), cx);
+            assert_eq!(app.transfer_input.read(cx).text(), draft);
+            assert!(!app.synced.submitting);
+        }
+    });
+}
+
+#[gpui::test]
+fn transfer_poll_rejects_unrelated_response_and_never_hijacks_another_tab(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    view.update(cx, |app, cx| {
+        let expected = account();
+        app.adopt_account(expected.clone(), cx);
+        for mismatch in ["id", "kind", "source"] {
+            app.synced = State::fixture();
+            app.synced.polling = Some("same-poll".into());
+            let mut response = command();
+            match mismatch {
+                "id" => response.command_id = "wrong-id".into(),
+                "kind" => response.kind = "message".into(),
+                _ => response.session_id = Some("other-source".into()),
+            }
+            assert!(app.complete_transfer_poll(&expected, app.auth_generation, "same-poll", "local-work", Ok(response), cx));
+            assert!(app.synced.polling.is_none());
+            assert!(app.synced.error.is_some());
+            assert!(!app.synced.commands.iter().any(|c| c.command_id == "same-poll" || c.command_id == "wrong-id"));
+        }
+        app.synced = State::fixture();
+        app.synced.polling = Some("same-poll".into());
+        app.drawer_open = true;
+        app.session.session_id = Some("unrelated-cloud-tab".into());
+        let tab = app.active_tab;
+        assert!(app.complete_transfer_poll(&expected, app.auth_generation, "same-poll", "local-work", Ok(command()), cx));
+        assert_eq!(app.active_tab, tab);
+        assert_eq!(app.session.session_id.as_deref(), Some("unrelated-cloud-tab"));
+    });
 }
 
 #[gpui::test]
