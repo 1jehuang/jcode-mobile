@@ -125,6 +125,8 @@ pub enum Role {
 pub enum ToolStatus {
     StreamingInput,
     Running,
+    /// Archived output without reliable execution metadata.
+    Unknown,
     Succeeded,
     Failed(String),
 }
@@ -227,6 +229,10 @@ fn synced_snapshot(
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     let mut images: HashMap<u64, Vec<SessionImage>> = HashMap::new();
     let mut used: HashSet<u64> = messages.iter().map(|m| m.seq).collect();
+    let mut tool_ids: HashSet<String> = messages.iter().flat_map(|m| {
+        m.tool_calls.iter().map(|c| c.id.clone())
+            .chain(m.tool_results.iter().map(|r| r.tool_use_id.clone()))
+    }).collect();
     for message in messages {
         let structured = message.display_text.is_some()
             || !message.tool_calls.is_empty() || !message.tool_results.is_empty();
@@ -237,27 +243,37 @@ fn synced_snapshot(
             "system" | "tool" => Role::System,
             _ => continue,
         };
-        let text = message.display_text.unwrap_or_else(|| {
+        let legacy_output = message.role == "tool" && !structured;
+        let mut text = message.display_text.unwrap_or_else(|| {
             if structured { String::new() } else { message.content }
         });
         let mut anchor = None;
         let mut seq_available = true;
-        if !text.is_empty() {
+        if !text.is_empty() && !legacy_output {
             let (text, reasoning) = match message.role.as_str() {
-                "assistant" => history_assistant_content(text),
-                "tool" if !structured => (format!("Tool result\n{text}"), String::new()),
-                _ => (text, String::new()),
+                "assistant" => history_assistant_content(std::mem::take(&mut text)),
+                _ => (std::mem::take(&mut text), String::new()),
             };
             entries.push(TranscriptEntry { id: message.seq, role, text, reasoning,
                 tool_calls: vec![], is_streaming: false, is_queued: false });
             anchor = Some(message.seq);
             seq_available = false;
         }
-        let mut cards: Vec<ToolCall> = message.tool_calls.into_iter().map(|tool| {
+        // Older snapshots lack call identity, name, input and success. Project
+        // their output into the ordinary tool model rather than a second UI.
+        // Never infer execution metadata from flattened assistant prose.
+        let mut cards: Vec<ToolCall> = if legacy_output && !text.is_empty() {
+            let mut id = format!("legacy-result-{}", message.seq);
+            while !tool_ids.insert(id.clone()) { id.push('_'); }
+            let mut card = ToolCall::new(id, "tool", ToolStatus::Unknown);
+            card.output = text;
+            vec![card]
+        } else { Vec::new() };
+        cards.extend(message.tool_calls.into_iter().map(|tool| {
             let mut card = ToolCall::new(tool.id, tool.name, ToolStatus::Running);
             card.input = tool_input_text(tool.input);
             card
-        }).collect();
+        }));
         for result in message.tool_results {
             let status = if result.is_error { ToolStatus::Failed(result.content.clone()) }
                 else { ToolStatus::Succeeded };
@@ -1049,10 +1065,54 @@ mod tests {
         let entries = super::synced_transcript_entries(messages);
         assert_eq!(entries.iter().map(|e| e.id).collect::<Vec<_>>(), [0, 2, 3, 8]);
         assert_eq!(entries[1].text, "running\n\n🔧 bash: ls");
-        assert_eq!(entries[2].role, super::Role::System);
-        assert_eq!(entries[2].text, "Tool result\noutput\n… (truncated)");
-        assert!(entries.iter().all(|e| e.reasoning.is_empty() && e.tool_calls.is_empty()
+        assert_eq!(entries[2].role, super::Role::Assistant);
+        assert!(entries[2].text.is_empty());
+        let tool = &entries[2].tool_calls[0];
+        assert_eq!(tool.name, "tool");
+        assert_eq!(tool.output, "output\n… (truncated)");
+        assert_eq!(tool.status, super::ToolStatus::Unknown);
+        assert!(tool.input.is_empty());
+        assert!(entries.iter().all(|e| e.reasoning.is_empty()
             && !e.is_streaming && !e.is_queued));
+    }
+
+    #[test]
+    fn legacy_tool_cards_do_not_collide_with_real_call_ids() {
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":2,"role":"tool","text":"old output"},
+            {"seq":3,"role":"assistant","text":"","display_text":"",
+             "tool_calls":[{"id":"legacy-result-2","name":"bash","input":{"command":"true"}}]},
+            {"seq":4,"role":"tool","text":"","display_text":"",
+             "tool_results":[{"tool_use_id":"legacy-result-2","content":"real output","is_error":true}]}
+        ])).unwrap();
+        let entries = super::synced_transcript_entries(messages);
+        let cards: Vec<_> = entries.iter().flat_map(|e| &e.tool_calls).collect();
+        assert_eq!(cards.len(), 2);
+        assert_ne!(cards[0].id, cards[1].id);
+        assert_eq!(cards[0].output, "old output");
+        assert_eq!(cards[0].status, super::ToolStatus::Unknown);
+        assert_eq!(cards[1].name, "bash");
+        assert_eq!(cards[1].output, "real output");
+        assert_eq!(cards[1].status, super::ToolStatus::Failed("real output".into()));
+    }
+
+    #[test]
+    fn structured_metadata_replaces_legacy_text_without_duplicate_output() {
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":0,"role":"assistant","text":"obsolete flattened summary","display_text":"",
+             "tool_calls":[{"id":"read-1","name":"Read","input":{"path":"src/main.rs"}}]},
+            {"seq":1,"role":"tool","text":"obsolete flattened output","display_text":"",
+             "tool_results":[{"tool_use_id":"read-1","content":"current output","is_error":false}]},
+            {"seq":2,"role":"assistant","text":"Final answer"}
+        ])).unwrap();
+        let entries = super::synced_transcript_entries(messages);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].text.is_empty());
+        assert_eq!(entries[0].tool_calls.len(), 1);
+        assert_eq!(entries[0].tool_calls[0].name, "Read");
+        assert_eq!(entries[0].tool_calls[0].output, "current output");
+        assert_eq!(entries[0].tool_calls[0].status, super::ToolStatus::Succeeded);
+        assert_eq!(entries[1].text, "Final answer");
     }
 
     #[test]

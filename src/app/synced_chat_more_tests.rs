@@ -105,8 +105,8 @@ fn http_outage_recovers_all_pages_and_replaces_rewritten_rows(cx: &mut gpui::Tes
         assert_eq!(app.session.transcript.len(), 3);
         assert_eq!(app.session.transcript[1].text, "Partial answer");
         assert!(
-            app.session.transcript[2]
-                .text
+            app.session.transcript[2].tool_calls[0]
+                .output
                 .contains("Recovered tool output")
         );
         assert_eq!(app.session.phase, ConnectionPhase::Connected);

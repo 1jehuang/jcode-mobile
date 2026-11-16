@@ -236,7 +236,7 @@ fn archived_structured_sync_uses_cloud_tool_cards_at_phone_widths(cx: &mut TestA
         let viewport = view.read_with(cx, |app, _| app.transcript_scroll.bounds());
         assert!(collapsed.left() >= viewport.left() && collapsed.right() <= viewport.right(),
             "tool card overflows {width}px phone: {collapsed:?} in {viewport:?}");
-        assert!(cx.debug_bounds("synced-output-2").is_none(), "structured result must not render legacy System prose");
+        assert!(cx.debug_bounds("tool-legacy-result-2").is_none(), "structured result must not render legacy System prose");
         tap(cx, "tool-synced-card");
         cx.update(|window, cx| { window.draw(cx).clear(cx); });
         assert!(cx.debug_bounds("tool-synced-card").unwrap().size.height > collapsed.size.height);
@@ -373,7 +373,7 @@ fn synced_history_tail_and_reader_geometry_stay_stable_across_polls(cx: &mut Tes
 }
 
 #[gpui::test]
-fn synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent(
+fn synced_legacy_output_uses_the_shared_tool_card_and_height_cache(
     cx: &mut TestAppContext,
 ) {
     use crate::app::navigation_coverage::tap;
@@ -397,9 +397,9 @@ fn synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent(
         window.draw(cx).clear(cx);
     });
     let collapsed = cx
-        .debug_bounds("synced-output-2")
+        .debug_bounds("tool-legacy-result-2")
         .expect("output disclosure");
-    assert_eq!(collapsed.size.height, px(44.));
+    assert!(collapsed.size.height > px(0.));
     assert!(cx.debug_bounds("synced-output-body-2").is_none());
     let (closed_key, raw) = view.read_with(cx, |app, _| {
         let entry = &app.session.transcript[1];
@@ -414,18 +414,20 @@ fn synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent(
             entry.text.clone(),
         )
     });
-    tap(cx, "synced-output-2-toggle");
+    tap(cx, "tool-header-legacy-result-2");
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
     });
-    assert!(cx.debug_bounds("synced-output-body-2").is_some());
-    assert!(cx.debug_bounds("synced-output-2").unwrap().size.height > collapsed.size.height);
+    assert!(cx.debug_bounds("synced-output-body-2").is_none(), "there is no synced-specific output renderer");
+    assert!(cx.debug_bounds("tool-legacy-result-2").unwrap().size.height > collapsed.size.height);
     view.read_with(cx, |app, _| {
         assert!(
             !app.follow,
             "opening output is an explicit reading action, not a jump to its tail"
         );
         let entry = &app.session.transcript[1];
+        assert_eq!(entry.tool_calls[0].status, ToolStatus::Unknown);
+        assert_eq!(entry.tool_calls[0].output, "result line with Unicode 界🦀\n".repeat(300));
         assert_eq!(
             entry.text, raw,
             "display bounding must not mutate synced content"
@@ -448,14 +450,14 @@ fn synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent(
         app.transcript_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     });
-    tap(cx, "synced-output-2-toggle");
+    tap(cx, "tool-header-legacy-result-2");
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
     });
     assert!(cx.debug_bounds("synced-output-body-2").is_none());
     assert_eq!(
-        cx.debug_bounds("synced-output-2").unwrap().size.height,
-        px(44.)
+        cx.debug_bounds("tool-legacy-result-2").unwrap().size.height,
+        collapsed.size.height
     );
     view.read_with(cx, |app, _| assert_eq!(app.session.transcript[1].text, raw));
 }

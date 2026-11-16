@@ -200,37 +200,6 @@
       ]
     },
     {
-      "owner": "src/app.rs::impl:MobileApp::render_synced_tool_output",
-      "renderer": true,
-      "handler": false,
-      "events": { "on_click": 1 },
-      "controls": {
-        "debug_selector:dynamic:block": 1,
-        "debug_selector:dynamic:toggle_id": 1,
-        "debug_selector:macro:format:literal:synced-output-body-{entry}": 1,
-        "id:dynamic:id": 1,
-        "id:dynamic:toggle_id": 1
-      },
-      "coverage_scope": "partial",
-      "coverage": [
-        {
-          "kind": "hit_tested",
-          "tests": ["src/app/synced_render_tests.rs::synced_tool_output_is_compact_expandable_and_keeps_its_height_cache_coherent"],
-          "note": "Raw mouse-to-touch input expands and collapses the visible 44-point output disclosure. Assertions check compact height, rendered body, untouched raw Unicode output and expansion-sensitive geometry cache identity. No real tool status is fabricated."
-        },
-        {
-          "kind": "state_model_mocked",
-          "tests": ["src/app/synced_render_tests.rs::synced_history_tail_and_reader_geometry_stay_stable_across_polls"],
-          "note": "A 90-row mixed-role synced snapshot is drawn at 320, 390 and 430 points. Tail materialization, row ordering, bounds and unchanged-poll reader offsets are asserted; these are geometry checks, not exhaustive pixel or device acceptance."
-        },
-        {
-          "kind": "platform_device_required",
-          "tests": [],
-          "note": "VoiceOver announcement and disclosure activation on an actual iPhone remain device acceptance requirements, not established by Linux mouse-to-touch tests."
-        }
-      ]
-    },
-    {
       "owner": "src/app.rs::impl:MobileApp::pinned_todos",
       "renderer": false,
       "handler": false,
@@ -712,15 +681,17 @@
     },
     {
       "controls": {
-        "debug_selector:dynamic:block": 1,
+        "debug_selector:dynamic:block": 2,
         "id:macro:format:literal:tool-{}": 1
       },
       "coverage": [
         {
           "kind": "hit_tested",
-          "note": "A rendered tool row is tapped twice and visible output expansion/collapse is asserted. Tool IDs are a runtime family, not one static instance per tool.",
+          "note": "A rendered normal-session tool row is tapped twice and visible output expansion/collapse is asserted. Legacy synced output uses the same renderer with neutral unknown status, untouched raw output and expansion-sensitive geometry. Structured synced output retains reader position when expanded. Tool IDs are a runtime family, not one static instance per tool. Linux headless GPUI input/layout only, not iOS acceptance.",
           "tests": [
-            "src/app/composer_coverage.rs::transcript_tool_control_expands_and_collapses_visible_output"
+            "src/app/composer_coverage.rs::transcript_tool_control_expands_and_collapses_visible_output",
+            "src/app/synced_render_tests.rs::synced_legacy_output_uses_the_shared_tool_card_and_height_cache",
+            "src/app/synced_render_tests.rs::synced_structured_tool_expansion_starts_at_header_not_output_tail"
           ]
         },
         {

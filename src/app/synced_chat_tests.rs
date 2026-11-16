@@ -109,7 +109,9 @@ fn polling_decodes_tagged_assistant_text_without_reinterpreting_tools(
         assert_eq!(answer.reasoning, "Check *facts*");
         assert_eq!(answer.text, "**Answer**\n\n🔧 bash: ls");
         assert!(answer.tool_calls.is_empty());
-        assert_eq!(app.session.transcript[2].text, "Tool result\nTool output");
+        assert!(app.session.transcript[2].text.is_empty());
+        assert_eq!(app.session.transcript[2].tool_calls[0].output, "Tool output");
+        assert_eq!(app.session.transcript[2].tool_calls[0].status, jcode_mobile_core::ToolStatus::Unknown);
         app.apply_local_poll(tab, snapshot(true, false, "Rewritten"), None);
         assert_eq!(app.session.transcript.len(), 3);
         assert_eq!(app.session.transcript[1].text, "Rewritten");
@@ -170,8 +172,8 @@ fn polling_updates_parked_tab_replaces_rows_and_tracks_busy_presence(
         assert!(app.session.is_processing);
         assert!(app.local_chat_ready(&app.session));
         assert_eq!(app.session.transcript.len(), 3);
-        assert_eq!(app.session.transcript[2].role, Role::System);
-        assert!(app.session.transcript[2].text.contains("Tool output"));
+        assert_eq!(app.session.transcript[2].role, Role::Assistant);
+        assert_eq!(app.session.transcript[2].tool_calls[0].output, "Tool output");
         app.focus_tab(cloud, cx);
         app.apply_local_poll(local, snapshot(true, false, "Rewritten answer"), None);
         assert!(app.session.transcript.is_empty());

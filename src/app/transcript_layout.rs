@@ -130,11 +130,6 @@ pub(super) fn key_visible(
     text.hash(&mut hash);
     reasoning.hash(&mut hash);
     std::mem::discriminant(&entry.role).hash(&mut hash);
-    if super::synced_tool_output(entry).is_some() {
-        expanded
-            .contains(&super::synced_tool_output_id(entry.id))
-            .hash(&mut hash);
-    }
     (if prompt == 0 { 1 } else { prompt.ilog10() + 1 }).hash(&mut hash);
     if entry.role == Role::Assistant {
         for call in &entry.tool_calls {
@@ -181,8 +176,7 @@ pub(super) fn key_visible(
         shareable: matches!(entry.role, Role::User | Role::Assistant)
             && entry.tool_calls.is_empty()
             && entry.reasoning.is_empty()
-            && !entry.is_streaming
-            && super::synced_tool_output(entry).is_none(),
+            && !entry.is_streaming,
     }
 }
 
