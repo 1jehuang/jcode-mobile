@@ -371,6 +371,30 @@ fn submission_completion_preserves_new_typing_and_parked_drafts(cx: &mut gpui::T
 }
 
 #[gpui::test]
+fn late_pre_close_submission_does_not_clear_identical_reopened_draft(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(app::init);
+    let (view, cx) = cx.add_window_view(fixture_app);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), None, cx);
+        let tab = app.active_tab;
+        let account = app.account.clone().unwrap();
+        let generation = app.auth_generation;
+        app.synced.chats.get_mut(&tab).unwrap().submitting = true;
+        app.close_tab(tab, cx);
+        app.open_local_chat(live(), Some("Same text".into()), cx);
+        assert_eq!(app.active_tab, tab);
+        app.complete_local_submission(
+            tab, &account, generation, "Same text", Ok(command("queued")), cx,
+        );
+        assert_eq!(app.composer.read(cx).text(), "Same text");
+        assert!(app.synced.chats[&tab].pending.is_some());
+        assert!(!app.local_chat_ready(&app.session));
+    });
+}
+
+#[gpui::test]
 fn already_open_local_notification_reply_is_draft_not_ssh_message(cx: &mut gpui::TestAppContext) {
     cx.update(app::init);
     let (view, cx) = cx.add_window_view(fixture_app);

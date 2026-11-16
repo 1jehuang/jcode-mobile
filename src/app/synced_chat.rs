@@ -66,6 +66,9 @@ pub(super) struct LocalChat {
     delivery_error: Option<String>,
     poll_generation: u64,
     submitted_images: Vec<jcode_mobile_core::SessionImage>,
+    // A reopened tab has a new draft lifetime even when its text happens to
+    // match the message submitted before closure.
+    submission_closed: bool,
 }
 
 impl MobileApp {
@@ -74,6 +77,9 @@ impl MobileApp {
             // Closing UI is not a delivery acknowledgement. Keep unresolved
             // commands account-scoped so reopening cannot issue duplicates.
             chat.poll_generation = chat.poll_generation.wrapping_add(1);
+            if chat.submitting {
+                chat.submission_closed = true;
+            }
             if chat.submitting || chat.pending.is_some() || chat.uncertain {
                 return;
             }
@@ -218,14 +224,18 @@ impl MobileApp {
                 delivery_error: None,
                 poll_generation: 0,
                 submitted_images: Vec::new(),
+                submission_closed: false,
             });
             // Closing an in-flight tab is not proof of delivery. Its retained
             // command owns the submitted photos until an actual acknowledgement.
             if let Some(chat) = self.synced.chats.get(&tab) {
                 self.attach.pending = chat.submitted_images.clone();
             }
-            self.poll_local_chat(tab, cx);
         }
+        // Existing tabs may have been opened while offline, or their old
+        // polling generation may have ended. Opening is also a read-only
+        // reconnect, never a resend of a retained command.
+        self.reconnect_local_chat(cx);
         // A notification reply is a draft, never an automatic command.
         if let Some(reply) = reply {
             if self.composer.read(cx).text().is_empty() {
@@ -281,6 +291,14 @@ impl MobileApp {
         for task in self.local_chat_poll_tasks(tab, cx) {
             task.detach();
         }
+    }
+
+    pub(in crate::app) fn reconnect_local_chat(&mut self, cx: &mut Context<Self>) {
+        if self.offline || self.account.is_none() || !self.is_local_chat() {
+            return;
+        }
+        self.poll_local_chat(self.active_tab, cx);
+        cx.notify();
     }
 
     fn local_chat_poll_tasks(&mut self, tab: u64, cx: &mut Context<Self>) -> Vec<gpui::Task<()>> {
@@ -502,6 +520,7 @@ impl MobileApp {
         #[cfg(any(test, all(target_os = "android", debug_assertions)))]
         { self.debug_share_probe.submitted_count += 1; }
         chat.submitting = true;
+        chat.submission_closed = false;
         chat.submitted_images = images.clone();
         chat.delivery_error = None;
         self.session.error_banner = None;
@@ -540,6 +559,7 @@ impl MobileApp {
         }
         let chat = self.synced.chats.get_mut(&tab).unwrap();
         chat.submitting = false;
+        let submission_closed = chat.submission_closed;
         let result = result.and_then(|command| {
             let complete = command.message_complete(&chat.session.session_id)?;
             Ok((command, complete))
@@ -553,13 +573,13 @@ impl MobileApp {
                     let images = std::mem::take(&mut chat.submitted_images);
                     self.remove_submitted_photos(tab, &images);
                 }
-                if self.active_tab == tab {
+                if self.active_tab == tab && !submission_closed {
                     if self.composer.read(cx).text().trim() == submitted {
                         self.composer.update(cx, |input, cx| input.set_text("", cx));
                     }
                     self.feel_sent();
                     self.follow = true;
-                } else if let Some(p) = self.parked.iter_mut().find(|p| p.id == tab) {
+                } else if let Some(p) = self.parked.iter_mut().find(|p| p.id == tab && !submission_closed) {
                     if p.preview_composer.read(cx).text().trim() == submitted {
                         p.draft = Default::default();
                         p.preview_composer

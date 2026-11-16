@@ -16,6 +16,30 @@ fn live() -> SyncedSession {
 }
 
 #[gpui::test]
+fn routing_an_existing_offline_open_chat_starts_a_fresh_poll_generation(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(app::init);
+    let (view, cx) = cx.add_window_view(fixture_app);
+    view.update(cx, |app, cx| {
+        app.open_local_chat(live(), Some("Retained draft".into()), cx);
+        let tab = app.active_tab;
+        let count = app.tab_order.len();
+        assert_eq!(app.synced.chats[&tab].poll_generation, 0);
+        app.offline = false;
+        assert!(app.route_known_local_chat("local-chat", None, cx));
+        assert_eq!(app.active_tab, tab);
+        assert_eq!(app.tab_order.len(), count);
+        assert_eq!(app.synced.chats[&tab].poll_generation, 1);
+        assert_eq!(app.composer.read(cx).text(), "Retained draft");
+        // Terminate the detached generation before dispatch. The loopback
+        // regression separately exercises actual GETs and acknowledgements.
+        app.offline = true;
+        app.synced.chats.get_mut(&tab).unwrap().poll_generation += 1;
+    });
+}
+
+#[gpui::test]
 fn archived_local_opens_main_chat_read_only_and_preserves_both_tab_drafts(cx: &mut gpui::TestAppContext) {
     cx.update(app::init);
     let (view, cx) = cx.add_window_view(fixture_app);

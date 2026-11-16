@@ -175,6 +175,45 @@ fn production_poll_tasks_acknowledge_before_gated_history(cx: &mut gpui::TestApp
 }
 
 #[gpui::test]
+fn offline_open_reconnect_restarts_read_only_delivery_polls(cx: &mut gpui::TestAppContext) {
+    cx.update(app::init);
+    cx.executor().allow_parking();
+    let fixture = gated_poll();
+    let (view, cx) = cx.add_window_view(fixture_app);
+    let tab = view.update(cx, |app, cx| {
+        app.account = Some(fixture.account.clone());
+        app.open_local_chat(live(), Some("Keep my draft".into()), cx);
+        let tab = app.active_tab;
+        let chat = app.synced.chats.get_mut(&tab).unwrap();
+        chat.pending = Some(command("queued").command_id);
+        assert_eq!(chat.poll_generation, 0, "offline open must not poll");
+        app.offline = false;
+        app.reconnect(cx);
+        assert_eq!(app.synced.chats[&tab].poll_generation, 1);
+        tab
+    });
+    pump_until(cx, |_| fixture.started.load(Ordering::SeqCst) == 3);
+    fixture.status.send(()).unwrap();
+    fixture.history.send(()).unwrap();
+    pump_until(cx, |cx| {
+        view.update(cx, |app, _| {
+            app.synced.chats[&tab].pending.is_none() && app.session.transcript.len() == 1
+        })
+    });
+    view.update(cx, |app, cx| {
+        assert_eq!(app.session.phase, ConnectionPhase::Connected);
+        assert_eq!(app.session.transcript[0].text, "Network rewrite");
+        assert_eq!(app.composer.read(cx).text(), "Keep my draft");
+        assert!(app.connection.is_none(), "local reconnect must not attach SSH");
+        app.offline = true;
+        app.synced.chats.get_mut(&tab).unwrap().poll_generation += 1;
+    });
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.dispatcher.run_until_parked();
+    fixture.server.join().unwrap();
+}
+
+#[gpui::test]
 fn production_poll_tasks_fence_late_auth_account_tab_and_poll_completions(
     cx: &mut gpui::TestAppContext,
 ) {
