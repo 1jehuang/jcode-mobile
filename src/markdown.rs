@@ -427,12 +427,20 @@ fn list_row(
 fn code_block(code: &SharedString, t: &Theme, index: usize) -> gpui::Stateful<gpui::Div> {
     div()
         .id(("markdown-code", index))
+        .debug_selector(move || format!("markdown-code-{index}"))
         .w_full()
         .min_w_0()
         .max_w_full()
         .flex()
         .items_start()
         .overflow_x_scroll()
+        .on_scroll_wheel(|event: &gpui::ScrollWheelEvent, window, cx| {
+            let delta = event.delta.pixel_delta(window.line_height());
+            if delta.x.abs() > delta.y.abs() {
+                // This gesture reads code, not the neighboring session tab.
+                cx.stop_propagation();
+            }
+        })
         .p(px(10.))
         .rounded(px(8.))
         .bg(t.code_bg)
@@ -446,6 +454,7 @@ fn code_block(code: &SharedString, t: &Theme, index: usize) -> gpui::Stateful<gp
             div()
                 .flex_shrink_0()
                 .whitespace_nowrap()
+                .debug_selector(move || format!("markdown-code-content-{index}"))
                 .child(code.clone()),
         )
 }

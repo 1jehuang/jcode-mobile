@@ -1966,7 +1966,9 @@ impl MobileApp {
                 .min_h_0()
                 .child(
                     div()
-                        .id("transcript")
+                        // Stateful descendants (for example code-pane scroll)
+                        // must not reuse another tab's same-sequence row state.
+                        .id(("transcript", self.active_tab))
                         .size_full()
                         .overflow_y_scroll()
                         .track_scroll(&self.transcript_scroll)

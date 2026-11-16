@@ -26,6 +26,52 @@ fn snapshot() -> SyncedTranscript {
 }
 
 #[gpui::test]
+fn synced_code_scroll_does_not_leak_between_tabs_with_matching_entry_ids(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::draw;
+    use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    let history = |id: &str| {
+        let mut history = snapshot();
+        history.session.session_id = id.into();
+        history.messages = serde_json::from_value(serde_json::json!([
+            {"seq":0,"role":"assistant","text":format!("```\n{}\n```", "long_code_identifier_".repeat(50))}
+        ])).unwrap();
+        history
+    };
+    view.update(cx, |app, cx| {
+        let history = history("first-code-tab");
+        app.open_local_chat(history.session.clone(), None, cx);
+        app.apply_local_poll(app.active_tab, Ok(history), None);
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(320.), px(844.)));
+    draw(cx);
+    let pane = cx.debug_bounds("markdown-code-0").unwrap();
+    let start = cx.debug_bounds("markdown-code-content-0").unwrap().left();
+    cx.simulate_event(ScrollWheelEvent {
+        position: pane.center(),
+        delta: ScrollDelta::Pixels(point(px(-200.), px(0.))),
+        touch_phase: TouchPhase::Moved,
+        modifiers: Modifiers::default(),
+    });
+    draw(cx);
+    view.read_with(cx, |app, _| assert!(!app.swipe.active,
+        "horizontal code reading must not also engage session paging"));
+    assert!(cx.debug_bounds("markdown-code-content-0").unwrap().left() < start - px(100.),
+        "the real code pane must have scrolled before testing tab isolation");
+    view.update(cx, |app, cx| {
+        let history = history("second-code-tab");
+        app.open_local_chat(history.session.clone(), None, cx);
+        app.apply_local_poll(app.active_tab, Ok(history), None);
+        cx.notify();
+    });
+    draw(cx);
+    let other = cx.debug_bounds("markdown-code-content-0").unwrap().left();
+    assert_eq!(other, start, "same-sequence code in a different tab must begin at its own left edge");
+}
+
+#[gpui::test]
 fn synced_structured_tool_expansion_starts_at_header_not_output_tail(cx: &mut TestAppContext) {
     use crate::app::navigation_coverage::{draw, tap};
     cx.update(init);

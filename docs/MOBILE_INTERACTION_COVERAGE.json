@@ -16,13 +16,13 @@
       "owner": "src/markdown.rs::code_block",
       "renderer": true,
       "handler": false,
-      "events": {},
-      "controls": {"id:tuple:literal:markdown-code": 1},
+      "events": {"on_scroll_wheel": 1},
+      "controls": {"id:tuple:literal:markdown-code": 1, "debug_selector:macro:format:literal:markdown-code-{index}": 1, "debug_selector:macro:format:literal:markdown-code-content-{index}": 1},
       "coverage_scope": "partial",
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "tests": ["src/markdown/overflow_tests.rs::long_indented_code_keeps_literal_lines_and_scrolls_to_the_end", "src/markdown/overflow_tests.rs::rich_prose_wraps_even_inside_a_nowrap_ancestor"],
+          "tests": ["src/app/synced_render_tests.rs::synced_code_scroll_does_not_leak_between_tabs_with_matching_entry_ids", "src/markdown/overflow_tests.rs::long_indented_code_keeps_literal_lines_and_scrolls_to_the_end", "src/markdown/overflow_tests.rs::rich_prose_wraps_even_inside_a_nowrap_ancestor"],
           "note": "Headless GPUI verifies bounded code geometry and dispatched horizontal scroll, not native painted glyphs or touch arbitration."
         },
         {"kind": "gap", "tests": [], "note": "Native horizontal touch interaction and physical iPhone code readability need separate acceptance."}
@@ -337,7 +337,7 @@
         "id:literal:err": 1,
         "id:literal:err-empty": 1,
         "id:literal:jump": 1,
-        "id:literal:transcript": 1,
+        "id:tuple:literal:transcript": 1,
         "id:literal:transcript-activity": 1,
         "id:tuple:literal:entry": 1
       },
