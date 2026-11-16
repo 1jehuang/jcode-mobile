@@ -792,6 +792,7 @@ impl MobileApp {
 
     fn reconnect(&mut self, cx: &mut Context<Self>) {
         if self.is_local_chat() {
+            self.reconnect_local_chat(cx);
             return;
         }
         if let Some(c) = self.connection.take() {
