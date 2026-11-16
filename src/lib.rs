@@ -28,6 +28,7 @@ mod text_input;
 mod text_selection;
 mod theme;
 mod tool_output;
+mod transcript_notice;
 mod tool_summary;
 mod voice_capture;
 mod voice_demo;

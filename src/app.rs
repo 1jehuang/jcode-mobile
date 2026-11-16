@@ -43,6 +43,8 @@ mod transcript_layout;
 mod stream_presentation;
 mod stream_motion;
 #[cfg(test)]
+mod transcript_notice_tests;
+#[cfg(test)]
 mod synced_render_tests;
 #[cfg(test)]
 mod simulator_keyboard_tests;
@@ -1847,7 +1849,7 @@ impl MobileApp {
         // bound. Unknown/new rows count zero, never hiding a visible tail row.
         let mut geometry = Vec::with_capacity(entries.len());
         for e in entries {
-            if e.role == Role::User { prompt_n += 1; }
+            if crate::transcript_notice::is_prompt(e) { prompt_n += 1; }
             let visible = presentation.rows.get(&e.id);
             let text = visible.map_or(e.text.as_str(), |row| &e.text[..row.text_len]);
             let reasoning = visible.map_or(e.reasoning.as_str(), |row| &e.reasoning[..row.reasoning_len]);
@@ -1869,7 +1871,7 @@ impl MobileApp {
         #[cfg(test)]
         { self.rendered_transcript_rows = 0; }
         for (e, (key, height, after)) in entries.iter().zip(geometry) {
-            if e.role == Role::User {
+            if crate::transcript_notice::is_prompt(e) {
                 prompt_n += 1;
             }
             let skip = height.is_some_and(|height| {
@@ -2211,6 +2213,39 @@ impl MobileApp {
 
     fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, images: &[jcode_mobile_core::SessionImage], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.entry_build");
+        if let Some(notice) = crate::transcript_notice::for_entry(e) {
+            let key = crate::transcript_notice::expansion_key(e.id);
+            let expanded = notice.initially_expanded ^ expanded_tools.contains(&key);
+            let id = e.id;
+            let token_label = format!("est. {} tokens", notice.estimated_tokens());
+            return div().w_full().min_w_0().flex().flex_col().gap(px(4.))
+                .child(div().id(SharedString::from(format!("notice-{id}")))
+                    .debug_selector(move || format!("notice-{id}"))
+                    .flex().w_full().min_w_0().items_center().gap(px(6.))
+                    .cursor_pointer().text_size(crate::system::fs(12.))
+                    .text_color(t.text_secondary)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.stream_motion.release(&this.transcript_scroll);
+                        this.follow = false;
+                        if !this.expanded_tools.remove(&key) { this.expanded_tools.insert(key.clone()); }
+                        haptics::play(Haptic::Selection);
+                        cx.notify();
+                    }))
+                    .child(div().flex_none().text_color(t.text_muted).child(notice.glyph))
+                    .child(div().flex_1().min_w_0().truncate().child(notice.title))
+                    .child(div().flex_none().text_color(t.text_muted)
+                        .debug_selector(move || format!("notice-tokens-{id}"))
+                        .child(token_label))
+                    .child(div().flex_none().text_color(t.text_muted).child(if expanded { "▴" } else { "▾" })))
+                // Images remain available even when the machine text is collapsed.
+                .children(self.render_prompt_photos(images, t, cx)
+                    .map(|photos| photos.debug_selector(move || format!("notice-images-{id}"))))
+                .when(expanded, |d| d.child(div()
+                    .debug_selector(move || format!("notice-detail-{id}"))
+                    .pl(px(12.)).border_l_1().border_color(t.border_focus)
+                    .child(crate::markdown::render(notice.detail, t))))
+                .into_any_element();
+        }
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
             Role::User => {
