@@ -2221,7 +2221,7 @@ impl MobileApp {
             // Desktop prompt: round number badge beside a USER_BG card.
             Role::User => {
                 let bg = Theme::prompt_background(0);
-                let badge_w = (prompt_n.to_string().len() as f32 * 7. + 8.).max(20.);
+                let badge_w = crate::system::fs((prompt_n.to_string().len() as f32 * 7. + 8.).max(20.));
                 div()
                     .flex()
                     .items_start()
@@ -2231,8 +2231,8 @@ impl MobileApp {
                         div()
                             .flex_none()
                             .mt(px(4.))
-                            .w(px(badge_w))
-                            .h(px(20.))
+                            .w(badge_w)
+                            .h(crate::system::fs(20.))
                             .rounded_full()
                             .bg(bg)
                             .text_center()
@@ -2347,6 +2347,10 @@ impl MobileApp {
             .overflow_hidden()
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
+                // Opening output is a reading action, not new streamed content.
+                // Match the legacy synced disclosure: keep its header in view.
+                this.stream_motion.release(&this.transcript_scroll);
+                this.follow = false;
                 if !this.expanded_tools.remove(&id) {
                     this.expanded_tools.insert(id.clone());
                 }

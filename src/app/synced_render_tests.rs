@@ -26,6 +26,40 @@ fn snapshot() -> SyncedTranscript {
 }
 
 #[gpui::test]
+fn synced_structured_tool_expansion_starts_at_header_not_output_tail(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::{draw, tap};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    let mut history = snapshot();
+    history.messages = serde_json::from_value(serde_json::json!([
+        {"seq":0,"role":"user","text":"Inspect output"},
+        {"seq":1,"role":"assistant","text":"","display_text":"",
+         "tool_calls":[{"id":"reader-tool","name":"Read","input":{"path":"result.txt"}}]},
+        {"seq":2,"role":"tool","text":"","display_text":"",
+         "tool_results":[{"tool_use_id":"reader-tool","content":"Result line that wraps at narrow widths.\n".repeat(100)}]},
+        {"seq":3,"role":"assistant","text":"Finished."}
+    ])).unwrap();
+    view.update(cx, |app, cx| {
+        app.open_local_chat(history.session.clone(), None, cx);
+        app.apply_local_poll(app.active_tab, Ok(history), None);
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(320.), px(844.)));
+    cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
+    draw(cx);
+    view.read_with(cx, |app, _| assert!(app.follow));
+    tap(cx, "tool-reader-tool");
+    draw(cx);
+    let card = cx.debug_bounds("tool-reader-tool").unwrap();
+    view.read_with(cx, |app, _| {
+        assert!(!app.follow, "expanding a structured tool must enter reader mode just like legacy output");
+        let viewport = app.transcript_scroll.bounds();
+        assert!(card.top() >= viewport.top() && card.top() < viewport.bottom(),
+            "the expanded tool header must remain visible instead of jumping to the last output line");
+    });
+}
+
+#[gpui::test]
 fn synced_expanded_tool_refreshes_failure_geometry_without_losing_disclosure(cx: &mut TestAppContext) {
     use crate::app::navigation_coverage::{draw, tap};
     cx.update(init);

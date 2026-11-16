@@ -1,5 +1,33 @@
 {
   "entries": [
+    {
+      "owner": "src/markdown.rs::list_row",
+      "renderer": true,
+      "handler": false,
+      "events": {},
+      "controls": {},
+      "coverage_scope": "partial",
+      "coverage": [
+        {"kind": "state_model_mocked", "tests": ["src/markdown/overflow_tests.rs::rich_prose_wraps_even_inside_a_nowrap_ancestor"], "note": "Bounded rich-list geometry is exercised in headless GPUI. Native wrapped glyph painting is separately inspected, not inferred from geometry."},
+        {"kind": "gap", "tests": [], "note": "Exhaustive nesting, bidirectional markers and physical-device typography remain outside this fixture."}
+      ]
+    },
+    {
+      "owner": "src/markdown.rs::code_block",
+      "renderer": true,
+      "handler": false,
+      "events": {},
+      "controls": {"id:tuple:literal:markdown-code": 1},
+      "coverage_scope": "partial",
+      "coverage": [
+        {
+          "kind": "state_model_mocked",
+          "tests": ["src/markdown/overflow_tests.rs::long_indented_code_keeps_literal_lines_and_scrolls_to_the_end", "src/markdown/overflow_tests.rs::rich_prose_wraps_even_inside_a_nowrap_ancestor"],
+          "note": "Headless GPUI verifies bounded code geometry and dispatched horizontal scroll, not native painted glyphs or touch arbitration."
+        },
+        {"kind": "gap", "tests": [], "note": "Native horizontal touch interaction and physical iPhone code readability need separate acceptance."}
+      ]
+    },
 {
   "renderer": true,
   "handler": false,
@@ -2230,22 +2258,17 @@
       "renderer": true
     },
     {
-      "controls": {},
+      "controls": {"id:dynamic:scope": 1},
       "coverage": [
         {
           "kind": "state_model_mocked",
-          "note": "Phone transcript fixtures exercise rendered markdown bounds and parser tests preserve literal/code behavior. These are not exhaustive rendered-markdown snapshots.",
+          "note": "Headless GPUI checks rich prose width constraints and parser behavior, not native glyph painting.",
           "tests": [
-            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone",
-            "src/markdown.rs::tests::code_is_literal_and_matches_exact_backtick_runs",
-            "src/markdown.rs::tests::escapes_stay_literal_not_formatting"
+            "src/markdown/overflow_tests.rs::rich_prose_wraps_even_inside_a_nowrap_ancestor",
+            "src/app/scroll_tests.rs::attached_cloud_history_and_footer_stay_inside_phone"
           ]
         },
-        {
-          "kind": "gap",
-          "note": "Every markdown list/link/code combination and long-content visual branch still needs focused rendering evidence.",
-          "tests": []
-        }
+        {"kind": "gap", "note": "Rich-text pixels and native code-pane touch arbitration require separate visual acceptance.", "tests": []}
       ],
       "coverage_scope": "partial",
       "events": {},
