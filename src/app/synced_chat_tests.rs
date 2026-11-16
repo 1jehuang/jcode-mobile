@@ -15,6 +15,41 @@ fn live() -> SyncedSession {
     serde_json::from_value(serde_json::json!({"session_id":"local-chat","source":"local","title":"Computer task","live":true,"busy":false})).unwrap()
 }
 
+#[gpui::test]
+fn archived_local_opens_main_chat_read_only_and_preserves_both_tab_drafts(cx: &mut gpui::TestAppContext) {
+    cx.update(app::init);
+    let (view, cx) = cx.add_window_view(fixture_app);
+    view.update(cx, |app, cx| {
+        app.composer.update(cx, |input, cx| input.set_text("Cloud draft", cx));
+        let cloud = app.active_tab;
+        let mut archived = live();
+        archived.live = false;
+        app.synced.sessions = vec![archived.clone()];
+        assert!(app.route_known_local_chat("local-chat".into(), Some("Archive reply draft".into()), cx));
+        let archive = app.active_tab;
+        assert_ne!(archive, cloud);
+        assert!(app.is_local_chat());
+        assert!(!app.drawer_open, "archive must use the main transcript, not the raw drawer dump");
+        assert!(app.connection.is_none());
+        app.apply_local_poll(archive, snapshot(false, false, "Archived **answer**"), None);
+        assert!(!app.local_chat_ready(&app.session));
+        assert_eq!(app.session.phase, ConnectionPhase::Disconnected);
+        let rows = app.session.transcript.clone();
+        app.send_draft(cx);
+        assert_eq!(app.composer.read(cx).text(), "Archive reply draft");
+        assert_eq!(app.session.transcript, rows, "read-only send must not create an optimistic prompt");
+        assert!(app.auto_send.is_none());
+        app.focus_tab(cloud, cx);
+        assert_eq!(app.composer.read(cx).text(), "Cloud draft");
+        app.open_local_chat(archived, Some("Must not overwrite".into()), cx);
+        assert_eq!(app.active_tab, archive);
+        assert_eq!(app.tab_order.len(), 2);
+        assert_eq!(app.composer.read(cx).text(), "Archive reply draft");
+        assert_eq!(app.session.transcript, rows);
+        assert!(!app.local_chat_ready(&app.session));
+    });
+}
+
 fn snapshot(live: bool, busy: bool, answer: &str) -> Result<SyncedTranscript, String> {
     let mut session = self::live();
     session.live = live;

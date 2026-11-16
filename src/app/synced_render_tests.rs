@@ -1,6 +1,7 @@
 //! Drawn regression fixtures for synced transcripts, not just reducer assertions.
 use super::*;
 use gpui::{TestAppContext, point, size};
+use jcode_mobile_core::SessionImage;
 use jcode_mobile_core::mobile_sync::{SyncedSession, SyncedTranscript};
 
 fn snapshot() -> SyncedTranscript {
@@ -25,7 +26,104 @@ fn snapshot() -> SyncedTranscript {
 }
 
 #[gpui::test]
-fn structured_sync_uses_cloud_tool_cards_at_phone_widths(cx: &mut TestAppContext) {
+fn synced_expanded_tool_refreshes_failure_geometry_without_losing_disclosure(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::{draw, tap};
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    let history = |failed: bool| {
+        let mut history = snapshot();
+        let mut messages = vec![serde_json::json!({
+            "seq":7,"role":"assistant","text":"legacy summary","display_text":"Inspecting",
+            "tool_calls":[{"id":"poll-card","name":"Read","input":{"path":"src/main.rs"}}]
+        })];
+        if failed {
+            messages.push(serde_json::json!({
+                "seq":9,"role":"tool","text":"legacy failure","display_text":"",
+                "tool_results":[{"tool_use_id":"poll-card","content":"permission denied\n".repeat(12),"is_error":true}]
+            }));
+        }
+        history.messages = serde_json::from_value(serde_json::Value::Array(messages)).unwrap();
+        history
+    };
+    view.update(cx, |app, cx| {
+        let initial = history(false);
+        app.open_local_chat(initial.session.clone(), None, cx);
+        app.apply_local_poll(app.active_tab, Ok(initial), None);
+        cx.notify();
+    });
+    cx.simulate_resize(size(px(320.), px(844.)));
+    cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
+    draw(cx);
+    tap(cx, "tool-poll-card");
+    draw(cx);
+    let before = cx.debug_bounds("tool-poll-card").unwrap();
+    let (id, key) = view.read_with(cx, |app, _| {
+        let entry = &app.session.transcript[1];
+        (entry.id, transcript_layout::key(app.active_tab, entry, 1, &app.expanded_tools, app.content_width()))
+    });
+    view.update(cx, |app, cx| {
+        app.apply_local_poll(app.active_tab, Ok(history(true)), None);
+        let entry = &app.session.transcript[1];
+        assert_eq!(entry.id, id, "late results must keep the mixed-message tool phase identity");
+        assert!(app.expanded_tools.contains("poll-card"));
+        assert_ne!(key, transcript_layout::key(app.active_tab, entry, 1, &app.expanded_tools, app.content_width()));
+        assert_eq!(entry.tool_calls[0].status, ToolStatus::Failed("permission denied\n".repeat(12)));
+        assert_eq!(app.session.transcript.len(), 2, "result must update its card, not append legacy prose");
+        cx.notify();
+    });
+    draw(cx);
+    let after = cx.debug_bounds("tool-poll-card").unwrap();
+    assert!(after.size.height > before.size.height, "expanded result must replace cached input geometry");
+    let viewport = view.read_with(cx, |app, _| app.transcript_scroll.bounds());
+    assert!(after.left() >= viewport.left() && after.right() <= viewport.right());
+    tap(cx, "tool-poll-card");
+    draw(cx);
+    assert!(cx.debug_bounds("tool-poll-card").unwrap().size.height < before.size.height);
+}
+
+#[gpui::test]
+fn synced_tool_result_image_renders_on_grouped_card_and_survives_identical_poll(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::draw;
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    let pixels = image::RgbaImage::from_pixel(16, 8, image::Rgba([255, 0, 0, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let photo = SessionImage::new("image/png", bytes.into_inner());
+    let (media_type, data) = photo.wire();
+    let mut history = snapshot();
+    history.messages = serde_json::from_value(serde_json::json!([
+        {"seq":4,"role":"assistant","text":"legacy","display_text":"Drawing",
+         "tool_calls":[{"id":"image-card","name":"image","input":null}]},
+        {"seq":8,"role":"tool","text":"legacy result","display_text":"",
+         "tool_results":[{"tool_use_id":"image-card","content":"generated"}],
+         "images":[{"media_type":media_type,"data":data}]}
+    ])).unwrap();
+    let selector = Box::leak(format!("assistant-image-{}", photo.id).into_boxed_str());
+    for poll in 0..2 {
+        view.update(cx, |app, cx| {
+            if poll == 0 { app.open_local_chat(history.session.clone(), None, cx); }
+            app.apply_local_poll(app.active_tab, Ok(history.clone()), None);
+            assert_eq!(app.session.transcript.len(), 2);
+            let card = &app.session.transcript[1];
+            assert_eq!(card.tool_calls[0].status, ToolStatus::Succeeded);
+            assert_eq!(app.session.images_for(card.id), &[photo.clone()]);
+            assert!(app.session.images_for(8).is_empty(), "result sequence is not a standalone image row");
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(390.), px(844.)));
+        draw(cx);
+        assert!(cx.debug_bounds("tool-image-card").is_some());
+        let bounds = cx.debug_bounds(selector).expect("grouped result must render inline media");
+        let viewport = view.read_with(cx, |app, _| app.transcript_scroll.bounds());
+        assert!(bounds.size.height >= px(240.));
+        assert!(bounds.left() >= viewport.left() && bounds.right() <= viewport.right());
+        assert!(cx.debug_bounds("synced-output-8").is_none());
+    }
+}
+
+#[gpui::test]
+fn archived_structured_sync_uses_cloud_tool_cards_at_phone_widths(cx: &mut TestAppContext) {
     use crate::app::navigation_coverage::tap;
     cx.update(init);
     let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
@@ -41,8 +139,10 @@ fn structured_sync_uses_cloud_tool_cards_at_phone_widths(cx: &mut TestAppContext
              "tool_results":[{"tool_use_id":"synced-card","content":"output line\n".repeat(15)}]},
             {"seq":3,"role":"assistant","text":"**Done**"}
         ])).unwrap();
+        history.session.live = false;
         app.open_local_chat(history.session.clone(), None, cx);
         app.apply_local_poll(app.active_tab, Ok(history), None);
+        assert!(!app.local_chat_ready(&app.session), "archived structured history is read-only");
         assert_eq!(app.session.transcript.len(), 4);
         assert_eq!(app.session.transcript[2].tool_calls[0].name, "Read_with_an_extremely_long_tool_name");
         assert!(app.session.transcript.iter().all(|e| e.role != Role::System));
