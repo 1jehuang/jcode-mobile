@@ -14,21 +14,35 @@ fn transcript_notice_compact_token_badges_are_approximate_and_bounded() {
 }
 
 #[gpui::test]
-fn transcript_notice_real_events_render_without_history_and_expand_independently(cx: &mut TestAppContext) {
+fn transcript_notice_real_events_render_without_history_and_expand_independently(
+    cx: &mut TestAppContext,
+) {
     use crate::app::navigation_coverage::{draw, tap};
     use jcode_mobile_core::{ApiEvent, ConnectionOutput};
     let _settings = crate::system::settings_fixture(2., false, false);
-    fn selector(value: String) -> &'static str { Box::leak(value.into_boxed_str()) }
+    fn selector(value: String) -> &'static str {
+        Box::leak(value.into_boxed_str())
+    }
     cx.update(init);
     let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
     let ids = view.update(cx, |app, cx| {
         app.session.transcript.clear();
-        for message in ["Context compacted\n\n**Complete report**", "**Background task** `unterminated"] {
-            app.session.apply(ConnectionOutput::Event(ApiEvent::Compacted {
-                session_id: "test".into(), message: message.into(),
-            }));
+        for message in [
+            "Context compacted\n\n**Complete report**",
+            "**Background task** `unterminated",
+        ] {
+            app.session
+                .apply(ConnectionOutput::Event(ApiEvent::Compacted {
+                    session_id: "test".into(),
+                    message: message.into(),
+                }));
         }
-        let ids = app.session.notices.iter().map(|notice| notice.id).collect::<Vec<_>>();
+        let ids = app
+            .session
+            .notices
+            .iter()
+            .map(|notice| notice.id)
+            .collect::<Vec<_>>();
         cx.notify();
         ids
     });
@@ -36,19 +50,46 @@ fn transcript_notice_real_events_render_without_history_and_expand_independently
     cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
     draw(cx);
     for id in &ids {
-        let header = cx.debug_bounds(selector(format!("live-notice-{id}"))).expect("event notice visible without transcript");
-        let summary = cx.debug_bounds(selector(format!("live-notice-{id}-summary"))).unwrap();
-        let badge = cx.debug_bounds(selector(format!("live-notice-{id}-tokens"))).unwrap();
-        assert!(summary.size.width > px(40.), "summary retains space beside compact badge");
-        assert!(badge.right() <= header.right(), "badge stays inside narrow row");
+        let header = cx
+            .debug_bounds(selector(format!("live-notice-{id}")))
+            .expect("event notice visible without transcript");
+        let summary = cx
+            .debug_bounds(selector(format!("live-notice-{id}-summary")))
+            .unwrap();
+        let badge = cx
+            .debug_bounds(selector(format!("live-notice-{id}-tokens")))
+            .unwrap();
+        assert!(
+            summary.size.width > px(40.),
+            "summary retains space beside compact badge"
+        );
+        assert!(
+            badge.right() <= header.right(),
+            "badge stays inside narrow row"
+        );
     }
-    tap(cx, Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()));
+    tap(
+        cx,
+        Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()),
+    );
     draw(cx);
-    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0]))).is_some());
-    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[1]))).is_none());
-    tap(cx, Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()));
+    assert!(
+        cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0])))
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[1])))
+            .is_none()
+    );
+    tap(
+        cx,
+        Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()),
+    );
     draw(cx);
-    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0]))).is_none());
+    assert!(
+        cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0])))
+            .is_none()
+    );
     view.read_with(cx, |app, _| assert!(app.session.transcript.is_empty()));
 }
 
@@ -62,6 +103,27 @@ fn entry(role: Role, text: &str) -> TranscriptEntry {
         is_streaming: false,
         is_queued: false,
     }
+}
+
+#[test]
+fn transcript_notice_compact_labels_prioritize_task_file_and_agent_identity() {
+    let task = parse(DONE, false).unwrap();
+    assert_eq!(task.title, "验证 tests");
+    assert_eq!(task.detail, DONE);
+    let file = "⚠ File activity: /workspace/src/renderer.rs — same file — fox edited it — intent: Preserve images";
+    let notice = parse(file, false).unwrap();
+    assert_eq!(notice.title, "renderer.rs · Preserve images");
+    assert_eq!(notice.glyph, "▤");
+    assert_eq!(notice.detail, file);
+    let agent = "Agent otter finished their work and is ready for more.\n\nLane plan:\ncomplete\n\nFinal response:\nDone";
+    assert_eq!(parse(agent, false).unwrap().title, "otter · done");
+    let auto = "[auto] Your session was interrupted by a server reload while a tool was running. The tool was aborted and results may be incomplete.";
+    assert_eq!(
+        parse(auto, false).unwrap().title,
+        "Session restored after server reload"
+    );
+    assert!(parse("[auto] This is my own automation example", false).is_none());
+    assert_eq!(parse("", true).unwrap().title, "Notification");
 }
 
 #[test]
@@ -127,6 +189,14 @@ fn transcript_notice_estimates_are_not_provider_usage_and_failed_tasks_are_not_s
     assert_eq!(parse("", true).unwrap().estimated_tokens(), 0);
     let failed = DONE.replace("✓ completed", "✗ failed");
     assert_eq!(parse(&failed, false).unwrap().glyph, "✗");
+    let named_failure = DONE.replace("验证 tests", "Fix failed tests");
+    assert_eq!(
+        parse(&named_failure, false).unwrap().glyph,
+        "✓",
+        "task labels are not execution status"
+    );
+    let cancelled = DONE.replace("✓ completed", "⊘ cancelled");
+    assert_eq!(parse(&cancelled, false).unwrap().glyph, "⊘");
     let tldr_only = "\u{200b}\u{200b}swarm-tldr:collapsed\u{200b}\u{200b}Only summary";
     assert_eq!(parse(tldr_only, false).unwrap().detail, "Only summary");
 }

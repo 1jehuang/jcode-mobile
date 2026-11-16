@@ -1,6 +1,34 @@
 {
   "entries": [
     {
+      "owner": "src/app.rs::impl:MobileApp::render_live_notice",
+      "renderer": true, "handler": false, "events": {}, "controls": {},
+      "coverage_scope": "partial",
+      "coverage": [
+        {"kind": "state_model_mocked", "tests": ["src/app/transcript_notice_tests.rs::transcript_notice_real_events_render_without_history_and_expand_independently"], "note": "Headless GPUI dispatches live notification/compaction events and exercises the shared disclosure in a notice-only session. Native painted appearance and remote delivery are separate acceptance."},
+        {"kind": "gap", "tests": [], "note": "Real remote notification delivery and physical iPhone accessibility remain outside this local fixture."}
+      ]
+    },
+    {
+      "owner": "src/app.rs::impl:MobileApp::render_notice",
+      "renderer": true, "handler": false, "events": {"on_click": 1},
+      "controls": {"debug_selector:dynamic:block": 1, "debug_selector:dynamic:detail_id": 1, "debug_selector:dynamic:header_id": 1, "debug_selector:dynamic:images_id": 1, "debug_selector:dynamic:tokens_id": 1, "id:dynamic:id": 1},
+      "coverage_scope": "partial",
+      "coverage": [
+        {"kind": "state_model_mocked", "tests": ["src/app/transcript_notice_tests.rs::transcript_notice_native_live_rows_keep_images_and_use_same_disclosure", "src/app/transcript_notice_tests.rs::transcript_notice_native_expand_collapse_works_for_synced_history"], "note": "Headless GPUI taps shared activity rows, verifies full detail disclosure and always-visible image regions, and checks measurement invalidation. Approximate token labels are explicitly not billed provider usage."},
+        {"kind": "gap", "tests": [], "note": "Screen-reader announcement, all font/icon rasterizers and physical-device touch require separate acceptance."}
+      ]
+    },
+    {
+      "owner": "src/app.rs::impl:MobileApp::render_regular_entry",
+      "renderer": true, "handler": false, "events": {}, "controls": {},
+      "coverage_scope": "partial",
+      "coverage": [
+        {"kind": "state_model_mocked", "tests": ["src/app/attachment_tests.rs::assistant_image_only_row_has_a_visible_inline_preview", "src/app/synced_render_tests.rs::synced_structured_tool_expansion_starts_at_header_not_output_tail"], "note": "Ordinary prompt, assistant, image and shared tool rendering remains the unchanged fallback when no reserved machine envelope is recognized."},
+        {"kind": "gap", "tests": [], "note": "Arbitrary provider content and exhaustive physical-device rendering are not proven by these fixtures."}
+      ]
+    },
+    {
       "owner": "src/markdown.rs::list_row",
       "renderer": true,
       "handler": false,
@@ -95,7 +123,7 @@
   "renderer": true,
   "handler": false,
   "events": {},
-  "controls": {"debug_selector:macro:format:literal:image-placeholder-{id}": 1},
+  "controls": {"debug_selector:dynamic:block": 1},
   "owner": "src/app/attachments.rs::impl:MobileApp::photo",
   "coverage_scope": "partial",
   "coverage": [

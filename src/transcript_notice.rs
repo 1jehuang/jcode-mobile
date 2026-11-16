@@ -60,11 +60,11 @@ pub(crate) fn parse(text: &str, system: bool) -> Option<Notice<'_>> {
     }
     let header = detail.lines().next().unwrap_or("").trim_end_matches('\r');
     let mut kind = None;
-    for (prefix, title, glyph) in [
-        ("**Background task progress** `", "Background progress", "◌"),
-        ("**Background task stalled** `", "Background stalled", "!"),
-        ("**Background task started** `", "Background started", "◌"),
-        ("**Background task** `", "Background task", "✓"),
+    for (prefix, glyph) in [
+        ("**Background task progress** `", "◌"),
+        ("**Background task stalled** `", "!"),
+        ("**Background task started** `", "◌"),
+        ("**Background task** `", "✓"),
     ] {
         if let Some(rest) = header.strip_prefix(prefix) {
             let (id, tail) = rest.split_once('`')?;
@@ -72,17 +72,27 @@ pub(crate) fn parse(text: &str, system: bool) -> Option<Notice<'_>> {
                 return None;
             }
             let tail = tail.trim_start_matches(" · ");
-            let mut headline = format!("{title} · {id} · {}", tail.replace('`', ""));
+            let (label, status_text) = tail
+                .strip_prefix('`')
+                .and_then(|rest| rest.split_once('`'))
+                .unwrap_or((id, ""));
+            let mut headline = label.to_string();
             if prefix == "**Background task progress** `"
                 && let Some(progress) = detail.lines().skip(1).find(|line| !line.trim().is_empty())
             {
                 headline.push_str(" · ");
                 headline.push_str(progress);
             }
-            let glyph = if prefix == "**Background task** `"
-                && (tail.contains("✗") || tail.contains("failed"))
-            {
-                "✗"
+            let glyph = if prefix == "**Background task** `" {
+                if status_text.contains("✗ failed") {
+                    "✗"
+                } else if status_text.contains("✓ completed") {
+                    "✓"
+                } else if status_text.contains("cancelled") || status_text.contains("canceled") {
+                    "⊘"
+                } else {
+                    "◌"
+                }
             } else {
                 glyph
             };
@@ -97,7 +107,7 @@ pub(crate) fn parse(text: &str, system: bool) -> Option<Notice<'_>> {
                 && !sender.trim().is_empty()
                 && (prefix == "Cross-swarm DM from " || !sender.contains(char::is_whitespace))
             {
-                kind = Some((format!("{prefix}{sender} · {body}"), "✉"));
+                kind = Some((format!("{sender} · {body}"), "✉"));
                 break;
             }
         }
@@ -119,7 +129,18 @@ pub(crate) fn parse(text: &str, system: bool) -> Option<Notice<'_>> {
     if kind.is_none()
         && (header.starts_with("⚠ File activity: ") || header.starts_with("⚠️ File activity: "))
     {
-        kind = Some((header.to_string(), "!"));
+        let path = header
+            .split_once("File activity: ")
+            .map(|(_, rest)| rest)
+            .unwrap_or(header);
+        let path = path.split(['\n', '—']).next().unwrap_or(path).trim();
+        let file = path.rsplit('/').next().unwrap_or(path);
+        let intent = header.split_once(" — intent: ").map(|(_, intent)| intent);
+        let title = match intent {
+            Some(intent) => format!("{file} · {intent}"),
+            None => file.to_string(),
+        };
+        kind = Some((title, "▤"));
     }
     if kind.is_none()
         && header.starts_with("Agent ")
@@ -135,13 +156,41 @@ pub(crate) fn parse(text: &str, system: bool) -> Option<Notice<'_>> {
         && detail.contains("\n\nLane plan:\n")
         && detail.contains("\n\nFinal response:\n")
     {
-        kind = Some((header.to_string(), "◇"));
+        let rest = header.strip_prefix("Agent ").unwrap_or(header);
+        let name = rest.split_whitespace().next().unwrap_or("agent");
+        let status = if header.ends_with(" finished with status failed.")
+            || header.ends_with(" crashed while working.")
+        {
+            "failed"
+        } else if header.ends_with(" stopped.") {
+            "stopped"
+        } else {
+            "done"
+        };
+        kind = Some((
+            format!("{name} · {status}"),
+            if status == "failed" { "✗" } else { "◇" },
+        ));
     }
     if kind.is_none() && summary.is_some() {
         kind = Some(("Agent message".into(), "✉"));
     }
+    if kind.is_none()
+        && header.starts_with(
+            "[auto] Your session was interrupted by a server reload while a tool was running.",
+        )
+    {
+        kind = Some(("Session restored after server reload".into(), "↻"));
+    }
     if kind.is_none() && system {
-        kind = Some((format!("Notification · {header}"), "·"));
+        kind = Some((
+            if header.is_empty() {
+                "Notification".into()
+            } else {
+                header.to_string()
+            },
+            "ⓘ",
+        ));
     }
     let (title, glyph) = kind?;
     Some(Notice {
