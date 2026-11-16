@@ -4,6 +4,54 @@ use gpui::{TestAppContext, size};
 
 const DONE: &str = "**Background task** `bg123` · `验证 tests` (`bash`) · ✓ completed · 7.1s · exit 0\n\n```text\nfull output\n```\n\n_Full output:_ `bg action=\"output\" task_id=\"bg123\"`";
 
+#[test]
+fn transcript_notice_compact_token_badges_are_approximate_and_bounded() {
+    use crate::transcript_notice::token_badge;
+    assert_eq!(token_badge(0), "~0 tok");
+    assert_eq!(token_badge(999), "~999 tok");
+    assert_eq!(token_badge(12_345), "~12.3k tok");
+    assert_eq!(token_badge(1_234_567), "~1.2m tok");
+}
+
+#[gpui::test]
+fn transcript_notice_real_events_render_without_history_and_expand_independently(cx: &mut TestAppContext) {
+    use crate::app::navigation_coverage::{draw, tap};
+    use jcode_mobile_core::{ApiEvent, ConnectionOutput};
+    let _settings = crate::system::settings_fixture(2., false, false);
+    fn selector(value: String) -> &'static str { Box::leak(value.into_boxed_str()) }
+    cx.update(init);
+    let (view, cx) = cx.add_window_view(lifecycle_coverage::fixture_app);
+    let ids = view.update(cx, |app, cx| {
+        app.session.transcript.clear();
+        for message in ["Context compacted\n\n**Complete report**", "**Background task** `unterminated"] {
+            app.session.apply(ConnectionOutput::Event(ApiEvent::Compacted {
+                session_id: "test".into(), message: message.into(),
+            }));
+        }
+        let ids = app.session.notices.iter().map(|notice| notice.id).collect::<Vec<_>>();
+        cx.notify();
+        ids
+    });
+    cx.simulate_resize(size(px(280.), px(844.)));
+    cx.update(|window, _| window.set_emulate_touch_from_mouse(true));
+    draw(cx);
+    for id in &ids {
+        let header = cx.debug_bounds(selector(format!("live-notice-{id}"))).expect("event notice visible without transcript");
+        let summary = cx.debug_bounds(selector(format!("live-notice-{id}-summary"))).unwrap();
+        let badge = cx.debug_bounds(selector(format!("live-notice-{id}-tokens"))).unwrap();
+        assert!(summary.size.width > px(40.), "summary retains space beside compact badge");
+        assert!(badge.right() <= header.right(), "badge stays inside narrow row");
+    }
+    tap(cx, Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()));
+    draw(cx);
+    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0]))).is_some());
+    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[1]))).is_none());
+    tap(cx, Box::leak(format!("live-notice-{}", ids[0]).into_boxed_str()));
+    draw(cx);
+    assert!(cx.debug_bounds(selector(format!("live-notice-{}-detail", ids[0]))).is_none());
+    view.read_with(cx, |app, _| assert!(app.session.transcript.is_empty()));
+}
+
 fn entry(role: Role, text: &str) -> TranscriptEntry {
     TranscriptEntry {
         id: 7,

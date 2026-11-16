@@ -20,6 +20,17 @@ pub(crate) fn expansion_key(id: u64) -> String {
     format!("notice:{id}")
 }
 
+/// Approximation marker distinguishes this character heuristic from billed usage.
+pub(crate) fn token_badge(tokens: usize) -> String {
+    if tokens < 1_000 {
+        format!("~{tokens} tok")
+    } else if tokens < 1_000_000 {
+        format!("~{:.1}k tok", tokens as f64 / 1_000.)
+    } else {
+        format!("~{:.1}m tok", tokens as f64 / 1_000_000.)
+    }
+}
+
 pub(crate) fn for_entry(entry: &TranscriptEntry) -> Option<Notice<'_>> {
     if entry.role == Role::Assistant {
         return None;

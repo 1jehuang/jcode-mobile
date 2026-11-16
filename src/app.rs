@@ -1901,6 +1901,9 @@ impl MobileApp {
             }
             top = top.zip(height).map(|(top, height)| top + height + px(14.));
         }
+        for notice in &self.session.notices {
+            rows.push(self.render_live_notice(notice, &self.expanded_tools, t, cx));
+        }
         if let Some(a) = self.activity() {
             self.activity_orb.update(cx, |o, cx| o.set_state(orb_state(a), cx));
             rows.push(stream_motion::steady_activity(
@@ -1923,7 +1926,7 @@ impl MobileApp {
                     .into_any_element(),
             );
         }
-        let empty = entries.is_empty() && !self.session.is_reasoning;
+        let empty = entries.is_empty() && self.session.notices.is_empty() && !self.session.is_reasoning;
         if empty && self.session.phase == ConnectionPhase::Connected && !self.is_local_chat() {
             self.ensure_recent_dirs();
             self.ensure_computer_stats(cx);
@@ -2214,13 +2217,35 @@ impl MobileApp {
     fn render_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, images: &[jcode_mobile_core::SessionImage], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let _perf = crate::perf::span("transcript.entry_build");
         if let Some(notice) = crate::transcript_notice::for_entry(e) {
-            let key = crate::transcript_notice::expansion_key(e.id);
+            return self.render_notice(notice, format!("notice-{}", e.id), crate::transcript_notice::expansion_key(e.id), expanded_tools, images, t, cx);
+        }
+        self.render_regular_entry(e, prompt_n, expanded_tools, visible, images, t, cx)
+    }
+
+    fn render_live_notice(&self, notice: &jcode_mobile_core::session::Notice, expanded_tools: &std::collections::HashSet<String>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut parsed = crate::transcript_notice::parse(&notice.message, true).unwrap_or_else(|| crate::transcript_notice::Notice {
+            title: format!("Notification · {}", notice.message.lines().next().unwrap_or("")),
+            detail: &notice.message,
+            glyph: "·",
+            initially_expanded: false,
+        });
+        if notice.kind == jcode_mobile_core::session::NoticeKind::Compaction {
+            parsed.title = format!("Compaction · {}", notice.message.lines().next().unwrap_or(""));
+        }
+        self.render_notice(parsed, format!("live-notice-{}", notice.id), format!("live-notice:{}", notice.id), expanded_tools, &[], t, cx)
+    }
+
+    fn render_notice(&self, notice: crate::transcript_notice::Notice<'_>, id: String, key: String, expanded_tools: &std::collections::HashSet<String>, images: &[jcode_mobile_core::SessionImage], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
             let expanded = notice.initially_expanded ^ expanded_tools.contains(&key);
-            let id = e.id;
-            let token_label = format!("est. {} tokens", notice.estimated_tokens());
+            let token_label = crate::transcript_notice::token_badge(notice.estimated_tokens());
+            let header_id = id.clone();
+            let selector = |part: &str| if let Some(n) = id.strip_prefix("notice-") { format!("notice-{part}-{n}") } else { format!("{id}-{part}") };
+            let tokens_id = selector("tokens");
+            let images_id = selector("images");
+            let detail_id = selector("detail");
             return div().w_full().min_w_0().flex().flex_col().gap(px(4.))
-                .child(div().id(SharedString::from(format!("notice-{id}")))
-                    .debug_selector(move || format!("notice-{id}"))
+                .child(div().id(SharedString::from(id.clone()))
+                    .debug_selector(move || header_id.clone())
                     .flex().w_full().min_w_0().items_center().gap(px(6.))
                     .cursor_pointer().text_size(crate::system::fs(12.))
                     .text_color(t.text_secondary)
@@ -2232,20 +2257,22 @@ impl MobileApp {
                         cx.notify();
                     }))
                     .child(div().flex_none().text_color(t.text_muted).child(notice.glyph))
-                    .child(div().flex_1().min_w_0().truncate().child(notice.title))
+                    .child(div().flex_1().min_w_0().truncate().debug_selector({ let id = id.clone(); move || format!("{id}-summary") }).child(notice.title))
                     .child(div().flex_none().text_color(t.text_muted)
-                        .debug_selector(move || format!("notice-tokens-{id}"))
+                        .debug_selector(move || tokens_id.clone())
                         .child(token_label))
                     .child(div().flex_none().text_color(t.text_muted).child(if expanded { "▴" } else { "▾" })))
                 // Images remain available even when the machine text is collapsed.
                 .children(self.render_prompt_photos(images, t, cx)
-                    .map(|photos| photos.debug_selector(move || format!("notice-images-{id}"))))
+                    .map(|photos| photos.debug_selector(move || images_id.clone())))
                 .when(expanded, |d| d.child(div()
-                    .debug_selector(move || format!("notice-detail-{id}"))
+                    .debug_selector(move || detail_id.clone())
                     .pl(px(12.)).border_l_1().border_color(t.border_focus)
                     .child(crate::markdown::render(notice.detail, t))))
-                .into_any_element();
-        }
+                .into_any_element()
+    }
+
+    fn render_regular_entry(&self, e: &TranscriptEntry, prompt_n: usize, expanded_tools: &std::collections::HashSet<String>, visible: Option<&stream_presentation::Row>, images: &[jcode_mobile_core::SessionImage], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         match e.role {
             // Desktop prompt: round number badge beside a USER_BG card.
             Role::User => {

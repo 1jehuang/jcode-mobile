@@ -9,7 +9,7 @@ impl MobileApp {
         let session = &parked.session;
         let status = || Self::connection_status_text_for(session)
             .map(|text| orb_row(&parked.preview_status_orb, text, t.text_muted));
-        let empty = session.transcript.is_empty() && !session.is_reasoning;
+        let empty = session.transcript.is_empty() && session.notices.is_empty() && !session.is_reasoning;
         let body = if empty {
             div().flex_1().min_h_0().flex().flex_col().justify_end()
                 .px(px(16.)).pb(px(14.)).gap(px(12.))
@@ -31,7 +31,7 @@ impl MobileApp {
             let viewport = px(self.device.map_or_else(|| f32::from(window.viewport_size().height), |(_, height)| height));
             let off = (-parked.scroll.offset().y - viewport).max(px(0.));
             for entry in &session.transcript {
-                if entry.role == Role::User { prompt_n += 1; }
+                if crate::transcript_notice::is_prompt(entry) { prompt_n += 1; }
                 let key = super::transcript_layout::key(id, entry, prompt_n, &parked.expanded_tools, self.content_width());
                 let key = key.with_window_scale(window.scale_factor()).with_images(session.images_for(entry.id));
                 let height = self.transcript_heights.get(key);
@@ -50,6 +50,9 @@ impl MobileApp {
                         .into_any_element());
                 }
                 top = top.zip(height).map(|(top, height)| top + height + px(14.));
+            }
+            for notice in &session.notices {
+                rows.push(self.render_live_notice(notice, &parked.expanded_tools, t, cx));
             }
             if let Some(activity) = Self::activity_for(session) {
                 parked.preview_activity_orb.update(cx, |orb, cx| orb.set_state(orb_state(activity), cx));
