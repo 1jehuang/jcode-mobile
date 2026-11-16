@@ -2922,9 +2922,7 @@ fn transcript_scrollbar(viewport: gpui::Pixels, max: gpui::Pixels, off: gpui::Pi
 fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
     div()
         .w_full()
-        .flex()
-        .items_start()
-        .gap(px(8.))
+        .relative()
         .px(px(10.))
         .py(px(8.))
         .rounded(px(6.))
@@ -2932,16 +2930,17 @@ fn banner(msg: &str, tint: Hsla, t: &Theme) -> gpui::Div {
         .border_1()
         .border_color(with_alpha(tint, 0.3))
         .overflow_hidden()
-        .child(label("✗", tint, 12.).flex_none())
-        // Keep the flex sizing on a separate slot. Measuring the text itself as
-        // a flex item can leave GPUI's final text layout at its unconstrained
-        // intrinsic width even when the row reserved the wrapped height.
-        .child(div().flex_1().min_w_0().child(
-            label(msg.to_string(), t.text, 12.)
-                .debug_selector(|| "banner-text".into())
-                .w_full()
-                .whitespace_normal(),
-        ))
+        .child(label("✗", tint, 12.).absolute().left(px(10.)).top(px(8.)))
+        // Use block layout, not a flex text item: native GPUI can otherwise
+        // reserve wrapped height while painting an intrinsic-width single line.
+        .child(
+            div().pl(px(20.)).child(
+                label(msg.to_string(), t.text, 12.)
+                    .debug_selector(|| "banner-text".into())
+                    .w_full()
+                    .whitespace_normal(),
+            ),
+        )
 }
 
 /// Logs a frame build that blows the budget badly enough to feel like a hang.
