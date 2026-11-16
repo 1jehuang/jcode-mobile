@@ -13,6 +13,9 @@ impl MobileApp {
         let body = if empty {
             div().flex_1().min_h_0().flex().flex_col().justify_end()
                 .px(px(16.)).pb(px(14.)).gap(px(12.))
+                .pt(px(12.))
+                .child(label(concat!("Jcode Mobile v", env!("CARGO_PKG_VERSION")), t.text_muted, 12.))
+                .child(div().flex_1())
                 .children(status())
                 .when_some(session.error_banner.clone(), |d, error| d.child(banner(&error, t.error, t)))
                 .child(label("What would you like to work on?", t.text, 20.).line_height(crate::system::fs(28.)))

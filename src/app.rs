@@ -1945,6 +1945,9 @@ impl MobileApp {
                 .px(px(16.))
                 .pb(px(14.))
                 .gap(px(12.))
+                .pt(px(12.))
+                .child(label(concat!("Jcode Mobile v", env!("CARGO_PKG_VERSION")), t.text_muted, 12.))
+                .child(div().flex_1())
                 .when(!self.feel_reconnect_visible(), |d| d.child(self.connection_status(t)))
                 .when_some(self.session.error_banner.clone(), |d, e| {
                     d.child(banner(&e, t.error, t).id("err-empty").debug_selector(|| "err-empty".into()).on_click(cx.listener(|this, _, _, cx| {
