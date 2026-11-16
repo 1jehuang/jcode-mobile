@@ -1,0 +1,35 @@
+name: Announce Mobile release on Discord
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published Mobile release tag to announce
+        required: true
+        type: string
+
+concurrency:
+  group: mobile-discord-release-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  announce:
+    if: github.repository == '1jehuang/jcode-mobile'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Test announcer before posting
+        run: python3 -m unittest discover -s scripts -p 'test_post_discord_release.py' -v
+      - name: Post Mobile release notes if not already announced
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_RELEASE_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: python3 scripts/post_discord_release.py --tag "$RELEASE_TAG" --execute
