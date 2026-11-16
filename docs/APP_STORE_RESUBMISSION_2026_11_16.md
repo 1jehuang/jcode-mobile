@@ -14,11 +14,11 @@ User authorized replacing the November 5 submission, then explicitly authorized 
 
 ## Corrected candidate and provenance
 
-Prepared candidate is build `1794749684`, mobile source `bdf1148d8ab23fa4958248ed1f48985e45171cfd`, shared voice source `2640998b88925ebb64b4e32c68cbd1fa243c23e3`, GPUI source `0d71abd893da4c4d63b9fed5c5a488f154903dba`.
+The initial recovered candidate was build `1794749684`, mobile source `bdf1148d8ab23fa4958248ed1f48985e45171cfd`, shared voice source `2640998b88925ebb64b4e32c68cbd1fa243c23e3`, GPUI source `0d71abd893da4c4d63b9fed5c5a488f154903dba`.
 
 Expected IPA SHA-256: `9e550033537ca5a8a12cf24ea91e5e458c787b23620688848d9929491237a421`, size 12,758,194 bytes. The VM's prior record reports 548 app tests and 165 core tests passed, plus iOS SDK and signing checks. Those are prior candidate receipts, not a new physical-device validation.
 
-The VM mobile history diverges from local main. Preserve it and the source exports without resetting, merging wholesale, creating worktrees or overwriting unrelated local work. Local protected archive: `~/.appstoreconnect/builds/1794749684/`.
+The VM mobile history diverges from local main. Its mobile source tar and complete-history bundle were recovered and verified without resetting, merging wholesale, creating worktrees or overwriting unrelated local work. Protected archive: `~/.appstoreconnect/builds/1794749684/`. The full shared-source archival transfer was interrupted and is explicitly labeled `.partial`, not accepted as a complete backup. Exact voice-client files are recovered and checked separately for live acceptance. `RECOVERY.md` and `verification.json` record the artifact checks. The IPA hash, ZIP CRC, ARM64 identity, all four bundle build numbers, three profiles and four CodeResources passed.
 
 ## Reviewer and listing preflight
 
@@ -42,4 +42,14 @@ Rollback version: `d88c8bb3-1999-46ff-a87a-dbb226e6c1b2`. Protected snapshot/rep
 
 ## Release gates and outcome
 
-Pending exact-client speech/silence acceptance and final artifact recovery. The old submission is preserved until these gates pass. This document must be updated with actual upload and final Apple review-state receipts before claiming resubmission or publication.
+Hosted acceptance compilation lost its connection, a VM attempt failed the returned binary's GLIBC compatibility check, and a tiny hosted harness build then timed out after 300 seconds without progress. A narrowly scoped local `justrust` fallback was used under the documented hosted-failure exception. Apple SDK cross-compilation and signing ran locally in the VM's existing Ubuntu container, reusing the existing target cache.
+
+Strict known-speech acceptance caught a second defect: the 44-character phrase was followed by the recognition vocabulary, producing 403 characters. Mobile recognition now sends empty context instead of seeding text the user did not say. Genuine speech is not removed by a suffix heuristic. Shared repair commit: `5bc6ea6bf4a8331811ab6c6d8405693dd4cab057`, parent `2640998b88925ebb64b4e32c68cbd1fa243c23e3`. Exact `nari.rs` SHA-256: `0c7b0a518de079394931bd03e4e3d29601e6b0f042cd98cd5b0f1d1fa6f75c43`.
+
+The initial harness inadvertently compiled desktop defaults because justrust forced workspace feature unification despite `default-features=false`. Setting `JUSTRUST_UNIFY_FEATURES=0 CARGO_RESOLVER_FEATURE_UNIFICATION=selected` restored the actual mobile graph. The compiler-client policy fix was separately committed and pushed as `8ba2f3f26`, with 1,319 hosted tests passing and 19 ignored. The installed published client was not replaced. Both final acceptance and signed build use the explicit selected-features settings.
+
+The final lightweight voice suite passed 26 tests. Live production configuration, saved synthetic speech and five-second all-zero silence passed the stricter gate: all five expected speech words, at most 100 transcript characters, every PCM sample delivered, and zero silence text/revisions. The first repaired run returned 50 characters, including a small extra 'Yeah.', not the vocabulary list. These are saved-audio service checks, not physical-device microphone or photo-picker acceptance.
+
+Replacement build `1794811219` was built and distribution-signed from mobile `bdf1148d8ab23fa4958248ed1f48985e45171cfd` and repaired shared `5bc6ea6bf4a8331811ab6c6d8405693dd4cab057`. IPA SHA-256: `b6574b37a7b5a0303fb01bc437c4419d346cb03dec1e81b437dcc367cc5770e0`. Protected final archive: `~/.appstoreconnect/builds/1794811219/`.
+
+Upload and final Apple review-state verification remain pending. The old submission is still preserved at this checkpoint.
