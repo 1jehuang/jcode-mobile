@@ -93,7 +93,7 @@
 
 - Public link: https://testflight.apple.com/join/ZHSYwcyf (group "Public Beta", no tester limit).
 - Build 1794498559 added to the group with en-US "What to Test" notes and submitted for beta app review: `WAITING_FOR_REVIEW`. The previous public build was 1793952485 (Nov 6).
-- Repeat for future builds with `python3 scripts/asc_public_beta.py [VERSION]`. Later builds of version 1.0 usually clear beta review quickly.
+- Repeat for future builds with `python3 scripts/asc_public_beta.py BUILD_NUMBER --notes-file release-notes.md`. Notes are attached to that exact build's **What to Test** field. With the release machine's `DISCORD_RELEASE_WEBHOOK` configured, those same notes are announced after external availability is verified. See [release notes](RELEASE_NOTES.md) for pending-review handling and duplicate protection. Later builds of version 1.0 usually clear beta review quickly.
 - App Store 1.0 (build 1793919915) has been `WAITING_FOR_REVIEW` since November 5.
 
 ## Build 1794616894, uploaded November 13, 2026 (Pacific)

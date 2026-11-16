@@ -1,59 +1,111 @@
 # Mobile release notes and Discord announcements
 
-Mobile release notes are the body of a published GitHub release in
-`1jehuang/jcode-mobile`. The `discord-release.yml` workflow posts them to the
-same announcements channel used by the CLI and Desktop, with a **Jcode Mobile**
-heading. Prereleases are labeled **beta**.
+## Preferred iOS flow: notes belong to the TestFlight build
 
-## One-time setup
+Write release-specific notes once, then attach them to the exact TestFlight
+build's **What to Test** field when distributing it:
+
+```sh
+python3 scripts/asc_public_beta.py BUILD_NUMBER --notes-file release-notes.md
+```
+
+This uses the existing distribution process: sets en-US notes for that build,
+adds it to Public Beta, and submits for beta review if needed. It does not build
+or upload an IPA. Run it only for an approved, tested candidate whose upload has
+already processed successfully. `BUILD_NUMBER` is the IPA's `CFBundleVersion`,
+not the marketing version `1.0` or an Apple build UUID.
+
+With `DISCORD_RELEASE_WEBHOOK` configured on the release machine, this command
+also attempts a Discord announcement, using the notes **read back from Apple**.
+It requires an explicit build and explicit `--notes` or `--notes-file` when the
+webhook is configured, so it cannot accidentally announce a different newest
+build or generic testing instructions. `--announce-discord` additionally requires
+the webhook to exist before any distribution changes are made.
+
+The Discord post identifies Jcode Mobile, marketing version, build number, iOS
+TestFlight beta, the attached notes, and the Public Beta join link. It only posts
+after Apple confirms all of the following:
+
+- Processing is `VALID` and the build is not expired.
+- External build state is `IN_BETA_TESTING`, not merely waiting for review.
+- Public Beta has an enabled TestFlight public link.
+- The exact Apple build ID belongs to that group, following pagination.
+
+If beta review is still pending, notes remain saved on the build and no Discord
+post is made. After approval, preview or announce **without re-uploading,
+resubmitting, or changing the notes**:
+
+```sh
+python3 scripts/testflight_release.py --build BUILD_NUMBER
+python3 scripts/testflight_release.py --build BUILD_NUMBER --execute
+```
+
+No separate GitHub release or GitHub token is needed for this flow. The standalone
+command only reads Apple data. It does not publish or enable a TestFlight build.
+The current integration makes one availability check after distribution. It does
+not install a background poller for builds that remain in Apple review.
+
+### Credentials and duplicate protection
+
+The release machine needs the existing App Store Connect key used by `asc.py`
+(Python `cryptography` dependency) and the announcements-channel webhook in
+`DISCORD_RELEASE_WEBHOOK`. Keep the webhook outside Git and never print it.
+A GitHub Actions secret is not automatically available to local release scripts.
+
+Receipts are stored under
+`~/.local/share/jcode-mobile/testflight-announcements/APPLE_BUILD_ID.json`.
+Use one release machine, or pass `--state-dir` to the standalone command and
+`--announcement-state-dir` to the distribution command pointing to the **same
+persistent shared directory**. Receipts skip already announced builds. Exclusive
+creation prevents concurrent commands from posting the same build twice.
+
+Before sending, the receipt is durably marked `posting_uncertain`. If the network
+fails or a process exits during posting, future attempts refuse to repost until
+an operator checks Discord. If a message exists, set the receipt's state to
+`announced` and save its `message_id`. Only remove an uncertain receipt after
+confirming that no message was delivered. Do not delete receipts or use ephemeral
+state directories to retry. There is no automatic cross-machine deduplication
+unless those machines share the receipt directory.
+
+For iOS, choose this build-linked flow **or** the GitHub-release flow below,
+not both for the same update, since their deduplication keys are different.
+
+## Optional GitHub-release flow
+
+For Android or releases tracked on GitHub, use the body of a published release
+in `1jehuang/jcode-mobile`. The `discord-release.yml` workflow posts it with a
+**Jcode Mobile** heading. Prereleases are labeled **beta**.
 
 Set the repository Actions secret `DISCORD_RELEASE_WEBHOOK` to the existing
 announcements-channel webhook, using the same value configured for the CLI and
-Desktop repositories. Never commit or print the webhook URL. For example,
-`gh secret set DISCORD_RELEASE_WEBHOOK --repo 1jehuang/jcode-mobile` reads it
-from standard input. Secrets cannot be read back from another repository.
+Desktop repositories. `gh secret set DISCORD_RELEASE_WEBHOOK --repo
+1jehuang/jcode-mobile` reads the value from standard input. Secrets cannot be
+read back from another repository.
 
-## Shipping an update
+Publish the GitHub release only after the build is actually distributed. Identify
+the platform, version/build and availability in the notes. Do not claim Android
+availability unless its build is actually distributed.
 
-1. Build, test and distribute the mobile build using the existing iOS or Android
-   process. An upload or pending TestFlight review is not a public release.
-2. Write concise user-facing notes explaining what changed. Identify the
-   platform, version/build, availability, and relevant fixes or features. For
-   iOS betas include the public TestFlight link from the README. Do not claim
-   Android availability unless the build is actually distributed.
-3. Publish a GitHub release pointing at the shipped source commit, with those
-   notes. Mark TestFlight releases as prereleases. Publishing triggers Discord.
-   Example, after the build is available:
-
-   ```sh
-   gh release create ios-v0.1.0-build.123 --repo 1jehuang/jcode-mobile \
-     --target SHIPPED_COMMIT --prerelease --title 'Jcode Mobile 0.1.0 (123)' \
-     --notes-file release-notes.md
-   ```
-
-If a future publisher uses `GITHUB_TOKEN` to create the release, it must explicitly
-queue the announcement because that token suppresses follow-up release events:
+If a publisher uses `GITHUB_TOKEN` to create the release, it must explicitly queue
+the announcement because that token suppresses follow-up release events:
 
 ```sh
 gh workflow run discord-release.yml --repo 1jehuang/jcode-mobile --ref main \
-  -f tag=ios-v0.1.0-build.123
+  -f tag=RELEASE_TAG
 ```
 
-That command also backfills existing published releases. The workflow serializes
-runs for each tag and records a hidden marker and Discord message ID in the
-release body to skip repeat announcements. Do not remove those markers.
+That command also backfills existing published releases. Runs are serialized per
+tag. A hidden marker and Discord message ID in the release body prevent repeats.
+Do not remove those markers. If a post succeeds but recording the marker fails,
+inspect the channel and manually record
+`<!-- jcode-mobile-discord-announced:TAG -->` before retrying.
 
-## Preview and tests
+## Tests
 
 ```sh
-GH_TOKEN="$(gh auth token)" python3 scripts/post_discord_release.py --tag TAG
-python3 -m unittest discover -s scripts -p 'test_post_discord_release.py' -v
+python3 -m unittest discover -s scripts -p 'test_*release.py' -v
+python3 -m unittest discover -s scripts -p 'test_asc_public_beta.py' -v
 ```
 
-The script only previews unless `--execute` is supplied. It rejects draft and
-empty-note releases, disables mentions, and truncates long notes while preserving
-the full release link. Discord failure does not undo an already shipped build.
-There is no atomic transaction between Discord and GitHub: if a post succeeds
-but recording its marker fails, the script warns with the message ID. Inspect the
-channel and manually record `<!-- jcode-mobile-discord-announced:TAG -->` in the
-release body before retrying. Do not blindly rerun after a network timeout.
+Both announcement flows disable mentions and preserve the destination link when
+truncating long notes. Announcement failure never undoes a shipped build.

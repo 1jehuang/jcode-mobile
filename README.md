@@ -6,7 +6,7 @@ The GPUI app also runs in a phone-sized desktop window for development. Both mob
 
 **Try it:** join the public TestFlight beta at https://testflight.apple.com/join/ZHSYwcyf (needs a Jcode account).
 
-**Release notes:** see [publishing Mobile release notes to Discord](docs/RELEASE_NOTES.md) for the announcements workflow.
+**Release notes:** [attach notes to each TestFlight build and announce them on Discord](docs/RELEASE_NOTES.md).
 
 > **Status:** Active development. Platform tooling, account setup, and iOS signing are not yet a one-command onboarding experience.
 

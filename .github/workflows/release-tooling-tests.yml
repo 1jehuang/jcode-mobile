@@ -1,0 +1,40 @@
+name: Mobile release tooling tests
+
+on:
+  push:
+    paths:
+      - 'scripts/asc.py'
+      - 'scripts/asc_public_beta.py'
+      - 'scripts/post_discord_release.py'
+      - 'scripts/testflight_release.py'
+      - 'scripts/test_*release.py'
+      - 'scripts/test_asc_public_beta.py'
+      - '.github/workflows/release-tooling-tests.yml'
+  pull_request:
+    paths:
+      - 'scripts/asc.py'
+      - 'scripts/asc_public_beta.py'
+      - 'scripts/post_discord_release.py'
+      - 'scripts/testflight_release.py'
+      - 'scripts/test_*release.py'
+      - 'scripts/test_asc_public_beta.py'
+      - '.github/workflows/release-tooling-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ASC client dependency
+        run: python3 -m pip install cryptography
+      - name: Test release formatting and delivery safety offline
+        run: python3 -m unittest discover -s scripts -p 'test_*release.py' -v
+      - name: Test TestFlight notes and distribution integration offline
+        run: python3 -m unittest discover -s scripts -p 'test_asc_public_beta.py' -v
