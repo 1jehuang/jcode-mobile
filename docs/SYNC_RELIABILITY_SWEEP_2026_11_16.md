@@ -16,7 +16,8 @@ Unknown-ID lost continuation submissions deliberately remain blocked. The curren
 
 ## Evidence
 
-- Hosted workspace checks, full library tests and clippy passed before the final banner refinement: 675 tests passed, zero failures, 16 ignored. Final refinement validation is recorded in the accompanying work log/tool receipts.
+- Final hosted workspace check and full library suite passed after the native banner refinement: **675 passed, zero failures, 16 ignored**, test receipt `20261116-021646650-3359760`. Final hosted clippy passed, receipt `20261116-021855847-3364126` (existing warnings remain). Whole-tree formatting checks encounter preexisting drift in unrelated files, which was not rewritten.
+- Final native release binary SHA-256: `bf6d3e2ac5b23f7f22efd88ccbdb252589bb8cfd136771ef02dc3c4306162d67`.
 - Eight actual environment configurations (dark/light, reduced motion on/off, text scale 1.0/1.6) each passed 51 sync and 9 composer tests: 480 passing executions. These are state/layout tests, not pixel acceptance.
 - Extended raw-touch testing passed 2,048 cases across eight seeds and four viewport orientations/sizes. Stateful account/tab/draft/pending-prompt journeys also passed.
 - A rebuilt native Linux GPUI preview used isolated storage and a localhost fake API. One synthetic message POST was queued/running/done, with no duplicate submission during repeated send attempts, a 503 transcript outage, recovery, and offline transition. Cached history and newer unsent drafts survived. Receipt polling retired after terminal completion.
