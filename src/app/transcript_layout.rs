@@ -131,6 +131,10 @@ pub(super) fn key_visible(
     reasoning.hash(&mut hash);
     std::mem::discriminant(&entry.role).hash(&mut hash);
     (if prompt == 0 { 1 } else { prompt.ilog10() + 1 }).hash(&mut hash);
+    let activity = crate::transcript_notice::for_entry(entry).is_some();
+    if activity {
+        expanded.contains(&crate::transcript_notice::expansion_key(entry.id)).hash(&mut hash);
+    }
     if entry.role == Role::Assistant {
         for call in &entry.tool_calls {
             call.id.hash(&mut hash);
@@ -173,7 +177,7 @@ pub(super) fn key_visible(
         density: 1f32.to_bits(),
         // Limit cross-identity reuse to settled prose. Other row types can
         // depend on identity-specific expansion or asynchronous resources.
-        shareable: matches!(entry.role, Role::User | Role::Assistant)
+        shareable: !activity && matches!(entry.role, Role::User | Role::Assistant)
             && entry.tool_calls.is_empty()
             && entry.reasoning.is_empty()
             && !entry.is_streaming,
@@ -501,6 +505,28 @@ mod tests {
         heights.record(unknown, px(f32::NAN));
         assert_eq!(heights.get(unknown), None);
         assert_eq!(heights.1.borrow().len(), 1);
+    }
+
+    #[test]
+    fn activity_disclosure_invalidates_height_and_never_shares_identity_state() {
+        let heights = Heights::default();
+        let mut entry = entry();
+        entry.role = Role::System;
+        entry.text = "DM from fox: Details\n\nMany more details".into();
+        let mut expanded = std::collections::HashSet::new();
+        let collapsed = key(0, &entry, 0, &expanded, 292.);
+        heights.record(collapsed, px(24.));
+        expanded.insert(crate::transcript_notice::expansion_key(entry.id));
+        let open = key(0, &entry, 0, &expanded, 292.);
+        assert_ne!(collapsed, open);
+        assert_eq!(heights.get(open), None, "expanded activity requires fresh measurement");
+        heights.record(open, px(200.));
+        entry.id += 1;
+        assert_eq!(heights.get(key(0, &entry, 0, &expanded, 292.)), None,
+            "identical notices must not reuse another row's disclosure geometry");
+        entry.id -= 1;
+        assert_eq!(heights.get(collapsed), None,
+            "collapsing after expansion requires fresh measurement");
     }
 
     #[test]
