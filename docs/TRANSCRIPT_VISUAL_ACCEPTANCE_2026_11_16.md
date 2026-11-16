@@ -15,7 +15,7 @@ The earlier sync reliability sweep exercised formatted paragraphs and simple bul
 - **Tool summaries:** whitespace-only fields no longer hide useful headlines, nested JSON fields no longer masquerade as a top-level summary, and whitespace-prefixed JSON does not leak as a raw headline.
 - **Prompt number badges:** badge dimensions scale with their Dynamic Type glyphs.
 
-Production commits include `0970745`, `cb24926`, `c5c336f`, and `964712b`, followed by the code identity/gesture integration correction. The reviewed interaction ledger maps new code panes, scope IDs and list renderer to tests without claiming exhaustive device acceptance.
+Production commits include `0970745`, `cb24926`, `c5c336f`, `964712b` and code identity/gesture correction `748b9b9`. The reviewed interaction ledger maps new code panes, scope IDs and list renderer to tests without claiming exhaustive device acceptance.
 
 ## Native evidence
 
@@ -30,4 +30,12 @@ Private screenshots in `~/.jcode/scratch/render-deep-20261116/`:
 - `rich-light-430.png`: whole rich fixture at 430/light/normal text size.
 - `images-before.png`, `user-system-before.png`: image-only prompts, assistant images, long user text, explicit newlines and wrapped system notices were inspected as well.
 
-Final hosted receipts and matrix totals are recorded after the integrated validation finishes. Geometry/dispatch checks and Linux native pixels are complementary evidence, not a universal proof of zero bugs. This does not update TestFlight or establish physical-iPhone acceptance.
+Final validation on the integrated code:
+
+- Hosted full library suite: **684 passed, zero failures, 16 ignored**, receipt `20261116-024456755-3426914`.
+- Twelve actual environment configurations (dark/light, reduced motion on/off, text scales 1.0/1.6/3.1), three targeted suites each: **444 passing executions**, zero failures. Each configuration runs 19 Markdown, 8 synced-render and 10 tool-summary tests.
+- Final hosted check passed before the full run. Clippy passed with existing warnings, receipt `20261116-024732661-3432559`. Release build passed, receipt `20261116-024735600-3432740`.
+- Final release SHA-256: `e5db51f45ed6f31992c6c1a1564a2097b128746adaad60a96ca8dc470384ac71`.
+- That exact artifact was launched at 390/dark/1.6 after the code-tab integration fix. `final-rich-390.png`, `final-code-drag-390.png` and `final-code-return-390.png` show wrapped list/quote glyphs, native horizontal code dragging to the suffix, and reversing to its beginning without changing tabs.
+
+Geometry/dispatch checks and Linux native pixels are complementary evidence, not a universal proof of zero bugs. This does not update TestFlight or establish physical-iPhone acceptance.
