@@ -100,22 +100,23 @@ mod tests {
             app.composer.update(cx, |input, cx| input.set_text("cloud draft", cx));
             app.drawer_search.update(cx, |input, cx| input.set_text("unrelated filter", cx));
             app.apply_external_sessions("local-work".into(), Some("reply from push".into()), State::fixture().sessions, cx);
-            assert_eq!(app.active_tab, tab);
-            assert_eq!(app.tab_order, [tab]);
+            let local_tab = app.active_tab;
+            assert_ne!(local_tab, tab);
+            assert_eq!(app.tab_order, [tab, local_tab]);
             assert!(app.connection.is_none());
             assert!(app.auto_send.is_none());
-            assert!(app.drawer_open);
+            assert!(!app.drawer_open);
+            assert!(app.is_local_chat());
+            assert!(!app.local_chat_ready(&app.session));
             assert_eq!(app.synced.selected.as_deref(), Some("local-work"));
-            assert_eq!(app.synced.sessions[0].session_id, "local-work");
-            assert!(app.drawer_search.read(cx).text().is_empty());
-            assert_eq!(app.transfer_input.read(cx).text(), "reply from push");
-            assert_eq!(app.composer.read(cx).text(), "cloud draft");
+            assert_eq!(app.composer.read(cx).text(), "reply from push");
             assert!(app.session.transcript.is_empty());
             app.open_external_session("local-work".into(), Some("second push reply".into()), cx);
-            assert_eq!(app.tab_order, [tab]);
+            assert_eq!(app.tab_order, [tab, local_tab]);
             assert!(app.connection.is_none());
             assert!(app.auto_send.is_none());
-            assert_eq!(app.transfer_input.read(cx).text(), "second push reply");
+            assert_eq!(app.composer.read(cx).text(), "reply from push", "a second notification must not overwrite the local draft");
+            app.focus_tab(tab, cx);
             assert_eq!(app.composer.read(cx).text(), "cloud draft");
         });
     }
@@ -296,6 +297,13 @@ mod tests {
                 cx,
             );
             app.screen = Screen::Chat;
+            app.account = Some(Account {
+                given_name: None,
+                name: None,
+                email: Some("preview@example.invalid".into()),
+                api_key: "offline-fixture".into(),
+                api_base: "https://example.invalid/v1".into(),
+            });
             app.device = Some((390., 844.));
             app.drawer_open = true;
             app.drawer_t = 1.;
@@ -361,7 +369,10 @@ mod tests {
         );
         cx.simulate_click(row.center(), gpui::Modifiers::default());
         view.update(cx, |app, _| {
-            assert_eq!(app.synced.selected.as_deref(), Some("local-11"))
+            assert_eq!(app.synced.selected.as_deref(), Some("local-11"));
+            assert!(app.is_local_chat());
+            assert!(!app.drawer_open);
+            assert!(!app.local_chat_ready(&app.session));
         });
     }
 
@@ -481,21 +492,11 @@ impl MobileApp {
     }
 
     fn apply_external_sessions(&mut self, id: String, reply: Option<String>, sessions: Vec<SyncedSession>, cx: &mut Context<Self>) {
-        let live = sessions.iter().find(|s| s.session_id == id && s.can_message()).cloned();
-        let local = sessions.iter().any(|s| s.session_id == id && s.can_transfer());
+        let local = sessions.iter().find(|s| s.session_id == id && s.can_transfer()).cloned();
         let cloud = sessions.iter().any(|s| s.session_id == id && s.source == "cloud");
         self.synced.replace_sessions(sessions);
-        if let Some(session) = live {
+        if let Some(session) = local {
             self.open_local_chat(session, reply, cx);
-        } else if local {
-            self.drawer_open = true;
-            self.drawer_last = std::time::Instant::now();
-            self.drawer_search.update(cx, |input, cx| input.set_text("", cx));
-            self.synced.sessions.sort_by_key(|s| s.session_id != id);
-            self.synced.visible_pages = 0;
-            self.synced.selected = Some(id.clone());
-            self.transfer_input.update(cx, |input, cx| input.set_text(reply.unwrap_or_default(), cx));
-            self.load_synced_transcript(id, cx);
         } else if cloud {
             self.drawer_open = false;
             self.open_session(id, reply, cx);
@@ -893,7 +894,7 @@ impl MobileApp {
                 .on_click(cx.listener({
                     let sid = sid.clone();
                     move |this, _, _, cx| {
-                        if let Some(session) = this.synced.sessions.iter().find(|s| s.session_id == sid && s.can_message()).cloned() {
+                        if let Some(session) = this.synced.sessions.iter().find(|s| s.session_id == sid && s.can_transfer()).cloned() {
                             this.open_local_chat(session, None, cx);
                             return;
                         }
@@ -975,16 +976,9 @@ impl MobileApp {
             if selected {
                 row = row.child(div().text_size(crate::system::fs(12.)).text_color(t.text_muted)
                     .child("Synced conversation · read-only on this phone"));
-                if self.synced.transcript_loading {
-                    row = row.child(div().child("Loading conversation…"));
-                }
-                if let Some(transcript) = self.synced.transcript.as_ref().filter(|tr| tr.session.session_id == sid) {
-                    for message in &transcript.messages {
-                        row = row.child(div().py(px(6.)).text_size(crate::system::fs(12.))
-                            .text_color(t.text_secondary)
-                            .child(format!("{}\n{}", message.role, message.content)));
-                    }
-                }
+                // Transcript content belongs in the shared chat viewport, not
+                // flattened into the narrow session drawer. The row opens that
+                // read-only view, while continuation stays an explicit action.
                 row = row.child(div().text_size(crate::system::fs(12.)).text_color(t.text_secondary).child("Creates a new cloud session from synced text. Local files and running tools are not moved. The original stays intact."))
                     .child(self.transfer_input.clone());
             }

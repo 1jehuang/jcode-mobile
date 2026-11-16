@@ -127,25 +127,7 @@ impl MobileApp {
         let Some(session) = session else {
             return false;
         };
-        if session.can_message() {
-            self.open_local_chat(session, reply, cx);
-        } else {
-            self.screen = super::Screen::Chat;
-            self.synced.selected = Some(id.to_owned());
-            self.synced
-                .sessions
-                .sort_by_key(|session| session.session_id != id);
-            self.synced.visible_pages = 0;
-            self.drawer_search
-                .update(cx, |input, cx| input.set_text("", cx));
-            self.drawer_open = true;
-            self.drawer_last = std::time::Instant::now();
-            if let Some(reply) = reply {
-                self.transfer_input
-                    .update(cx, |input, cx| input.set_text(reply, cx));
-            }
-            cx.notify();
-        }
+        self.open_local_chat(session, reply, cx);
         true
     }
 
@@ -187,8 +169,13 @@ impl MobileApp {
         reply: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if self.account.is_none() || !session.can_message() {
+        if self.account.is_none() || !session.can_transfer() {
             return;
+        }
+        // Archived sessions use the same transcript renderer as live/cloud
+        // chats. Sending remains separately gated on the computer being live.
+        if !session.can_message() {
+            self.synced.selected = Some(session.session_id.clone());
         }
         let existing = self
             .synced
