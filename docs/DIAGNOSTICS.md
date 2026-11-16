@@ -33,8 +33,13 @@ anonymous telemetry.
 Mobile sync HTTP timings also enter the durable queue as
 `mobile_sync_<operation>_<outcome>`. The fixed operation set is `lookup`,
 `transcript`, `list`, `transfer`, `message`, `command` and `commands`.
-Outcomes distinguish `transport_error`, `invalid_json`, `http_error`,
-`unavailable` (the server has no mobile sync route) and `success`.
+Outcomes distinguish `transport_error`, `invalid_json`, `http_error` (other
+4xx), `unauthorized` (401), `forbidden` (403), `session_missing` (404),
+`payload_too_large` (413), `rate_limited` (429), `server_error` (5xx),
+`unavailable` (a JSON 404 identifying a missing mobile sync route) and `success`.
+HTTP error classes are set before reading JSON, so non-JSON failures retain
+their HTTP cause rather than becoming `invalid_json`. `session_missing` is
+an HTTP 404 observation, not a claim that a particular session was deleted.
 For successful list HTTP replies, `success_empty` and `success_nonempty`
 describe only whether the expected JSON array contains any entries.
 `invalid_response` means that array is missing or has the wrong JSON type.

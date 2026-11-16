@@ -182,7 +182,8 @@ fn safe_name(name: &str) -> Option<String> {
             label.split_once(' ').is_some_and(|(operation, outcome)| {
                 ["lookup", "transcript", "list", "transfer", "message", "command", "commands"]
                     .contains(&operation)
-                    && ["transport_error", "invalid_json", "http_error", "unavailable", "success",
+                    && ["transport_error", "invalid_json", "http_error", "unauthorized", "forbidden",
+                        "session_missing", "payload_too_large", "rate_limited", "server_error", "unavailable", "success",
                         "success_empty", "success_nonempty", "invalid_response"].contains(&outcome)
             })
         })
@@ -496,7 +497,8 @@ mod tests {
     #[test]
     fn mobile_sync_labels_are_fixed_and_survive_durable_serialization() {
         for operation in ["lookup", "transcript", "list", "transfer", "message", "command", "commands"] {
-            for outcome in ["transport_error", "invalid_json", "http_error", "unavailable", "success", "success_empty", "success_nonempty", "invalid_response"] {
+            for outcome in ["transport_error", "invalid_json", "http_error", "unauthorized", "forbidden",
+                        "session_missing", "payload_too_large", "rate_limited", "server_error", "unavailable", "success", "success_empty", "success_nonempty", "invalid_response"] {
                 let label = format!("mobile sync {operation} {outcome}");
                 let mut e = event(now_ms());
                 e.name = safe_name(&label).expect("sync label must be uploadable");

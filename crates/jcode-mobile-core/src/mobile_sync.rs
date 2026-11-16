@@ -306,7 +306,17 @@ fn request_timed(
     }
     .map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
-    timing.outcome = if status >= 400 { "http_error" } else { "invalid_json" };
+    // Set the HTTP class before reading the body, including HTML/empty errors.
+    timing.outcome = match status {
+        401 => "unauthorized",
+        403 => "forbidden",
+        404 => "session_missing",
+        413 => "payload_too_large",
+        429 => "rate_limited",
+        500..=599 => "server_error",
+        400..=499 => "http_error",
+        _ => "invalid_json",
+    };
     let value: serde_json::Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
     if status == 404
         && value["error"]["code"] == "not_found"
@@ -452,9 +462,14 @@ mod tests {
             ("commands", 200, serde_json::json!({"commands":[{}]}), "success_nonempty"),
             ("list", 200, serde_json::json!({"sessions":null}), "invalid_response"),
             ("lookup", 200, serde_json::json!({}), "success"),
-            ("list", 401, serde_json::json!({"error":{"message":"private error"}}), "http_error"),
-            ("list", 429, serde_json::json!({}), "http_error"),
-            ("list", 500, serde_json::json!({}), "http_error"),
+            ("list", 401, serde_json::json!({"error":{"message":"private error"}}), "unauthorized"),
+            ("list", 403, serde_json::json!({}), "forbidden"),
+            ("list", 404, serde_json::json!({}), "session_missing"),
+            ("list", 413, serde_json::json!({}), "payload_too_large"),
+            ("list", 429, serde_json::json!({}), "rate_limited"),
+            ("list", 500, serde_json::json!({}), "server_error"),
+            ("list", 503, serde_json::json!({}), "server_error"),
+            ("list", 400, serde_json::json!({}), "http_error"),
             ("list", 404, serde_json::json!({"error":{"code":"not_found","message":"no route for private-path"}}), "unavailable"),
         ] {
             let (account, server) = mock_response(status, body);
@@ -469,6 +484,11 @@ mod tests {
     #[test]
     fn request_timing_covers_transport_and_invalid_json_errors() {
         use std::io::{Read, Write};
+        for (status, expected) in [
+            (200, "invalid_json"), (401, "unauthorized"), (403, "forbidden"),
+            (404, "session_missing"), (413, "payload_too_large"),
+            (429, "rate_limited"), (500, "server_error"), (503, "server_error"),
+        ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let account = Account {
             given_name: None, name: None, email: None,
@@ -484,15 +504,16 @@ mod tests {
                 assert_eq!(stream.read(&mut byte).unwrap(), 1);
                 bytes.push(byte[0]);
             }
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnot").unwrap();
+            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnot").unwrap();
         });
         let mut timing = RequestTiming { operation: "list", started: Instant::now(), outcome: "transport_error" };
         assert!(request_timed(&account, "/mobile/sessions", None, &mut timing).is_err());
-        assert_eq!(timing.outcome, "invalid_json");
+        assert_eq!(timing.outcome, expected);
         server.join().unwrap();
         timing.outcome = "transport_error";
         assert!(request_timed(&account, "/mobile/sessions", None, &mut timing).is_err());
         assert_eq!(timing.outcome, "transport_error");
+        }
     }
 
     #[test]
