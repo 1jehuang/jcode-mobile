@@ -1168,6 +1168,24 @@ mod tests {
     }
 
     #[test]
+    fn synced_system_and_image_only_messages_keep_inline_media_and_sequences() {
+        let messages = serde_json::from_value(serde_json::json!([
+            {"seq":10,"role":"system","text":"Image generation finished", "images":[{"media_type":"image/png","data":"AQID"}]},
+            {"seq":11,"role":"user","text":"", "images":[{"media_type":"image/jpeg","data":"BAUG"}]},
+            {"seq":12,"role":"assistant","text":"", "images":[{"media_type":"image/webp","data":"BwgJ"}]}
+        ])).unwrap();
+        let mut state = SessionState::default();
+        state.apply_synced_messages(messages);
+        assert_eq!(state.transcript.len(), 3);
+        assert_eq!(state.transcript[0].role, Role::System);
+        for (id, bytes) in [(10, vec![1, 2, 3]), (11, vec![4, 5, 6]), (12, vec![7, 8, 9])] {
+            assert_eq!(state.images_for(id).len(), 1);
+            assert_eq!(state.images_for(id)[0].bytes.as_slice(), bytes.as_slice());
+            assert!(state.transcript.iter().any(|entry| entry.id == id));
+        }
+    }
+
+    #[test]
     fn synced_wire_uses_history_reasoning_decoder_only_for_assistants() {
         let tagged = "*\u{2063}Think \\*carefully\\*\u{2063}*\n\n**Answer**";
         let messages = serde_json::from_value(serde_json::json!([

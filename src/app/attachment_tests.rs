@@ -82,9 +82,29 @@ fn assistant_image_only_row_has_a_visible_inline_preview(cx: &mut TestAppContext
     assert!(bounds.size.width >= px(240.) && bounds.size.height >= px(240.));
     cx.run_until_parked();
     view.read_with(cx, |app, _| {
-        assert!(app.attach.thumbs.0.borrow().get(&id).is_some_and(Option::is_some),
+        assert!(app.attach.thumbs.0.borrow().get(&id).is_some_and(|thumb| matches!(thumb, Thumb::Ready(_))),
             "generated PNG must decode into a render image, not stay a placeholder");
     });
+}
+
+#[gpui::test]
+fn undecodable_image_settles_to_explicit_unavailable_state(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx);
+    let image = photo();
+    let id = image.id;
+    view.update(cx, |app, cx| {
+        app.attach.pending.push(image);
+        cx.notify();
+    });
+    crate::app::navigation_coverage::draw(cx);
+    cx.run_until_parked();
+    view.read_with(cx, |app, _| {
+        assert!(matches!(app.attach.thumbs.0.borrow().get(&id), Some(Thumb::Unavailable)),
+            "failed decoding must not stay in loading state forever");
+    });
+    crate::app::navigation_coverage::draw(cx);
+    let selector = Box::leak(format!("image-placeholder-{id}").into_boxed_str());
+    assert!(cx.debug_bounds(selector).is_some(), "failure keeps an explicit visible attachment placeholder");
 }
 
 #[test]

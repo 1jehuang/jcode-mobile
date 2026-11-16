@@ -39,9 +39,17 @@ pub(super) struct State {
     thumbs: Thumbs,
 }
 
-/// Decoded thumbnails by image content id. `None` is loading or undecodable.
+/// Decoded thumbnails retain loading and failure separately, so broken media
+/// never remains an unexplained empty rectangle.
+#[derive(Clone)]
+enum Thumb {
+    Loading,
+    Ready(Arc<RenderImage>),
+    Unavailable,
+}
+
 #[derive(Clone, Default)]
-struct Thumbs(Rc<RefCell<HashMap<u64, Option<Arc<RenderImage>>>>>);
+struct Thumbs(Rc<RefCell<HashMap<u64, Thumb>>>);
 
 /// A small BGRA bitmap for `bytes`, or `None` when they are not an image.
 pub(super) fn thumbnail(bytes: &[u8], max: u32) -> Option<RenderImage> {
@@ -165,7 +173,7 @@ impl MobileApp {
         }
     }
 
-    fn thumb(&self, image: &SessionImage, cx: &mut Context<Self>) -> Option<Arc<RenderImage>> {
+    fn thumb(&self, image: &SessionImage, cx: &mut Context<Self>) -> Thumb {
         if let Some(slot) = self.attach.thumbs.0.borrow().get(&image.id) {
             return slot.clone();
         }
@@ -173,33 +181,39 @@ impl MobileApp {
             let mut map = self.attach.thumbs.0.borrow_mut();
             if map.len() >= MAX_THUMBS {
                 for (_, old) in map.drain() {
-                    if let Some(old) = old {
+                    if let Thumb::Ready(old) = old {
                         cx.drop_image(old, None);
                     }
                 }
             }
-            map.insert(image.id, None);
+            map.insert(image.id, Thumb::Loading);
         }
         let (id, bytes, thumbs) = (image.id, image.bytes.clone(), self.attach.thumbs.clone());
         let decode = cx.background_spawn(async move { thumbnail(&bytes, THUMB_PX) });
         cx.spawn(async move |this, cx| {
-            let Some(decoded) = decode.await else { return };
-            thumbs.0.borrow_mut().insert(id, Some(Arc::new(decoded)));
+            let decoded = decode.await.map(|image| Thumb::Ready(Arc::new(image))).unwrap_or(Thumb::Unavailable);
+            thumbs.0.borrow_mut().insert(id, decoded);
             let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
-        None
+        Thumb::Loading
     }
 
     fn photo(&self, image: &SessionImage, side: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         match self.thumb(image, cx) {
-            Some(data) => gpui::img(gpui::ImageSource::Render(data))
+            Thumb::Ready(data) => gpui::img(gpui::ImageSource::Render(data))
                 .size(px(side))
                 .flex_none()
                 .rounded(px(8.))
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
-            None => div().size(px(side)).flex_none().rounded(px(8.)).bg(t.surface_elevated).into_any_element(),
+            state => div()
+                .debug_selector({ let id = image.id; move || format!("image-placeholder-{id}") })
+                .size(px(side)).flex_none().rounded(px(8.)).bg(t.surface_elevated)
+                .flex().items_center().justify_center().p(px(6.))
+                .text_size(crate::system::fs(11.)).text_color(t.text_muted)
+                .child(if matches!(state, Thumb::Unavailable) { "Image unavailable" } else { "Loading image…" })
+                .into_any_element(),
         }
     }
 

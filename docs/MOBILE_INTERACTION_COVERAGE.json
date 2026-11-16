@@ -95,10 +95,15 @@
   "renderer": true,
   "handler": false,
   "events": {},
-  "controls": {},
+  "controls": {"debug_selector:macro:format:literal:image-placeholder-{id}": 1},
   "owner": "src/app/attachments.rs::impl:MobileApp::photo",
   "coverage_scope": "partial",
   "coverage": [
+    {
+      "kind": "state_model_mocked",
+      "tests": ["src/app/attachment_tests.rs::undecodable_image_settles_to_explicit_unavailable_state", "src/app/attachment_tests.rs::assistant_image_only_row_has_a_visible_inline_preview"],
+      "note": "Headless GPUI runs background decoding for valid and invalid bytes and checks visible placeholder geometry. Loading and permanent decode failure are distinct states, not unexplained blank media. Native painted image fidelity remains separate."
+    },
     {
       "kind": "platform_device_required",
       "tests": [],
