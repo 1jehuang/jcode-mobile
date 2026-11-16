@@ -90,6 +90,15 @@ repository's `DISCORD_RELEASE_WEBHOOK` Actions secret and in the owner-only
 config file on the workstation and account-managed `jcode-cloud` VM. No Apple
 key was moved to Actions, and hosted justrust is not part of Discord delivery.
 
+The first real announcement was posted on November 16, 2026 at 15:27 UTC for
+already-public TestFlight build `1794831158` (Apple ID
+`138864da-e281-443e-be66-d3f796905787`). Discord acknowledged message
+`1571909582672887899`, and the browser independently verified its sender, build
+number, attached notes and TestFlight link in `#release-notes`. The delivery
+receipt is retained on the VM and synchronized to the workstation to prevent
+reposting that build. No IPA was uploaded and no Apple distribution state was
+changed by this setup.
+
 The managed VM's app checkout has a separate release-candidate history and local
 changes. It was deliberately not reset, merged, or overwritten. The four release
 scripts from `578c94e2825a98bc82e98f659fad5d3e4211a331` are installed separately
