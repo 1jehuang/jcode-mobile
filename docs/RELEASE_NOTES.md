@@ -82,6 +82,38 @@ unless those machines share the receipt directory.
 For iOS, choose this build-linked flow **or** the GitHub-release flow below,
 not both for the same update, since their deduplication keys are different.
 
+## Configured managed release host, November 16, 2026
+
+The existing Jcode Discord `#release-notes` channel now has a dedicated
+`jcode-mobile-releases` webhook. Its private URL is configured in the mobile
+repository's `DISCORD_RELEASE_WEBHOOK` Actions secret and in the owner-only
+config file on the workstation and account-managed `jcode-cloud` VM. No Apple
+key was moved to Actions, and hosted justrust is not part of Discord delivery.
+
+The managed VM's app checkout has a separate release-candidate history and local
+changes. It was deliberately not reset, merged, or overwritten. The four release
+scripts from `578c94e2825a98bc82e98f659fad5d3e4211a331` are installed separately
+under `~/.local/share/jcode-mobile-release-tools/578c94e2825a98bc82e98f659fad5d3e4211a331/`.
+Use the installed VM commands for future approved builds, independent of the
+frozen app checkout:
+
+```sh
+# Attach notes, distribute an already processed and approved build, and attempt
+# the availability-gated Discord announcement.
+~/.local/bin/jcode-mobile-public-beta BUILD_NUMBER --notes-file release-notes.md
+
+# Preview existing build notes, or add --execute after Apple review clears.
+~/.local/bin/jcode-mobile-release-notes --build BUILD_NUMBER
+```
+
+These commands automatically read the private config and share the VM's durable
+announcement receipts. Do not invoke the workstation announcement command for
+the same build unless its receipt has been synchronized from the VM. The earlier
+checkout-level commands remain useful on a checkout containing the current
+release scripts. When updating the standalone tools, install a new immutable
+script snapshot and repoint both wrappers together, without copying build output
+or changing the candidate's source checkout.
+
 ## Optional GitHub-release flow
 
 For Android or releases tracked on GitHub, use the body of a published release
