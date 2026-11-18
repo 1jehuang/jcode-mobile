@@ -76,15 +76,16 @@ session name separately:
   - **Todos** appear on finished-turn pushes, including finished responses
     reclassified as needing input. Plans with up to eight non-cancelled items
     show one bubble per item (`●` completed, `◐` active, `○` pending). Larger
-    plans use an eight-segment progress bar. Both include a completed/total
-    count so large sessions remain distinguishable. Empty or entirely cancelled
-    plans add nothing. The indicator uses the session's saved todo state, not
-    just the current turn's changes. Error and wake pushes remain unchanged.
+    plans use an eight-segment progress bar (`▰` complete, `▱` remaining). Both
+    include a completed/total count so large sessions remain distinguishable.
+    Empty or entirely cancelled plans add nothing. The indicator uses the
+    session's saved todo state, not just the current turn's changes. Error and
+    wake pushes remain unchanged.
 - **Second line (subtitle)**: the session name, on a line of its own.
 - **Body**: only the result, the failure or the question.
 
 ```text
-XPS 14 · jcode-mobile · ✅ 4m 12s · ●●●○ 3/4
+XPS 14 · jcode-mobile · ●●●○ 3/4 · ✅ 4m 12s
 Label push notifications
 Notifications now say where the session ran.
 
