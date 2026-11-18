@@ -59,8 +59,9 @@ machine-credential allowlist). Rate limit: 60 sends / account / minute.
 Each line has one job. The jcode server composes the headline and sends the
 session name separately:
 
-- **Headline (title)**: origin, repo, status marker, run time. It is short
-  enough to fit a lock screen without truncation.
+- **Headline (title)**: origin, repo, status marker, run time, and session todo
+  progress when a turn finishes. The progress indicator stays compact for a
+  lock screen.
   - **Origin** is `Cloud` on a managed Jcode Cloud machine, otherwise the
     machine's name. The name is the hardware model without its SKU code
     (`XPS 14 DA14260` reads `XPS 14`), falling back to the hostname, then
@@ -72,11 +73,18 @@ session name separately:
     `❓ Needs input` or `⏰ Update`, each followed by the run time when the
     push ends a turn. A finished push with no run time reads `✅ Done`. Wakes
     have no turn and carry no run time.
+  - **Todos** appear on finished-turn pushes, including finished responses
+    reclassified as needing input. Plans with up to eight non-cancelled items
+    show one bubble per item (`●` completed, `◐` active, `○` pending). Larger
+    plans use an eight-segment progress bar. Both include a completed/total
+    count so large sessions remain distinguishable. Empty or entirely cancelled
+    plans add nothing. The indicator uses the session's saved todo state, not
+    just the current turn's changes. Error and wake pushes remain unchanged.
 - **Second line (subtitle)**: the session name, on a line of its own.
 - **Body**: only the result, the failure or the question.
 
 ```text
-XPS 14 · jcode-mobile · ✅ 4m 12s
+XPS 14 · jcode-mobile · ✅ 4m 12s · ●●●○ 3/4
 Label push notifications
 Notifications now say where the session ran.
 
