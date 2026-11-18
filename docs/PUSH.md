@@ -15,6 +15,23 @@ subscription API Worker (`~/solosystems-managed-cloud/workers/api`).
    registered on that account. 410 / BadDeviceToken / Unregistered rows are
    deleted.
 
+## Completion and automatic continuation
+
+For daemon-backed sessions, the jcode daemon owns todo auto-poke. A model
+response ending is not itself a finished harness request: the daemon evaluates
+unfinished todos and runs any allowed continuations before emitting the final
+`Done` event, updating finished status or sending `turn_done` push. Continuation
+progress notices are not completion alerts. The mobile app must not implement
+another todo-poke loop or infer completion from an individual model message end.
+
+The same boundary protects the app's local fallback: it alerts on `TurnDone`,
+not on intermediate assistant responses. The TUI sends `/poke` controls to the
+daemon instead of dispatching continuation prompts itself. Retry budgets,
+explicit off state and pauses are session-scoped, so reattaching another client
+does not reset them. Both daemon and TUI need the updated jcode build for this
+ownership contract. Standalone `jcode run` owns an in-process Agent and retains
+its own local continuation loop.
+
 ## Endpoints (all Bearer `jck_live_...`, JSON)
 
 ### POST /v1/push/devices
