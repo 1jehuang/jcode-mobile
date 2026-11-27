@@ -130,7 +130,9 @@ impl MobileApp {
         let room = MAX_ATTACHMENTS.saturating_sub(self.attach.pending.len());
         if room == 0 {
             self.toast("Up to 4 photos per message");
-        } else if self.attach.target.is_none() {
+        } else if self.attach.target.is_some() {
+            self.toast("Still attaching previous photo…");
+        } else {
             self.attach.target = Some(self.active_tab);
             if !media::pick(source, room) {
                 self.attach.target = None;
@@ -207,13 +209,22 @@ impl MobileApp {
                 .rounded(px(8.))
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
-            state => div()
-                .debug_selector({ let id = image.id; move || format!("image-placeholder-{id}") })
-                .size(px(side)).flex_none().rounded(px(8.)).bg(t.surface_elevated)
-                .flex().items_center().justify_center().p(px(6.))
-                .text_size(crate::system::fs(11.)).text_color(t.text_muted)
-                .child(if matches!(state, Thumb::Unavailable) { "Image unavailable" } else { "Loading image…" })
-                .into_any_element(),
+            state => {
+                let compact = side <= 64.;
+                let text = match (state, compact) {
+                    (Thumb::Unavailable, true) => "!",
+                    (Thumb::Unavailable, false) => "Image unavailable",
+                    (_, true) => "…",
+                    (_, false) => "Loading image…",
+                };
+                div()
+                    .debug_selector({ let id = image.id; move || format!("image-placeholder-{id}") })
+                    .size(px(side)).flex_none().rounded(px(8.)).bg(t.surface_elevated)
+                    .flex().items_center().justify_center().p(px(if compact { 2. } else { 6. }))
+                    .text_size(crate::system::fs(if compact { 14. } else { 11. })).text_color(t.text_muted)
+                    .child(text)
+                    .into_any_element()
+            }
         }
     }
 
@@ -242,12 +253,13 @@ impl MobileApp {
     /// Rows above the composer field: the source choice and the draft's photos.
     pub(super) fn render_attachment_tray(&self, pending: &[SessionImage], preview: bool, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let menu = self.attach.menu && !preview;
-        if !menu && pending.is_empty() {
+        let attaching = !preview && self.attach.target == Some(self.active_tab);
+        if !menu && !attaching && pending.is_empty() {
             return None;
         }
         let mut tray = div().flex().flex_col().gap(px(8.)).px(px(4.));
-        if !pending.is_empty() {
-            let chips = pending.iter().enumerate().map(|(i, image)| {
+        if !pending.is_empty() || attaching {
+            let mut chips = pending.iter().enumerate().map(|(i, image)| {
                 div()
                     .id(("attachment", i))
                     .debug_selector(move || format!("{}attachment-{i}", if preview { "preview-" } else { "" }))
@@ -276,6 +288,23 @@ impl MobileApp {
                     })
                     .into_any_element()
             }).collect::<Vec<_>>();
+            if attaching {
+                chips.push(
+                    div()
+                        .debug_selector(|| "attaching-photo-indicator".into())
+                        .h(px(DRAFT_PHOTO))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.))
+                        .bg(t.surface_elevated)
+                        .text_size(crate::system::fs(11.))
+                        .text_color(t.text_muted)
+                        .child("Attaching…")
+                        .into_any_element(),
+                );
+            }
             tray = tray.child(div().flex().flex_wrap().gap(px(8.)).children(chips));
         }
         if menu {

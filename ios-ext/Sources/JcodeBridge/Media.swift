@@ -9,6 +9,8 @@ import Foundation
 import UIKit
 import PhotosUI
 import AVFoundation
+import ImageIO
+import UniformTypeIdentifiers
 
 /// status 0: one image (bytes, len, media type). Called once per image.
 /// status 1: finished, every image was delivered.
@@ -17,9 +19,10 @@ import AVFoundation
 public typealias MediaCallback = @convention(c) (Int32, UnsafePointer<UInt8>?, Int, UnsafePointer<CChar>?) -> Void
 
 /// Longest side sent to the model. Larger photos are scaled down first: a
-/// 48 MP capture would otherwise be tens of megabytes of base64.
-private let maxSide: CGFloat = 2048
-private let jpegQuality: CGFloat = 0.82
+/// 48 MP capture would otherwise be tens of megabytes of base64. 1440px keeps
+/// text/screens crisp while fitting the 240 KB budget in 1-2 JPEG passes.
+private let maxSide: CGFloat = 1440
+private let jpegQuality: CGFloat = 0.78
 // Four photos plus base64 and command metadata fit in the sync store's row.
 private let maxPhotoBytes = 240 * 1024
 
@@ -31,30 +34,54 @@ private func topController() -> UIViewController? {
     return top
 }
 
-/// Applies EXIF orientation and the size cap, then encodes as JPEG.
+/// Downscales and encodes a `UIImage` (camera capture or fallback) as JPEG
+/// within `maxPhotoBytes`. Reuses the downscaled image on each pass instead of
+/// re-rasterizing the full-resolution capture.
 private func encode(_ image: UIImage) -> Data? {
     let size = image.size
     guard size.width > 0, size.height > 0 else { return nil }
     let format = UIGraphicsImageRendererFormat.default()
     format.scale = 1
     format.opaque = true
-    var side = maxSide
-    for _ in 0..<8 {
-        let scale = min(1, side / max(size.width, size.height))
-        let target = CGSize(width: max(1, (size.width * scale).rounded()), height: max(1, (size.height * scale).rounded()))
+    var current = image
+    var side = min(maxSide, max(size.width, size.height))
+    for _ in 0..<5 {
+        let curSize = current.size
+        let scale = min(1, side / max(curSize.width, curSize.height))
+        let target = CGSize(width: max(1, (curSize.width * scale).rounded()), height: max(1, (curSize.height * scale).rounded()))
         let drawn = UIGraphicsImageRenderer(size: target, format: format).image { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(origin: .zero, size: target))
-            image.draw(in: CGRect(origin: .zero, size: target))
+            current.draw(in: CGRect(origin: .zero, size: target))
         }
-        for quality in [jpegQuality, 0.65, 0.48] {
-            if let data = drawn.jpegData(compressionQuality: quality), data.count <= maxPhotoBytes {
-                return data
+        current = drawn
+        var lastBytes = 0
+        for quality in [jpegQuality, 0.58] {
+            if let data = drawn.jpegData(compressionQuality: quality) {
+                lastBytes = data.count
+                if data.count <= maxPhotoBytes { return data }
             }
         }
-        side *= 0.75
+        let ratio = lastBytes > 0 ? sqrt(Double(maxPhotoBytes) / Double(lastBytes)) : 0.72
+        side = max(320, (side * CGFloat(min(0.82, max(0.55, ratio)))).rounded())
     }
-    return nil
+    return current.jpegData(compressionQuality: 0.45)
+}
+
+/// Hardware-subsampled decode from a photo-library file URL via ImageIO.
+/// Avoids decoding a full 12-48 MP HEIC/JPEG bitmap into RAM.
+private func encode(fileURL: URL) -> Data? {
+    guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
+    let opts: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: Int(maxSide),
+    ]
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, opts as CFDictionary) else {
+        return nil
+    }
+    return encode(UIImage(cgImage: cgImage, scale: 1, orientation: .up))
 }
 
 private final class MediaSession: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate,
@@ -109,12 +136,20 @@ private final class MediaSession: NSObject, UIImagePickerControllerDelegate, UIN
         let group = DispatchGroup()
         for (i, result) in results.enumerated() {
             let provider = result.itemProvider
-            guard provider.canLoadObject(ofClass: UIImage.self) else { continue }
-            group.enter()
-            provider.loadObject(ofClass: UIImage.self) { object, _ in
-                let data = (object as? UIImage).flatMap(encode)
-                lock.lock(); encoded[i] = data; lock.unlock()
-                group.leave()
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                group.enter()
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
+                    let data = url.flatMap(encode(fileURL:))
+                    lock.lock(); encoded[i] = data; lock.unlock()
+                    group.leave()
+                }
+            } else if provider.canLoadObject(ofClass: UIImage.self) {
+                group.enter()
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    let data = (object as? UIImage).flatMap(encode)
+                    lock.lock(); encoded[i] = data; lock.unlock()
+                    group.leave()
+                }
             }
         }
         group.notify(queue: .main) {
